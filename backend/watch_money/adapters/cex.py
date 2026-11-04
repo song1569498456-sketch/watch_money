@@ -179,6 +179,8 @@ class CexAdapter:
         self.spec = SPECS[venue]
         self._factory = client_factory or _client_factory
         self._clients: dict[str, Any] = {}
+        from .bulk_tickers import BulkTickerParser
+        self._ticker_parser = BulkTickerParser()
         self._markets: dict[str, tuple[str, dict]] = {}
         self._instruments: dict[str, Instrument] = {}
         self._catalog_observed_at: dict[str, int] = {}
@@ -204,6 +206,9 @@ class CexAdapter:
                 await self.on_payload(self.venue, f"rest:ccxt:{method}", payload)
 
     def _client(self, client_id: str) -> Any:
+        if not self._clients and self._ticker_parser.closed:
+            from .bulk_tickers import BulkTickerParser
+            self._ticker_parser = BulkTickerParser()
         if client_id not in self._clients:
             self._clients[client_id] = self._factory(client_id)
         return self._clients[client_id]
@@ -480,9 +485,13 @@ class CexAdapter:
             for offset in range(0, len(items), batch_size):
                 batch = items[offset:offset + batch_size]
                 if multiple:
+                    # Discovery replaces metadata dictionaries. Keep this batch's
+                    # unit/contract interpretation across HTTP/CPU/yield awaits.
+                    batch_markets = {item.id: self._resolve(item)[1] for item in batch}
                     try:
                         async with self._bulk_semaphore, self._semaphore:
-                            payloads = await client.fetch_tickers(None if _full_product else [item.native_symbol for item in batch], params)
+                            payloads = await self._ticker_parser.fetch(
+                                client, None if _full_product else [item.native_symbol for item in batch], params)
                         await self._record_payload("fetch_tickers", payloads)
                         if not isinstance(payloads, dict):
                             raise ValueError("Public fetch_tickers returned a non-mapping payload")
@@ -497,7 +506,10 @@ class CexAdapter:
                         multiple = False
                     else:
                         successful_requests += 1
-                        for item in batch:
+                        observed = getattr(payloads, "received_at", now_ms())
+                        for index, item in enumerate(batch):
+                            if index and index % 128 == 0:
+                                await asyncio.sleep(0)
                             ticker = payloads.get(item.native_symbol)
                             if not isinstance(ticker, dict):
                                 if _full_product:
@@ -508,7 +520,7 @@ class CexAdapter:
                             if ticker.get("symbol") not in (None, item.native_symbol):
                                 continue
                             patch = _light_ticker_patch(item, client_id, ticker, "fetch_tickers",
-                                                        self._resolve(item)[1])
+                                                        batch_markets[item.id], received_at=observed)
                             if patch is not None:
                                 patches[item.id] = patch
                         continue
@@ -883,6 +895,7 @@ class CexAdapter:
                          + (f":native_quantity_divided_by_contract_size={divisor}" if divisor != 1 else ""))
 
     async def close(self) -> None:
+        await self._ticker_parser.close()
         results = await asyncio.gather(*(client.close() for client in self._clients.values()),
                                        return_exceptions=True)
         self._clients.clear()
@@ -930,7 +943,7 @@ def _light_params(client_id: str, instrument: Instrument, *, full_product: bool 
 
 
 def _light_ticker_patch(instrument: Instrument, client_id: str, ticker: dict,
-                        method: str, market: dict | None = None) -> MarketSnapshot | None:
+                        method: str, market: dict | None = None, *, received_at: int | None = None) -> MarketSnapshot | None:
     """REST equivalent of streaming.ticker_patch, with REST provenance.
 
     Omitted fields must stay unset so merges preserve detailed funding/OI and
@@ -963,7 +976,7 @@ def _light_ticker_patch(instrument: Instrument, client_id: str, ticker: dict,
         issues.append("crossed orderbook: bid exceeds ask")
     return MarketSnapshot(
         instrument_id=instrument.id, venue=instrument.venue, source=source,
-        source_at=event_time, received_at=now_ms(), field_sources=sources,
+        source_at=event_time, received_at=received_at if received_at is not None else now_ms(), field_sources=sources,
         field_timestamps=timestamps, valid=not crossed, issues=issues, is_demo=False, **values,
     )
 

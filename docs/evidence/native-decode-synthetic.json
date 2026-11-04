@@ -1,0 +1,17 @@
+{
+  "scope": "synthetic repeated large frames, fixed payload/count; no live exchange or network acceptance",
+  "inline": {
+    "frames": 128,
+    "frame_bytes": 456977,
+    "seconds": 0.3932,
+    "loop_samples": 3,
+    "max_loop_delay_ms": 199.869
+  },
+  "bounded_worker": {
+    "frames": 128,
+    "frame_bytes": 456977,
+    "seconds": 0.4253,
+    "loop_samples": 130,
+    "max_loop_delay_ms": 4.079
+  }
+}

@@ -9,6 +9,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from watch_money.adapters.dex import DydxAdapter, HyperliquidAdapter, LighterAdapter, number, timestamp
@@ -402,6 +403,9 @@ class DexStreamAdapter:
         self._inbox: _HyperliquidInbox | None = None
         self._payload_observer_dropped = 0
         self._observer_queue: asyncio.Queue | None = None
+        self._decode_lock = asyncio.Lock()
+        self._decode_executor = None
+        self._decode_future = None
 
     async def _bounded(self, awaitable, seconds, stage):
         try:
@@ -434,10 +438,9 @@ class DexStreamAdapter:
             frames = 0
             while True:
                 try:
-                    message = await self._receive(socket, observe=False)
+                    message, received_at = await self._receive(socket, observe=False, with_receipt=True)
                 except TimeoutError as exc:
                     raise SourceReadTimeout("hyperliquid: source_read timed out") from exc
-                received_at = now_ms()
                 if self._observer_queue is not None:
                     try:
                         self._observer_queue.put_nowait(message)
@@ -471,18 +474,45 @@ class DexStreamAdapter:
         # Lighter uses one all-market topic, not one subscription per market.
         return 5000 if self.venue == "lighter" else 100 if self.venue == "hyperliquid" else None
 
-    async def _receive(self, socket, *, observe=True) -> dict:
+    async def _decode_hyperliquid(self, raw):
+        # One job per connection, at most five catalog connections. Admission
+        # stays held on cancellation until the CPU worker actually completes.
+        async with self._decode_lock:
+            if self._decode_executor is None:
+                self._decode_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='hl-json')
+            future = asyncio.get_running_loop().run_in_executor(self._decode_executor, json.loads, raw)
+            self._decode_future = future
+            try:
+                return await asyncio.shield(future)
+            except asyncio.CancelledError:
+                with suppress(Exception):
+                    await future
+                raise
+            finally:
+                self._decode_future = None
+
+    async def _receive(self, socket, *, observe=True, with_receipt=False) -> dict | tuple[dict, int]:
         raw = await socket.recv()
+        received_at = now_ms()  # Socket delivery, before worker admission/JSON CPU/observer delay.
+        # The production transport also enforces this bound; enforce for injected transports.
+        if (not isinstance(raw, (str, bytes, bytearray)) or len(raw) > 2 * 1024 * 1024
+                or (isinstance(raw, str) and len(raw) > 512 * 1024
+                    and len(raw.encode("utf-8")) > 2 * 1024 * 1024)):
+            raise ValueError(f"{self.venue}: unsupported or oversized WebSocket frame")
         # The official HL SDK also accepts this initial non-JSON greeting.
         if raw == "Websocket connection established." and self.venue == "hyperliquid":
-            return {"channel": "connected"}
-        message = json.loads(raw)
+            message = {"channel": "connected"}
+        else:
+            # Tiny control/book frames cost less than a thread handoff. The
+            # reader yields every 64 frames; only >=8KiB frames use the worker.
+            message = (await self._decode_hyperliquid(raw) if self.venue == "hyperliquid" and len(raw) >= 8192
+                       else json.loads(raw))
         if not isinstance(message, dict):
             raise TypeError(f"{self.venue}: expected WebSocket object")
         if observe and self.on_payload is not None:
             with suppress(Exception):
                 await self.on_payload(self.venue, f"websocket:{self.venue}", message)
-        return message
+        return (message, received_at) if with_receipt else message
 
     async def _heartbeat(self, socket, pong: asyncio.Event):
         while True:
@@ -653,6 +683,12 @@ class DexStreamAdapter:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if self._decode_future is not None:
+            with suppress(Exception):
+                await asyncio.shield(self._decode_future)
+        executor, self._decode_executor = self._decode_executor, None
+        if executor is not None:
+            executor.shutdown(wait=True)
         socket, self._socket = self._socket, None
         if socket is not None:
             with suppress(Exception):

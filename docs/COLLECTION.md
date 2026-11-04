@@ -227,3 +227,17 @@ app lifespan启动每0.5秒的本地timer采样，提供最近/最大调度迟�
 关闭录制时 observer 不连接 SQLite、不扫描录制目录；开启时配置未变不再重复 configure/status 目录扫描。跨 observer 最多 16 个录制作业，超出在 `/api/recording`状态中记录 queue_dropped，pending_writes 包括取消调用后尚未完成的写入。排队作业执行前复核最新设置；关闭后尚未开始的作业不落盘，已经开始的单次写入允许完成，停机等待其完成。录制本身保留原有大小/保留天数/脱敏约束。
 
 保持相同公开平台与采样频率复跑 status-only 和固定重查询两组，关注探针事件、进程 CPU 增量、coverage 计算以及录制 pending/dropped；对照时始终明确录制/通知开关。本地 settings 5000 次相同读取对照见 `evidence/settings-hotpath-synthetic.json`，只证明此环境消除反复 SQLite 读取，不能直接推断真实 HL/OKX 时效改善。
+
+### R27 公共批量解析与原生 WS 解码对照
+
+CCXT OKX/Bitget 普通 spot/swap 批量 ticker 的同步解析在有界工作线程执行；HTTP/session/限流器仍留在创建它们的事件循环。该窄路径只针对已审阅的 CCXT 4.5.91，其他版本/特殊路由保留上游实现，并在 `/api/query-work` 的 `public_ticker_parsers` 报告 fallback 与已安装版本。不能把 fallback 模式当成已启用解析优化。每适配器最多一个工作线程和一个等待请求；取消等待已开始的解析完成，close 不把在途解析交给已关闭客户端。诊断只含计数、容量、解析 CPU/墙钟时间和接收/完成时刻，不包含响应或账户信息。
+
+HL 仅 >=8KiB 的 JSON 帧交给每连接一个解码线程；小帧保持快速解析和每 64 帧让出事件循环，避免每个小包交接线程导致心跳回退。最多五个 catalog 连接，传输帧限制 2MiB，原有有界消息队列、空侧清除和乱序屏障不变。原始接收时间在 recv 返回后、解码和诊断回调前保存。取消/关闭等待当前解码结束，重连可创建新线程。线程不能保证消除 GIL 竞争；小帧解码、HTTP JSON 解码、其余平台解析和市场转换仍有事件循环 CPU，需继续抓栈，不宣称全部 CPU 已移走。
+
+`benchmark_native_decode.py` 对同样 128 个约 457KB 合成帧比较：inline 总耗时约 0.393s、最大循环延迟 199.869ms；有界线程约 0.425s、4.079ms。目标是减少连续占用，不是承诺吞吐加速。真实 HL 通常帧更小，不能将此大帧合成改善直接套用真实运行。见 `evidence/native-decode-synthetic.json`。
+
+#### OKX 资金费时间语义核查（2026-11-04）
+
+官方 [REST funding-rate](https://www.okx.com/docs-v5/en/#public-data-rest-api-get-funding-rate) 将 `ts` 定义为数据返回时间；`fundingTime`/`nextFundingTime` 是结算时间，不是行情更新时间。官方 [资金费 WS](https://www.okx.com/docs-v5/en/#public-data-websocket-funding-rate-channel) 标注推送间隔 30–90 秒。此说明不保证 REST 每个请求获得小于 60 秒的新 `ts`，也不能证明实测 61–72 秒全部来自上游缓存。客户端等待、响应解码和同步解析亦可能贡献时延。
+
+继续记录原始 `info.ts`、本地接收/解析完成时间、请求耗时与相邻响应 `ts` 是否变化；现有 `funding_arrival_source_age_*` 诊断继续保留，资金费目前本地接收观测在 CCXT 返回后，因此包含其解析时间，不能直接称为网络 RTT。61/72 秒源年龄仍在 60 秒门槛之外；成功 HTTP 或更近本地接收时间不使旧源数据重新有效。新增边界回归验证，不改 TTL、不用结算时间代替 `ts`、不伪造 source 时间。实网覆盖和无空窗验收保持开放。

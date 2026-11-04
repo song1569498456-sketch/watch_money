@@ -128,3 +128,23 @@ def test_replay_uses_mapping_approval_cutoff_in_both_rankings(offset, ready):
     assert view["matrix_groups"][0]["comparison_ready"] == ready
     if not ready:
         assert "mapping_not_known_as_of" in scan["groups"][0]["identity_blockers"]
+
+
+@pytest.mark.parametrize('age_ms,rankable', [(60000, True), (61000, False), (72000, False)])
+def test_okx_successful_response_does_not_renew_old_source_time(age_ms, rankable):
+    from watch_money.collector import funding_response_source_ages
+    from watch_money.scanner import funding_field_state
+    receipt = 1700724675502
+    raw = {'instId': 'BTC-USD-SWAP', 'fundingRate': '0.001', 'ts': str(receipt-age_ms),
+           'fundingTime': '1700726400000', 'nextFundingTime': '1700755200000'}
+    patch = okx_patch(raw)
+    instrument = Instrument(id='okx:fixture', venue='okx', native_symbol='BTC/USD:BTC', base='BTC',
+                            quote='USD', settle='BTC', asset_id='okx:BTC', kind='perpetual', linear=False)
+    state = funding_field_state(patch, instrument, 'funding_rate', receipt, 60)
+    assert patch.source_at == receipt-age_ms and patch.received_at == receipt
+    assert state['rankable'] is rankable
+    assert funding_response_source_ages([patch], {instrument.id: instrument}, receipt, 60) == [age_ms/1000]
+    # A later successful HTTP observation cannot renew the source timestamp.
+    again = patch.model_copy(update={'received_at': receipt+1000,
+                                    'field_received_at': {key: receipt+1000 for key in patch.field_received_at}})
+    assert not funding_field_state(again, instrument, 'funding_rate', receipt+1000, 60)['rankable']

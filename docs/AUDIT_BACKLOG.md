@@ -201,3 +201,14 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 范围：阻止本次扫描/入队前失效的提醒；本次未新增已入队通知的市场状态撤回协议。真实交易所持续时效及原有未完成事项仍开放。
 
 - 最终验证：873 项完整后端测试（31.23 秒）、Ruff/diff 通过；仅一条上游 TestClient 弃用警告。
+
+### R27 批量行情解析的事件循环占用（2026-11-04，实网效果待验收）
+
+- 父线程匹配实网对照：413d028 status-only HL 至 125 秒保持 347/347、无重连；最大循环延迟约 19.49→2.46 秒，关闭录制 3000 次回调的 SQLite 连接 3000→0。但组合负载约 60 秒仍发生 ApplicationPongTimeout。新探针样本为 OKX/Bitget CCXT ticker 解析/精度与 HL JSON；部分 11–12 秒区间进程 CPU 接近墙钟。原 SQLite/coverage/health 热点未再出现在这些采样中；不据此宣称所有热点或断流解决。
+- 实现：审阅并固定 CCXT 4.5.91，对 OKX/Bitget 普通批量 ticker 保持原异步 HTTP/限流器，仅将同步 parse_tickers 移到每适配器一个工作线程（最多一个等待者）；捕获独立解析器视图和批次市场元数据，目录替换不改变在途单位解释；取消与关闭等待 CPU 工作完成，原始来源时间及解析前接收时间保留。其他版本/特殊产品回退上游，diagnostics 显式计数，不静默声称已优化。见 `bulk_tickers.py`、`test_bulk_ticker_parser.py`。
+- 实现：HL 大于等于 8KiB 帧单连接一个解码工作线程，catalog 最多五连接；小帧直接解析、每 64 帧让出循环。2MiB 帧上限、有界原队列和清除屏障保留。recv 后即记录接收时间，排队/CPU/诊断回调不能刷新时间。见 `test_native_decode_worker.py`，原有 34 项 DEX 流/背压回归通过。小帧逐条进线程实验导致心跳回退，因此未采用该方案。
+- 同负载合成：真实 CCXT 解析 7000 市场，所有字段结果一致；OKX 最大循环延迟 157.365→5.316ms，Bitget179.229→5.386ms。128 大 JSON 帧199.869→4.079ms，但总耗时0.393→0.425s。见 `bulk-ticker-parser-synthetic.json`、`native-decode-synthetic.json` 及对应 benchmark 脚本；不是实网验收或 CPU 消失证明。
+- OKX 官方语义：ts 为数据返回时间、fundingTime 为结算时间；资金费 WS 文档推送30–90秒，不保证REST源年龄小于60秒。详见 COLLECTION.md 官方链接和取证步骤。新回归验证60秒边界、61/72秒被排除、成功HTTP更近接收时间不恢复旧源有效性；没有伪造时间或放宽门槛。资金费 HTTP/CCXT 解析分段尚未完全解耦，不能将观测年龄全称为上游延迟。
+- 仍开放：真实同负载超时/资金费空窗、HTTP JSON 与小帧等剩余循环 CPU/GIL 争用、身份覆盖和24小时验收。仅公开接口/合成数据，无账户或交易操作，不重试受限Lighter。
+
+- 最终验证：897 项完整后端（37.00秒）通过，最后新增时间回归后的19项解析专项通过；Ruff/diff通过。上游TestClient弃用警告一条，无新增实网验收结论。

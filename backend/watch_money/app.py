@@ -115,7 +115,9 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
 
     @app.get('/api/query-work')
     async def query_diagnostics():
-        return query_work.diagnostics()
+        return {**query_work.diagnostics(), 'public_ticker_parsers': {
+            name: adapter._ticker_parser.diagnostics() for name, adapter in collector.adapters.items()
+            if hasattr(adapter, '_ticker_parser')}}
 
     @app.get('/api/status')
     def status():
