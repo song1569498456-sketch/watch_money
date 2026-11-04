@@ -1513,6 +1513,14 @@ function Detail({
                     {age(book.source_at ?? book.received_at, now)} ·{" "}
                     {book.source}
                   </div>
+                  {book.observation && <div className="panel-foot">
+                    交易所快照生成：{book.observation.exchange_generated_at == null ? "未知" : age(book.observation.exchange_generated_at, now)} ·{" "}
+                    盘口最后改变：{book.observation.book_last_changed_at == null ? "未知" : age(book.observation.book_last_changed_at, now)}。
+                    {book.observation.source_time_kind === "exchange_snapshot_generation"
+                      ? "此处使用交易所快照生成时点，不是盘口变动时点。"
+                      : "未提供快照生成时点；不会用本地收包时间补齐。"}
+                    {!book.observation.merged && "本次快照未更新监控报价。"}
+                  </div>}
                 </>
               ) : (
                 <Empty
@@ -1741,7 +1749,8 @@ function Status({
                       源 WebSocket：
                       {stateName[s.stream_state] ?? s.stream_state ?? "未提供"}
                     </small>
-                    <small className={s.stream_truncated ? "warning" : "muted"}>源流选取 {s.stream_selected_markets ?? 0}/{s.stream_requested_markets ?? 0} 市场{s.stream_truncated ? " · 订阅预算截断，其余等待REST" : ""} · 不等于已收到有效盘口</small>
+                    <small className={s.stream_truncated ? "warning" : "muted"}>源流选取 {s.stream_selected_markets ?? 0}/{s.stream_requested_markets ?? 0} 市场{s.stream_truncated ? " · 产品范围或订阅预算限制，其余由REST采集" : ""} · 不等于已收到有效盘口</small>
+                    <small>盘口诊断：双边缺失 {s.light_book_missing_markets ?? 0} · 源时间未知 {s.light_source_missing_markets ?? 0} · 过期 {s.light_source_stale_markets ?? 0} · 未来 {s.light_source_future_markets ?? 0} 市场（原因可重叠）</small>
                     <small>源流累计处理 {s.stream_received_patches ?? 0} 帧 · 最近处理 {age(s.stream_last_patch_at, now)}</small>
                     {!!s.stream_observer_dropped && <small className="warning">诊断回调丢弃 {s.stream_observer_dropped} 帧；若已启用原始录制，该录制存在缺口。</small>}
                     <small>相邻帧处理间隔 / 最大 {num(s.stream_last_gap_seconds, 3)} / {num(s.stream_max_gap_seconds, 3)} 秒（非网络延迟）</small>

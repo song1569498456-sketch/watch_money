@@ -67,6 +67,8 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     notifications = NotificationService(data_dir)
     notifications.set_enabled(store.settings().notifications_enabled)
     collector = Collector(store, adapters, notifications)
+    from .adapters.gate_snapshot import GateSnapshotService, SnapshotBusy
+    gate_snapshots = GateSnapshotService(collector)
     monitors = MonitorService(store, collector, notifications)
     query_work = QueryWork(stall_probe=os.getenv('WATCH_MONEY_STALL_PROBE', '0') == '1')
     run_collectors = start_collector if start_collector is not None else os.getenv('WATCH_MONEY_COLLECT', '1') == '1'
@@ -90,6 +92,7 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     app = FastAPI(title='Watch Money', version='0.1.0', lifespan=lifespan)
     app.state.store = store
     app.state.collector = collector
+    app.state.gate_snapshots = gate_snapshots
     app.state.notifications = notifications
     app.state.data_dir = Path(data_dir)
     app.state.monitors = monitors
@@ -117,7 +120,9 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     async def query_diagnostics():
         return {**query_work.diagnostics(), 'public_ticker_parsers': {
             name: adapter._ticker_parser.diagnostics() for name, adapter in collector.adapters.items()
-            if hasattr(adapter, '_ticker_parser')}}
+            if hasattr(adapter, '_ticker_parser')}, 'source_streams': {
+                name: stream.diagnostics() for name, stream in collector.streamers.items()
+                if hasattr(stream, 'diagnostics')}, 'gate_on_demand_snapshots': gate_snapshots.diagnostics()}
 
     @app.get('/api/status')
     def status():
@@ -234,7 +239,11 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
         if adapter is None:
             raise HTTPException(501, 'No order book adapter configured')
         try:
+            if instrument.venue == 'gate' and instrument.kind == 'spot':
+                return await gate_snapshots.fetch(instrument)
             return await asyncio.wait_for(adapter.orderbook(instrument), timeout=30)
+        except SnapshotBusy:
+            raise HTTPException(429, 'Public snapshot rate budget busy; retry after 30 seconds') from None
         except NotImplementedError:
             raise HTTPException(501, 'This market does not provide an order book; a size-specific route quote is required')
         except Exception as exc:

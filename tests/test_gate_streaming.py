@@ -278,3 +278,99 @@ async def test_duplicate_burst_yields_to_event_loop():
     assert socket.incoming.qsize() > 0
     reader.cancel()
     await asyncio.gather(reader, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_correlates_only_echoed_subscription_ids():
+    class AckSocket(Socket):
+        async def send(self, raw):
+            await super().send(raw)
+            request = json.loads(raw)
+            if request['channel'] == CHANNEL:
+                ack = {'id': request['id'], 'channel': CHANNEL, 'event': 'subscribe',
+                       'error': None, 'result': {'status': 'success'}}
+                self.incoming.put_nowait(ack)
+                self.incoming.put_nowait(ack)  # duplicate must not double market count
+                self.incoming.put_nowait({key: value for key, value in ack.items() if key != 'id'})
+                self.incoming.put_nowait({**ack, 'id': 99999})
+                self.incoming.put_nowait(frame())
+    socket = AckSocket()
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket), subscription_batch=1, subscription_delay=0)
+    stream = adapter.stream([item(), item('OTHER')])
+    await anext(stream)
+    await asyncio.sleep(.01)
+    diag = adapter.diagnostics()
+    assert diag['selected_markets'] == diag['sent_markets'] == diag['acknowledged_markets'] == 2
+    assert diag['planned_batches'] == diag['sent_batches'] == diag['acknowledged_batches'] == 2
+    assert diag['duplicate_acknowledgements'] == 2
+    assert diag['uncorrelated_acknowledgements'] == 4
+    assert diag['unique_observed_markets'] == diag['unique_accepted_markets'] == 1
+    assert diag['acknowledged_markets'] > diag['unique_accepted_markets']
+    assert 'id' in socket.sent[0] and 'auth' not in socket.sent[0]
+    diag['sent_markets'] = 999
+    assert adapter.diagnostics()['sent_markets'] == 2
+    await stream.aclose()
+    assert adapter.diagnostics()['state'] == 'closed'
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_reasons_and_source_extrema_do_not_renew_data():
+    malformed = frame()
+    malformed['result'].pop('B')
+    socket = Socket([frame(), frame(u=4), frame(u=6), frame(u=6, t=AT + 1),
+                     frame(u=99, t=AT + 2000), frame(t=None), frame(t=AT // 1000),
+                     malformed, frame('UNKNOWN'), frame(u=7, t=AT + 2, b='102')])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    stream = adapter.stream([item()])
+    patch = await anext(stream)
+    diag = adapter.diagnostics()
+    for reason in ('stale_order', 'same_sequence_newer_time', 'future_time', 'missing_time',
+                   'invalid_time', 'malformed', 'unknown_symbol'):
+        assert diag['rejected_' + reason] == 1
+    assert diag['received_frames'] == diag['bbo_frames'] == 10
+    assert diag['duplicate_bbo_frames'] == 1
+    assert diag['accepted_patches'] == 2
+    assert diag['crossed_bbo_frames'] == 1
+    assert diag['unique_observed_markets'] == diag['unique_accepted_markets'] == 1
+    assert diag['accepted_source_at_min'] == AT and diag['accepted_source_at_max'] == AT + 2
+    assert diag['accepted_receipt_at_min'] == diag['accepted_receipt_at_max'] == AT + 1000
+    assert not patch.valid
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_reset_on_reconnect_and_do_not_accept_previous_ack():
+    sockets = [Socket([frame()]), Socket()]
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=lambda endpoint: factory(sockets.pop(0))(endpoint))
+    stream = adapter.stream([item()])
+    await anext(stream)
+    await asyncio.sleep(.01)
+    old_id = adapter._request_id
+    assert adapter.diagnostics()['generation'] == 1
+    await stream.aclose()
+    socket = sockets[0]
+    socket.incoming.put_nowait({'id': old_id, 'channel': CHANNEL, 'event': 'subscribe',
+                               'error': None, 'result': {'status': 'success'}})
+    socket.incoming.put_nowait(frame(t=None))
+    socket.incoming.put_nowait(frame('OTHER'))
+    stream = adapter.stream([item(), item('OTHER')])
+    await anext(stream)
+    diag = adapter.diagnostics()
+    assert diag['generation'] == 2 and diag['received_frames'] == 3
+    assert diag['uncorrelated_acknowledgements'] == 1 and diag['acknowledged_markets'] == 0
+    assert diag['unique_observed_markets'] == 2 and diag['unique_accepted_markets'] == 1
+    assert diag['rejected_missing_time'] == 1
+    assert len(adapter._subscriptions) <= diag['planned_batches']
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rejected_subscription_is_reported_without_public_payload_content():
+    socket = Socket([{'channel': CHANNEL, 'event': 'subscribe', 'error': {'code': 2, 'message': 'detail'}}])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    with pytest.raises(RuntimeError):
+        await anext(adapter.stream([item()]))
+    diag = adapter.diagnostics()
+    assert diag['rejected_subscriptions'] == 1 and diag['state'] == 'failed'
+    assert diag['acknowledged_markets'] == 0 and diag['closed_at'] is not None
+    assert 'detail' not in json.dumps(diag)

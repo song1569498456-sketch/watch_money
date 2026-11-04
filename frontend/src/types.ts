@@ -69,6 +69,11 @@ export interface MarketData {
   snapshots: Snapshot[];
 }
 export interface VenueStatus {
+  light_book_missing_markets?: number;
+  light_source_missing_markets?: number;
+  light_source_stale_markets?: number;
+  light_source_future_markets?: number;
+  light_observation_checked_at?: number;
   light_bulk_markets?: number;
   light_fallback_markets?: number;
   light_bulk_groups?: number;
@@ -190,6 +195,13 @@ export interface Book {
   source_at?: number;
   quantity_unit: string;
   source: string;
+  observation?: {
+    source_time_kind: string;
+    exchange_generated_at: number | null;
+    book_last_changed_at: number | null;
+    timestamp_available: boolean;
+    merged: boolean;
+  };
 }
 export interface Asset {
   id: string;

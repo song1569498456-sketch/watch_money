@@ -21,3 +21,23 @@
 本批测试是官方结构合成帧与假 WebSocket：无时钟 REST→有效 WS→晚到 REST→自然过期/恢复；身份未批准仍不排行；同时间清除、空侧、未来/乱序、订阅预算、取消与队列压力。真实网络在本云环境仍受限制，未执行 Gate WS 实测或改变环境设置。
 
 在可达的独立环境用原有采集程序启用 Gate 与 `prefer_websocket`、`broad_collection_enabled`，只在隔离库加载/核验身份资料；记录 requested/selected/truncated、实际新鲜 BBO 数、字段来源与原始 result.t/收包差、可靠方向数、重连和循环延迟。要验证订阅拒绝/限流、冷门市场不更新时自然过期、REST并发不覆盖时间，以及持续运行；收到成功订阅或连接在线不代表全市场有效覆盖。全量吞吐、真正可靠方向增加及 24 小时稳定性尚待实测。
+
+## 后续实网证据与按需补齐（R34）
+
+父线程独立实测 c53df7d：一连接接受44批、2186个现货订阅，180秒122560帧，无拒绝或重连；47组原始/patch时间盘口一致，15376次REST覆盖保护未失败。固定真实报价在隔离库临时核验身份后可靠方向32→378→撤销32，均只是提示性方向。最后有时间盘口1671、新鲜1463，仍有未更新/过期市场；Gate资金费源时间仍缺。这是外部真实短时证据，不是本云环境重跑，也不是生产批准或24小时验收。
+
+详情原有“获取盘口”现在对Gate现货执行有界公开快照：两请求并发上限、全局起始间隔0.25秒、同市场30秒冷却，准确发现的currency_pair、limit20、with_id；没有全目录高频REST补扫。只请求官方公开order_book，既不读账户也不加载密钥。收到响应后绑定目录仍一致才合并买卖价，空侧显式清除。冷却返回429，界面显示失败；失败和取消也保留冷却，避免反复请求。
+
+这里使用明确不同的源时间语义：原生 `current` 是交易所此次快照生成时点，作为 `exchange_snapshot_generation`；原生 `update` 另列为盘口最后变动。静止盘口仍可由一次新的交易所快照确认，而不是靠本地收包续期。若缺current，仅保留update并标记`book_last_change`，仍按原时效门槛；两者都缺则返回时间未知的深度但不更新监控报价。未来或相互矛盾的原生时钟拒绝。字段source保留语义，详情同时显示两种时点；源时间老旧不会被请求成功变新鲜。晚到无时间ticker继续不能覆盖该快照，较旧WS报价也不能覆盖更新的快照。
+
+`/api/query-work.source_streams.gate` 区分selected、sent、按请求id对应确认的acknowledged、unique_observed/accepted；匿名、重复或前连接确认不增加确认数。每连接generation及state/start/close明确，历史计数不是当前有效覆盖。accepted包含显式清除/结构无效状态，不能当作可靠方向；累计源时间min/max也不是当前年龄。拒绝原因、重复帧、缓冲合并与观察丢弃有固定大小计数，没有每帧全目录扫描。
+
+`/api/status` 的light_book_missing/source_missing/source_stale/source_future计数及light_observation_checked_at补充当前字段诊断，light_fresh_markets仍要求双边盘口通过时间和结构门槛；这些诊断可能重叠，不能求和当作互斥覆盖。身份通过、规模与费用仍需另行判断。按需请求预算见`/api/query-work.gate_on_demand_snapshots`。
+
+## 永续与资金费调查边界
+
+[Gate永续WS](https://www.gate.com/docs/developers/futures/ws/en/#order-book-api) 的futures.book_ticker有独立result.t（毫秒），但与现货并非同一格式：u可能为字符串，无买卖一侧可用空价格加0数量，连接还必须绑定btc/usdt/usd1结算空间。`gate_futures.py`只提供通过合成测试的纯解析器，未接入真实订阅；不能把本轮现货覆盖称为永续覆盖。合约数量没有直接当作基础币数量。
+
+[Gate永续REST](https://www.gate.com/docs/developers/apiv4/en/futures/)的funding_next_apply是结算时点，config_change_time是配置变更；futures.tickers的资金费没有独立更新时间，外层time_ms仅响应时间。它不像order_book.current具有明确整份快照生成语义，因此本批不以外层时间为费率续期。历史funding_rate接口t/r属于已结算记录，必须与当前/预估分开。新增回归确认这些字段不补成当前资金费源时间；尚无实网独立源时钟证据，资金费可靠比较继续受阻。
+
+本批按需快照、诊断与永续解析均为本地合成/浏览器验证；Gate主机仍不在当前云环境允许列表，没有绕过网络限制或重复请求地区受限Lighter。新快照路径和诊断仍需外部实网核对原始current/update、冷门市场覆盖、限流与稳定性。

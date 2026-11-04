@@ -193,6 +193,11 @@ class VenueStatus(Model):
     light_bulk_groups: int = 0
     light_observed_markets: int = 0
     light_fresh_markets: int = 0
+    light_book_missing_markets: int = 0
+    light_source_missing_markets: int = 0
+    light_source_stale_markets: int = 0
+    light_source_future_markets: int = 0
+    light_observation_checked_at: int | None = None
     light_coverage_ratio: float = 0
     light_cycle_seconds: float | None = None
     light_estimated_cycle_seconds: float | None = None

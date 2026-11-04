@@ -144,6 +144,7 @@ class Collector:
         self.snapshots = {key: sanitize_legacy_volume(value, self.instruments.get(key))
                           for key, value in store.latest().items()}
         self.statuses = {name: VenueStatus(venue=name) for name in adapters}
+        self.streamers = {}
         self.tasks = []
         self.stopping = asyncio.Event()
         self.discovered = set()
@@ -169,6 +170,7 @@ class Collector:
         for name, adapter in self.adapters.items():
             streamer = create_stream(adapter)
             if streamer is not None:
+                self.streamers[name] = streamer
                 streamer.on_payload = self.record_payload
                 self.tasks.append(asyncio.create_task(self.run_stream(name, streamer), name=f'stream:{name}'))
 
@@ -237,7 +239,7 @@ class Collector:
             # can make it fresh again. Other REST metrics still merge normally.
             if (snapshot.venue == 'gate' and field in ('bid', 'ask') and stamp is None
                     and snapshot.source.startswith('ccxt:gate:fetch_ticker')
-                    and sources.get(field, '').startswith('gate:spot.book_ticker:')
+                    and sources.get(field, '').startswith(('gate:spot.book_ticker:', 'gate:spot.order_book:'))
                     and previous is not None and previous <= received.get(field, old.received_at)):
                 patch.pop(field, None)
                 continue
@@ -396,16 +398,26 @@ class Collector:
         from .scanner import funding_field_state
 
         counts = dict(light_observed_markets=0, light_fresh_markets=0,
+                      light_book_missing_markets=1, light_source_missing_markets=0,
+                      light_source_stale_markets=0, light_source_future_markets=0,
                       funding_observed_markets=0, funding_fresh_markets=0,
                       funding_source_stale_markets=0, funding_source_missing_markets=0,
                       funding_source_future_markets=0)
         if snapshot is None or snapshot.is_demo:
             return counts
+        bbo = {field: funding_field_state(snapshot, item, field, as_of, stale_seconds)
+               for field in ('bid', 'ask')}
+        counts['light_book_missing_markets'] = int(snapshot.bid is None or snapshot.ask is None)
+        if not counts['light_book_missing_markets']:
+            counts['light_source_missing_markets'] = int(any(not row['trusted'] for row in bbo.values()))
+            counts['light_source_stale_markets'] = int(any(row['trusted'] and
+                as_of - min(row['source_at'], row['received_at']) > stale_seconds * 1000 for row in bbo.values()))
+            counts['light_source_future_markets'] = int(any(row['received_at'] is not None and
+                (row['received_at'] > as_of or (row['source_at'] is not None and
+                 row['source_at'] > min(as_of, row['received_at']))) for row in bbo.values()))
         if any(getattr(snapshot, field) is not None for field in ('bid', 'ask', 'last', 'mark', 'index')):
             counts['light_observed_markets'] = 1
-            counts['light_fresh_markets'] = int(all(
-                funding_field_state(snapshot, item, field, as_of, stale_seconds)['rankable']
-                for field in ('bid', 'ask')))
+            counts['light_fresh_markets'] = int(all(row['rankable'] for row in bbo.values()))
         if item.kind == 'perpetual' and snapshot.funding_rate is not None:
             counts['funding_observed_markets'] = 1
             fields = {field: funding_field_state(snapshot, item, field, as_of, stale_seconds)
@@ -451,6 +463,8 @@ class Collector:
             snapshots = dict(self.snapshots)
             totals = {name: dict(light_subscriptions=0, funding_subscriptions=0,
                 light_observed_markets=0, light_fresh_markets=0, funding_observed_markets=0,
+                light_book_missing_markets=0, light_source_missing_markets=0,
+                light_source_stale_markets=0, light_source_future_markets=0,
                 funding_fresh_markets=0, funding_source_stale_markets=0,
                 funding_source_missing_markets=0, funding_source_future_markets=0)
                 for name in self.statuses if venue is None or name == venue}
@@ -486,6 +500,7 @@ class Collector:
                 status.funding_observation_state = observation_state(status)
                 status.funding_comparison_max_age_seconds = settings.stale_seconds
                 status.funding_observation_checked_at = as_of
+                status.light_observation_checked_at = as_of
                 adapter = self.adapters.get(name)
                 if not hasattr(adapter, 'plan_light') or not getattr(adapter, 'layered_light', True):
                     status.light_mode = 'legacy_bounded_public_fetch'
