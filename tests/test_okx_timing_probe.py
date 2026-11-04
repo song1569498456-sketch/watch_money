@@ -85,3 +85,99 @@ async def test_probe_validates_bounds_before_network():
                        dict(symbols=['BTC-USDT-SWAP'], samples=1, interval=0)]:
             with pytest.raises(ValueError):
                 await probe.probe(client, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_single_timeout_keeps_other_results_and_later_cycles_with_checkpoint(monkeypatch):
+    import copy
+    calls, active, max_active = {}, 0, 0
+    snapshots, pauses = [], []
+    async def unpaced(_):
+        pass
+    monkeypatch.setattr(probe.RequestPacer, 'wait', unpaced)
+    async def handle(request):
+        nonlocal active, max_active
+        key = request.url.params.get('instId', 'clock')
+        calls[key] = calls.get(key, 0)+1
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(.01)
+            if key == 'ETH-USDT-SWAP' and calls[key] == 1:
+                raise httpx.ReadTimeout('must-not-export-timeout-details')
+            data = [{'ts': '1800000000000'}] if key == 'clock' else [
+                {'instId': symbol, 'ts': '1799999935000', 'fundingRate': '.001'}
+                for symbol in (['BTC-USDT-SWAP', 'ETH-USDT-SWAP'] if key == 'ANY' else [key])]
+            return httpx.Response(200, json={'code': '0', 'data': data})
+        finally:
+            active -= 1
+    async def pause(delay):
+        pauses.append(delay)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        report = await probe.probe(client, symbols=['BTC-USDT-SWAP', 'ETH-USDT-SWAP'], samples=2,
+            interval=5, wall_ms=lambda: 1800000000000, pause=pause,
+            on_cycle=lambda value: snapshots.append(copy.deepcopy(value)))
+    assert max_active == 2 and all(count == 2 for count in calls.values())
+    assert report['finished'] and report['completed_requested_cycles'] and not report['stopped_on_error']
+    assert report['summary']['outcomes'] == {'success': 7, 'timeout': 1}
+    assert report['summary']['pairs_unavailable'] == 1 and report['summary']['pairs_with_same_ts'] == 3
+    failure = report['cycles'][0]['requests'][3]
+    assert failure['error'] == 'ReadTimeout' and failure['elapsed_ms'] >= 0 and 'finished_at' in failure
+    assert 'received_at' not in failure and 'selected' not in failure
+    assert report['cycles'][1]['requests'][2]['selected']['BTC-USDT-SWAP']['ts_advance_ms'] == 0
+    assert report['cycles'][1]['requests'][2]['source_older_than_60s'] == 1
+    assert pauses == [5] and [row['finished'] for row in snapshots] == [False, False, True]
+    assert 'must-not-export' not in str(report)
+
+
+@pytest.mark.asyncio
+async def test_persistent_failures_have_bounded_cycles_and_backoff(monkeypatch):
+    calls, pauses = [], []
+    async def unpaced(_):
+        pass
+    monkeypatch.setattr(probe.RequestPacer, 'wait', unpaced)
+    async def handle(request):
+        calls.append(request.url.path)
+        raise httpx.ConnectTimeout('private-error-details')
+    async def pause(delay):
+        pauses.append(delay)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        report = await probe.probe(client, symbols=['BTC-USDT-SWAP'], samples=60, interval=40, pause=pause)
+    assert len(calls) == 9 and len(report['cycles']) == 3 and pauses == [40, 60]
+    assert report['stop_reason'] == 'three_all_failed_cycles'
+    assert report['summary']['outcomes'] == {'timeout': 9}
+    assert not report['completed_requested_cycles'] and report['finished']
+
+
+@pytest.mark.asyncio
+async def test_total_deadline_and_partial_read_record_failure_without_fake_receipt():
+    async def slow(request):
+        await asyncio.sleep(10)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow)) as client:
+        row = await probe.request(client, asyncio.Semaphore(2), 'direct', 'BTC-USDT-SWAP',
+            ['BTC-USDT-SWAP'], lambda: 1800000000000, timeout_seconds=.01)
+    assert row['outcome'] == 'timeout' and row['error'] == 'TimeoutError' and row['elapsed_ms'] >= 10
+    assert 'received_at' not in row
+    class BrokenBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"code":'
+            raise httpx.ReadTimeout('private-error-details')
+    async def partial(request):
+        return httpx.Response(200, stream=BrokenBody())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(partial)) as client:
+        row = await probe.request(client, asyncio.Semaphore(2), 'batch', 'ANY', ['BTC-USDT-SWAP'],
+                                  lambda: 1800000000000)
+    assert row['http_status'] == 200 and row['response_bytes'] == 8 and row['error_stage'] == 'body'
+    assert row['outcome'] == 'timeout' and row['error'] == 'ReadTimeout' and 'received_at' not in row
+
+
+@pytest.mark.asyncio
+async def test_request_start_pacer_enforces_spacing():
+    import time
+    pacer = probe.RequestPacer(gap=.01)
+    starts = []
+    async def start():
+        await pacer.wait()
+        starts.append(time.monotonic())
+    await asyncio.gather(*(start() for _ in range(4)))
+    assert all(b-a >= .009 for a, b in zip(starts, starts[1:]))
