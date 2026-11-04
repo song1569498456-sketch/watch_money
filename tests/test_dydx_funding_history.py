@@ -25,7 +25,7 @@ def env(tmp_path, monkeypatch):
         def handler(request):
             calls.append(request)
             assert str(request.url).startswith('https://indexer.dydx.trade/v4/historicalFunding/PEPE-USD?')
-            assert request.method == 'GET' and set(request.url.params) == {'limit'}
+            assert request.method == 'GET' and set(request.url.params) <= {'limit', 'effectiveBeforeOrAtHeight'}
             assert 'authorization' not in request.headers
             return httpx.Response(status, json=payload if payload is not None else {'historicalFunding': [row()]})
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -177,3 +177,67 @@ async def test_changed_native_height_is_audited_even_with_same_rate(env, monkeyp
     old = json.loads(revisions[0][0])
     assert old['native_block_height'] == '1234' and old['revision'] == 1
     assert old['funding_rate'] == record['funding_rate']
+
+
+async def test_backward_height_page_and_cache_exclude_newer_records(env):
+    payload = {'historicalFunding': [row(effectiveAtHeight='1234')]}
+    service, item, client, _, calls = env(payload)
+    async with client:
+        latest = await service.get(item.id, refresh=True, limit=1)
+        assert latest['summary']['next_before_height'] == 1233
+        payload['historicalFunding'] = [row(effectiveAtHeight='1200', effectiveAt='2025-12-31T23:00:00Z')]
+        older = await service.get(item.id, refresh=True, limit=1, before_height=1233)
+        assert calls[-1].url.params['effectiveBeforeOrAtHeight'] == '1233'
+        assert older['summary']['next_before_height'] == 1199
+        assert [r['native_block_height'] for r in older['records']] == ['1200']
+        cached = await service.get(item.id, before_height=1233)
+        assert len(calls) == 2 and [r['native_block_height'] for r in cached['records']] == ['1200']
+        assert len((await service.get(item.id))['records']) == 2
+        assert not older['coverage']['all_history']
+
+
+@pytest.mark.parametrize('height', [0, -1, True, 1.5, 2**53])
+async def test_invalid_backward_height_is_rejected_before_network(env, height):
+    service, item, client, _, calls = env()
+    async with client:
+        with pytest.raises(HTTPException) as error:
+            await service.get(item.id, refresh=True, before_height=height)
+        assert error.value.status_code == 422 and not calls
+
+
+@pytest.mark.parametrize('height', ['1235', str(2**53), '9' * 40])
+async def test_outside_or_unsafe_native_height_stops_cursor(env, height):
+    service, item, client, _, _ = env({'historicalFunding': [row(effectiveAtHeight=height)]})
+    async with client:
+        result = await service.get(item.id, refresh=True, before_height=1234)
+        assert result['records'] == [] and result['summary']['next_before_height'] is None
+        assert result['summary']['rejected_count'] == 1
+
+
+async def test_backward_inclusive_boundary_repetition_and_rejected_row_stop_hint(env):
+    payload = {'historicalFunding': [row(effectiveAtHeight='1234')]}
+    service, item, client, _, _ = env(payload)
+    async with client:
+        for _ in range(2):
+            result = await service.get(item.id, refresh=True, before_height=1234)
+            assert len(result['records']) == 1 and result['records'][0]['revision'] == 1
+        payload['historicalFunding'].append(row(ticker='WRONG', effectiveAtHeight='1000'))
+        report = await service.get(item.id, refresh=True, before_height=1234)
+        assert report['summary']['next_before_height'] is None
+        assert report['summary']['accepted_count'] == report['summary']['rejected_count'] == 1
+
+
+async def test_http_backward_query_is_forwarded_and_does_not_call_other_venues(env):
+    from fastapi import FastAPI
+    from watch_money.funding_history import router
+    service, item, upstream, _, calls = env()
+    app = FastAPI()
+    app.state.funding_history = service
+    app.include_router(router)
+    async with upstream, httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        response = await client.get(f'/api/funding/history/{item.id}', params={'refresh': 'true', 'before_height': 1234})
+        assert response.status_code == 200
+        assert calls[-1].url.params['effectiveBeforeOrAtHeight'] == '1234'
+        service.collector.instruments[item.id] = item.model_copy(update={'venue': 'other'})
+        response = await client.get(f'/api/funding/history/{item.id}', params={'refresh': 'true', 'before_height': 1234})
+        assert response.status_code == 422 and len(calls) == 1

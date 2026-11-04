@@ -414,3 +414,15 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 没有重试已拒绝的OKX WS、没有修改独立环境/账户；长期实网覆盖与24小时仍开放。
 
 - 最终验证：1218项完整后端（51.67秒，1条上游TestClient弃用警告）、18项流专项、CI范围Ruff/diff通过；无浏览器/实网验证或账户变更，远端CI未确认。
+
+### R50 dYdX有界历史旧页查询（2026-11-04）
+
+- [官方控制器](https://raw.githubusercontent.com/dydxprotocol/v4-chain/main/indexer/services/comlink/src/controllers/api/v4/historical-funding-controller.ts)提供effectiveBeforeOrAtHeight并按原生高度降序。补齐R43“只能最新页”的功能缺口：GET /api/funding/history/{id}?refresh=true&before_height=N 显式读取截至N（包含N）的单页，仍最多100条，不自动循环/后台回填。
+- before_height仅dYdX支持，必须1..2^53-1整数；向官方传effectiveBeforeOrAtHeight，保留原始height字符串。原始高度超安全范围、超过请求边界等拒收；既有ticker/time/rate/来源校验保持。接收时间仍在观察者之前，未知历史周期不补小时值。
+- summary.next_before_height为本页最小有效高度-1，仅本页无拒收且值为正时返回；空页/拒收停止提示。它是继续请求的提示，不证明没有漏块、同高度更多记录或历史完整。since仍为本地时间过滤；有过滤拒收时也保守停止高度提示。
+- 本地缓存读取同步按native_block_height上界筛选，不让先缓存的新高度混入旧页；重复记录保留修订规则。coverage标为dydx_backward_height_hint_not_gap_proof；其它平台不接受该参数，避免假装具有通用分页语义。
+- 新11项离线回归覆盖两页/本地缓存隔离、包含边界、重复去重、拒收不跳页、非法/超安全高度、HTTP参数传递及外平台拒绝。官方源码是协议依据，不是本环境实网数据；未请求交易所或受阻OKX WS、未改账户或生产身份。
+- 独立复测步骤：在临时数据目录按FUNDING_VIEW R43建立服务，先get(id,refresh=True,limit=10)，人工检查summary.next_before_height，再显式get(id,refresh=True,limit=10,before_height=该值)，核对官方高度/时间、缓存分页、原始费率。遇拒绝停止，不换域名、不自动重试。历史完整与24小时仍待验收。
+- 下一项：继续检查其它平台历史的原生合约/时间与分页证据，优先补可验证的记录边界；Kraken/Deribit连续资金费仍不套入离散已结算模型。
+
+- 最终验证：1229项完整后端（51.85秒，1条上游TestClient弃用警告）、110项历史专项、CI范围Ruff/diff通过；未改前端/重跑浏览器，实网与远端CI未确认。

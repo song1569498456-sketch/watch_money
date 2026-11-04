@@ -1,5 +1,7 @@
 # 当前开发状态
 
+2026-11-04 R50：补齐dYdX历史旧页读取，显式before_height对应官方effectiveBeforeOrAtHeight，缓存同步按高度上界筛选；每次最多100条，无自动回填，拒收时停止继续高度提示，未知周期保持null。**1229项完整后端（51.85秒）、110项历史专项、CI范围Ruff/diff通过**；新增11项边界/缓存/HTTP回归。仅协议文档与离线验证，未请求受阻OKX或其它行情接口，没有账户/生产身份变更。历史完整、实网及24小时仍未验收；来源、复测和下一项见FUNDING_VIEW/AUDIT_BACKLOG R50。
+
 2026-11-04 R49：修复通用CEX watch_tickers/watch_ticker在诊断观察者后取receipt的边界；方法返回即捕获并传播到每字段，未来帧不推进乱序水位或污染去重。**1218项完整后端（51.67秒）、18项流专项、CI范围Ruff/diff通过**，新增7项覆盖三client/single与multiple、10ms未来+40ms延迟、正常/乱序恢复、取消与重订阅。仅合成回归，不声称实网Coinbase时钟异常；没有交易所请求或受阻连接重试。COLLECTION/COVERAGE明确关注币种ticker流不等于全目录book流。24小时与新修复实网验收仍开放，远端CI未确认。
 
 2026-11-04 R48：修复Coinbase Exchange online受限产品仍可测算达标的合成边界。保留在线行情，独立记录产品限制、订单类型、来源和观测时间；disabled/cancel_only/post_only不进可靠价差排行且无即时净收益，maker费率不代表post-only撮合，limit-only保留跨价限价能力。**1211项全量后端（51.30秒）、158项相关专项、CI范围Ruff/diff通过**；新增12项限制/恢复/费用/排行回归。父线程5次公开GET正确保留book.time仅记作短时实测，未发现真实online受限样本。本批未访问外网行情、无前端或账户变更，24小时未完成。详见COLLECTION/AUDIT_BACKLOG R48。

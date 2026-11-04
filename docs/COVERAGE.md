@@ -177,3 +177,7 @@ dYdX/Hyperliquid历史保留观察者前HTTP响应receipt，来源字段变化�
 ## R49 关注ticker流与全目录盘口区别
 
 通用CEX流按watch_assets选择关注币种，并非catalog_stream或全目录book流。Coinbase Exchange原生L1/L2仍是有界REST轮转/按需深度。本批修复CCXT返回后的观察者延迟污染receipt及未来水位，仅离线回归；没有新增实网、身份批准或已拒绝连接重试。见COLLECTION R49。
+
+## R50 dYdX旧页能力
+
+dYdX历史新增显式before_height向前查询，与本地缓存高度筛选一致；每次一页最多100条，next_before_height仅保守提示，无后台回填或完整性承诺。R43最新页限制被此项扩展，历史周期仍未知。未新增实网、身份批准或受阻连接重试；详见FUNDING_VIEW R50官方来源与复测步骤。

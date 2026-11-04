@@ -131,3 +131,13 @@ PYTEST
 - 身份资料复核：Coinbase官方Exchange products/currencies与Advanced Trade仍为不同client，未因同ticker合并；HTX公开币种元数据尚无充分合约地址证据，未新增生产身份批准。本批没有任何行情主机请求，不触发受阻OKX WS，不修改独立环境。
 - 独立复测：在临时data目录构建CexAdapter('htx')并discover，选准确USDT永续后调用FundingHistoryService.get(id,refresh=True,limit=50)，核对原始realized_rate/fee_asset/funding_time。出现拒绝立即停止，不换域名；保留返回状态/时间，不记录凭证。此步骤尚未执行，24小时验收仍开放。
 - 下一项：核对Coinbase Exchange公开目录与现有同client身份证据的衔接，先确认产品和报价时间语义，再决定是否增加行情client；不会直接扩张Advanced Trade身份白名单。
+
+### R50 dYdX有界历史旧页查询（2026-11-04）
+
+- [官方控制器](https://raw.githubusercontent.com/dydxprotocol/v4-chain/main/indexer/services/comlink/src/controllers/api/v4/historical-funding-controller.ts)提供effectiveBeforeOrAtHeight并按原生高度降序。补齐R43“只能最新页”的功能缺口：GET /api/funding/history/{id}?refresh=true&before_height=N 显式读取截至N（包含N）的单页，仍最多100条，不自动循环/后台回填。
+- before_height仅dYdX支持，必须1..2^53-1整数；向官方传effectiveBeforeOrAtHeight，保留原始height字符串。原始高度超安全范围、超过请求边界等拒收；既有ticker/time/rate/来源校验保持。接收时间仍在观察者之前，未知历史周期不补小时值。
+- summary.next_before_height为本页最小有效高度-1，仅本页无拒收且值为正时返回；空页/拒收停止提示。它是继续请求的提示，不证明没有漏块、同高度更多记录或历史完整。since仍为本地时间过滤；有过滤拒收时也保守停止高度提示。
+- 本地缓存读取同步按native_block_height上界筛选，不让先缓存的新高度混入旧页；重复记录保留修订规则。coverage标为dydx_backward_height_hint_not_gap_proof；其它平台不接受该参数，避免假装具有通用分页语义。
+- 新11项离线回归覆盖两页/本地缓存隔离、包含边界、重复去重、拒收不跳页、非法/超安全高度、HTTP参数传递及外平台拒绝。官方源码是协议依据，不是本环境实网数据；未请求交易所或受阻OKX WS、未改账户或生产身份。
+- 独立复测步骤：在临时数据目录按FUNDING_VIEW R43建立服务，先get(id,refresh=True,limit=10)，人工检查summary.next_before_height，再显式get(id,refresh=True,limit=10,before_height=该值)，核对官方高度/时间、缓存分页、原始费率。遇拒绝停止，不换域名、不自动重试。历史完整与24小时仍待验收。
+- 下一项：继续检查其它平台历史的原生合约/时间与分页证据，优先补可验证的记录边界；Kraken/Deribit连续资金费仍不套入离散已结算模型。

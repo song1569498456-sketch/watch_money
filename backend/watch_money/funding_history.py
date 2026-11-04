@@ -69,12 +69,15 @@ class FundingHistoryService:
         db.row_factory = sqlite3.Row
         return db
 
-    def _read(self, instrument_id: str, since: int | None, limit: int) -> tuple[list[dict], int]:
+    def _read(self, instrument_id: str, since: int | None, limit: int, before_height: int | None = None) -> tuple[list[dict], int]:
         condition = "instrument_id=?"
         values: list[Any] = [instrument_id]
         if since is not None:
             condition += " AND settlement_at>=?"
             values.append(since)
+        if before_height is not None:
+            condition += " AND CAST(json_extract(record, '$.native_block_height') AS INTEGER)<=?"
+            values.append(before_height)
         with self._db_lock, closing(self._connect()) as db:
             count = db.execute(f"SELECT COUNT(*) FROM funding_records WHERE {condition}", values).fetchone()[0]
             direction = "ASC" if since is not None else "DESC"
@@ -110,7 +113,7 @@ class FundingHistoryService:
             db.commit()
 
     async def get(self, instrument_id: str, *, refresh: bool = False,
-                  since: int | None = None, limit: int = 100) -> dict:
+                  since: int | None = None, limit: int = 100, before_height: int | None = None) -> dict:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
             raise HTTPException(422, "limit must be between 1 and 1000")
         if since is not None and (isinstance(since, bool) or not isinstance(since, int) or not 0 <= since <= 2**63 - 1):
@@ -118,9 +121,16 @@ class FundingHistoryService:
         instrument = self.collector.instruments.get(instrument_id)
         if instrument is None:
             raise HTTPException(404, "Unknown instrument")
+        if before_height is not None:
+            if (isinstance(before_height, bool) or not isinstance(before_height, int)
+                    or not 1 <= before_height <= 2**53 - 1):
+                raise HTTPException(422, "before_height must be a positive safe integer")
+            if instrument.venue != "dydx":
+                raise HTTPException(422, "before_height is supported only for dYdX native history")
         instrument = deepcopy(instrument)
         issues = []
         summary = {"refreshed": False, "requested_since": since, "limit": limit,
+                   "requested_before_height": before_height, "next_before_height": None,
                    "pages": 0, "fetched_count": 0, "accepted_count": 0,
                    "rejected_count": 0, "next_since": None, "has_more": None,
                    "truncated": False, "issues": issues}
@@ -130,10 +140,10 @@ class FundingHistoryService:
                     async with self._refresh_lock:
                         if self.collector.instruments.get(instrument_id) != instrument:
                             raise HTTPException(409, "Market scope changed while waiting to retrieve history")
-                        summary.update(await self._refresh(instrument, since, limit))
+                        summary.update(await self._refresh(instrument, since, limit, before_height=before_height))
             except TimeoutError:
                 raise HTTPException(504, "Public funding history request timed out") from None
-        records, count = await asyncio.to_thread(self._read, instrument_id, since, limit)
+        records, count = await asyncio.to_thread(self._read, instrument_id, since, limit, before_height)
         summary.update(count=len(records), cached_matching_count=count,
                        earliest_settlement_at=records[0]["settlement_at"] if records else None,
                        latest_settlement_at=records[-1]["settlement_at"] if records else None)
@@ -141,10 +151,11 @@ class FundingHistoryService:
         return {"instrument_id": instrument_id, "records": records, "summary": summary,
                 "coverage": {"kind": "exchange_settled_funding_history", "all_history": False,
                              "background_backfill": False, "pagination": "one_manual_page",
-                             "cursor_semantics": "forward_since_hint_only_not_gap_proof",
+                             "cursor_semantics": "dydx_backward_height_hint_not_gap_proof" if instrument.venue == "dydx"
+                                                 else "forward_since_hint_only_not_gap_proof",
                              "direction": "positive_longs_pay_shorts_negative_shorts_pay_longs"}}
 
-    async def _refresh_dydx(self, instrument, adapter, since, limit):
+    async def _refresh_dydx(self, instrument, adapter, since, limit, before_height=None):
         native = instrument.native_symbol
         if (instrument.kind != "perpetual" or not instrument.active or instrument.chain != "dydx"
                 or instrument.id != f"dydx:perpetual:{native}"
@@ -153,8 +164,11 @@ class FundingHistoryService:
             raise HTTPException(409, "Discover the exact dYdX v4 market first")
         page_limit = min(limit, 100)
         endpoint = f"{adapter.endpoint}/historicalFunding/{quote(native, safe='')}"
+        params = {"limit": page_limit}
+        if before_height is not None:
+            params["effectiveBeforeOrAtHeight"] = before_height
         try:
-            payload = await adapter.request("GET", endpoint, params={"limit": page_limit})
+            payload = await adapter.request("GET", endpoint, params=params)
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status in {401, 403, 451}:
@@ -193,6 +207,11 @@ class FundingHistoryService:
             height = row.get("effectiveAtHeight")
             if not isinstance(height, str) or not height.isascii() or not height.isdigit():
                 reason = reason or "invalid_native_height"
+            if isinstance(height, str) and height.isascii() and height.isdigit():
+                if len(height) > 16 or int(height) > 2**53 - 1:
+                    reason = reason or "unsafe_native_height"
+                elif before_height is not None and int(height) > before_height:
+                    reason = reason or "after_requested_height"
             if rate is None:
                 reason = reason or "missing_or_nonfinite_settled_rate"
             if reason:
@@ -210,12 +229,16 @@ class FundingHistoryService:
                 "event_type": "regular", "received_at": received, "first_received_at": received,
                 "last_seen_at": received, "revision": 1, "is_demo": False})
         await asyncio.to_thread(self._save, records)
-        return {"refreshed": True, "pages": 1, "page_limit": page_limit,
+        lowest = min((int(row["native_block_height"]) for row in records), default=0)
+        # Rejected rows may conceal an earlier boundary; do not skip over them.
+        next_height = lowest - 1 if lowest > 1 and not reasons else None
+        return {"refreshed": True, "next_before_height": next_height,
+                "pages": 1, "page_limit": page_limit,
                 "fetched_count": len(rows), "accepted_count": len(records),
                 "rejected_count": sum(reasons.values()), "next_since": None, "has_more": None,
                 "truncated": len(rows) >= page_limit or limit > page_limit,
                 "issues": [f"rejected_{reason}:{count}" for reason, count in sorted(reasons.items())] + [
-                    "Latest descending page only; since filters locally, older-page retrieval is not implemented",
+                    "One descending page; before_height is inclusive, since filters locally; cursor does not prove gap-free history",
                     "Historical funding epoch duration is unknown; governance can change the default hourly interval"]}
 
     async def _refresh_hyperliquid(self, instrument, adapter, since, limit):
@@ -299,10 +322,10 @@ class FundingHistoryService:
                     "One public market-history page; no wallet data, missing intervals and retention remain unknown",
                     "Hourly published rate is not an account payment or a guaranteed profit"]}
 
-    async def _refresh(self, instrument, since: int | None, limit: int) -> dict:
+    async def _refresh(self, instrument, since: int | None, limit: int, *, before_height=None) -> dict:
         adapter = self.collector.adapters.get(instrument.venue)
         if instrument.venue == "dydx" and isinstance(adapter, DydxAdapter):
-            return await self._refresh_dydx(instrument, adapter, since, limit)
+            return await self._refresh_dydx(instrument, adapter, since, limit, before_height)
         if instrument.venue == "hyperliquid" and isinstance(adapter, HyperliquidAdapter):
             return await self._refresh_hyperliquid(instrument, adapter, since, limit)
         if instrument.kind != "perpetual" or not isinstance(adapter, CexAdapter):
@@ -507,8 +530,9 @@ class FundingHistoryService:
 @router.get("/history/{instrument_id:path}")
 async def funding_history(instrument_id: str, request: Request, refresh: bool = False,
                           since: int | None = Query(default=None, ge=0, le=2**63 - 1),
-                          limit: int = Query(default=100, ge=1, le=1000)):
+                          limit: int = Query(default=100, ge=1, le=1000),
+                          before_height: int | None = Query(default=None, ge=1, le=2**53 - 1)):
     service = getattr(request.app.state, "funding_history", None)
     if service is None:
         raise HTTPException(503, "Funding history service is not initialized")
-    return await service.get(instrument_id, refresh=refresh, since=since, limit=limit)
+    return await service.get(instrument_id, refresh=refresh, since=since, limit=limit, before_height=before_height)
