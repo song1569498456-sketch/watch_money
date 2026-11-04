@@ -25,6 +25,16 @@
 
 `Instrument` / `MarketSnapshot` / `OrderBook` 使用共享模型；需要为买卖两腿提供元数据，资产身份必须相同，跨平台映射须经确认。`size_base` 是基础资产数量而非美元本金；`sizes_base` 非空时批量比较多个规模。美元、USDT、USDC 不默认等价。跨币种时提供 `fx_rates=[{base,quote,rate,source,at}]`，可自动反向使用直接汇率，不猜测交叉路径；过期或未来 FX 不使用。
 
+DEX 报价币还必须有具体代币身份：`Instrument.quote_asset_id` / `native_quote_asset_id` 使用完整 `chain:address`，并提供可追溯的 `quote_identity_source` 与毫秒观察时间 `quote_identity_at`。EVM 地址规范为小写，Solana 区分大小写；链不符、原生与映射地址冲突、未知/过期/未来观察时间或仅写“verified”均不能作为报价币证明。这里的时间是代币元数据观察时间，不伪装为价格事件时间。`RouteQuote.quote_asset_id` 还须与该市场已确认的报价币一致，不能由手填路线自行替代市场身份证据；手动、演示和 `snapshot.valid=true` 都不豁免。
+
+静态报价币证据可提供 `quote_identity_expires_at`，须晚于观察时间且最长不超过观察后 6 小时；这是本地元数据审核期限，不是交易所保证。到期立即失效；未声明期限时使用请求的 `stale_seconds`。聚合 DEX 目录只在实际收到完整 `quoteToken.address` 时记录独立观察时间及受限期限，价格 tick 不续期。重发现通常每 1800 秒运行，因此不将静态代币证据硬套为每 60 秒重新确认，也不拿新价格掩盖过期身份。历史回放还按 information cutoff 排除后来才观察到的身份。
+
+该合约身份证据适用于已支持链上的现货报价代币。永续的 `quote=USD` 可能只是定价单位，`settle=USDC` 可能是另一个结算单位，不能从两个符号猜出同一 USDC 合约。Hyperliquid、dYdX 等协议内部定价/抵押/结算单位尚未完整接入本计算器的可核验身份模型时，测算会明确保持缺条件/未知；不会把其真实费率采集或指示价展示描述为已支持完整可执行净利润。本轮没有扩大原生协议适配范围，也不保证全部 DEX 产品已能测算净值。
+
+同链同合约且证据完整的报价币可按相同单位计量；合约不同或 CEX 账面币与链上代币之间，必须额外提供 `FXRate.base_asset_id` / `quote_asset_id`，严格绑定两端具体身份，保留新鲜时间及可追溯来源。CEX 账面单位表示为 `cex:<venue>:<quote>`，例如 `cex:okx:USDT`；相同“USDT”符号不是这个换算。默认估值取与 `valuation_currency` 对应的买腿报价身份，否则取卖腿；第三链上计价币必须使用完整 `chain:address`，不能凭一个 `valuation:USDC` 标签造身份。明确法币计量单位使用 `fiat:USD` 等标识，也要求绑定换算，不隐含稳定币锚定。逐腿及报价币 Gas 费用沿同一已证实换算计量，避免毛收益换算而费用仍按假定 1:1 扣除。
+
+修复前合成复现：两条同名 USDT 的手动池路线，买入 100、卖出 105、每腿 Gas 0.1，会在缺失报价代币身份时输出净 4.8；独立零 Gas 样本输出净 5.0。现在两者都拒绝净收益，即使删掉来源的缺失警告也不能绕过。测试中证据完整的同链同代币正例仍可得 4.8/5.0；这些是合成模型验证，不是实际录制交易或实网验收。
+
 响应为 `{opportunities:[...]}`。每条包含 `legs`（VWAP、逐档成交量、完整/部分成交、容量、报价币种、来源时间、FX）、`costs`（原币成本及换算值）、`gross_profit`、`known_costs`、`net_profit`、`basis_profit`、`funding_profit`、`scenarios`、`funding_events`、`assumptions`、`missing_prerequisites`、`invalid_reasons`、`is_demo`。
 
 | 状态 | 含义 |

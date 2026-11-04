@@ -56,6 +56,28 @@ export interface MarketData {
   snapshots: Snapshot[];
 }
 export interface VenueStatus {
+  light_bulk_markets?: number;
+  light_fallback_markets?: number;
+  light_bulk_groups?: number;
+  light_observed_markets?: number;
+  light_fresh_markets?: number;
+  light_coverage_ratio?: number;
+  light_cycle_seconds?: number | null;
+  light_estimated_cycle_seconds?: number | null;
+  light_last_cycle_at?: number | null;
+  light_last_attempt_at?: number | null;
+  light_mode?: string | null;
+  funding_bulk_markets?: number;
+  funding_fallback_markets?: number;
+  funding_bulk_groups?: number;
+  funding_observed_markets?: number;
+  funding_fresh_markets?: number;
+  funding_coverage_ratio?: number;
+  funding_cycle_seconds?: number | null;
+  funding_estimated_cycle_seconds?: number | null;
+  funding_last_cycle_at?: number | null;
+  funding_last_attempt_at?: number | null;
+  funding_mode?: string | null;
   venue: string;
   state: string;
   transport: string;
@@ -111,6 +133,9 @@ export interface Settings {
   funding_poll_seconds: number;
   discovery_seconds: number;
   broad_batch_size: number;
+  broad_symbol_batch_size: number;
+  broad_inter_batch_seconds: number;
+  broad_request_timeout_seconds: number;
   recording_enabled: boolean;
   recording_venues: string[];
   recording_max_mb: number;

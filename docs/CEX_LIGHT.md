@@ -1,5 +1,7 @@
 # CEX 广覆盖轻量行情
 
+全目录产品级批量计划、分层调度、实际覆盖和轮转计量以 [COLLECTION.md](COLLECTION.md) 为准；下文的100/50限制是直接symbol-slice接口边界，不是collector原生全产品计划的市场总数上限。
+
 `CexAdapter.fetch_light(instruments: list[Instrument]) -> list[MarketSnapshot]`
 接受 collector 从已发现目录挑选的一批市场，返回只包含 ticker 已提供字段的补丁。
 全目录轮转、30 秒价格调度、暂停和重试退避由 collector 负责。
@@ -47,7 +49,7 @@ OKX 永续优先 `info.volCcy24h` 的 base 数量；只有明确线性合约证�
 ## 全币种轻量资金费与周期时效
 
 `fetch_funding_light(instruments) -> list[MarketSnapshot]` 过滤到永续交易对，按 client/结算币/正反向分组，去重上限100、原生批量每批50，缺少批量能力时使用最多4并发的单市场公开资金费接口。
-不调用 ticker、盘口或 OI；独立于轻量价格任务轮转全永续目录，collector 默认资金费轮转间隔60秒。
+不调用 ticker、盘口或 OI；独立于轻量价格任务轮转全永续目录，新默认资金费目标周期30秒，已保存的旧60秒设置继续保留。
 Binance 还按选定市场获取公共 funding interval 调整列表，不为列表缺席市场假定8小时。
 Bybit/HTX/Binance 显式指定正反向，Gate指定结算币，Bitget指定productType；不使用账户或私有方法。
 

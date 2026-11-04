@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from time import monotonic
 from contextlib import suppress
 
 from .models import MarketSnapshot, VenueStatus, now_ms
@@ -241,8 +242,220 @@ class Collector:
             if failures:
                 await self.pause(min(300, 5 * 2 ** min(failures - 1, 6)))
 
+    def refresh_status_coverage(self):
+        """Evaluate current cached fields, not the age of the last successful poll."""
+        from .scanner import funding_field_state
+
+        settings = self.store.settings()
+        as_of = now_ms()
+        by_venue = {}
+        for item in tuple(self.instruments.values()):
+            if item.active:
+                by_venue.setdefault(item.venue, []).append(item)
+        snapshots = dict(self.snapshots)
+        for name, status in tuple(self.statuses.items()):
+            catalog = by_venue.get(name, [])
+            for funding in (False, True):
+                selected = [item for item in catalog if not funding or item.kind == 'perpetual']
+                observed = fresh = 0
+                for item in selected:
+                    snapshot = snapshots.get(item.id)
+                    if snapshot is None or snapshot.is_demo:
+                        continue
+                    fields = ('funding_rate',) if funding else ('bid', 'ask', 'last', 'mark', 'index')
+                    if not any(getattr(snapshot, field) is not None for field in fields):
+                        continue
+                    observed += 1
+                    if funding:
+                        fresh += all(funding_field_state(snapshot, item, field, as_of, settings.stale_seconds)['rankable']
+                                     for field in ('funding_rate', 'funding_kind', 'funding_interval_hours'))
+                    else:
+                        # Independent field source times survive later funding/OI
+                        # envelopes; an absent price source time is not fresh.
+                        fresh += all(funding_field_state(snapshot, item, field, as_of, settings.stale_seconds)['rankable']
+                                     for field in ('bid', 'ask'))
+                prefix = 'funding' if funding else 'light'
+                setattr(status, f'{prefix}_subscriptions', len(selected))
+                setattr(status, f'{prefix}_observed_markets', observed)
+                setattr(status, f'{prefix}_fresh_markets', fresh)
+                setattr(status, f'{prefix}_coverage_ratio', fresh / len(selected) if selected else 0)
+            adapter = self.adapters.get(name)
+            if not hasattr(adapter, 'plan_light') or not getattr(adapter, 'layered_light', True):
+                status.light_mode = 'legacy_bounded_public_fetch'
+                batches = (len(catalog) + settings.broad_batch_size - 1) // settings.broad_batch_size
+                status.light_estimated_cycle_seconds = batches * settings.broad_poll_seconds if batches else None
+
+    async def run_planned_light(self, name, adapter, funding=False):
+        """Product-wide bulk sweeps and bounded fallbacks have independent clocks."""
+        status = self.statuses[name]
+        prefix = 'funding' if funding else 'light'
+        layer_errors = {True: {}, False: {}}
+        states = {True: 'idle', False: 'idle'}
+        completed = {}
+        completed_clock = {}
+        cycles = {}
+        estimates = {}
+        signatures = {}
+        present = set()
+
+        def update(**values):
+            for key, value in values.items():
+                setattr(status, f'{prefix}_{key}', value)
+
+        def summarize():
+            errors = {**layer_errors[True], **layer_errors[False]}
+            active = [states[layer] for layer in present]
+            state = ('partial' if errors else 'polling' if 'polling' in active else
+                     'online' if 'online' in active else 'no_data' if active else 'no_markets')
+            update(errors=errors, state=state,
+                   estimated_cycle_seconds=max((estimates[layer] for layer in present if layer in estimates), default=None),
+                   cycle_seconds=max((cycles[layer] for layer in present), default=None)
+                   if present and all(layer in cycles for layer in present) else None,
+                   last_cycle_at=min((completed[layer] for layer in present), default=None)
+                   if present and all(layer in completed for layer in present) else None)
+            if not funding and not hasattr(adapter, 'fetch_funding_light'):
+                status.funding_mode = 'via_public_price_bulk'
+                status.funding_cycle_seconds = status.light_cycle_seconds
+                status.funding_estimated_cycle_seconds = status.light_estimated_cycle_seconds
+                status.funding_last_cycle_at = status.light_last_cycle_at
+                status.funding_last_attempt_at = status.light_last_attempt_at
+            self.refresh_status_coverage()
+
+        async def worker(full_product):
+            failures = 0
+            while not self.stopping.is_set():
+                settings = self.store.settings()
+                period = settings.funding_poll_seconds if funding else settings.broad_poll_seconds
+                if (not settings.collection_enabled or not settings.broad_collection_enabled or settings.demo_mode
+                        or name not in settings.enabled_venues or name not in self.discovered):
+                    update(state='disabled')
+                    self.refresh_status_coverage()
+                    await self.pause(1)
+                    continue
+                catalog = sorted((item for item in self.instruments.values() if item.venue == name and item.active
+                                  and (not funding or item.kind == 'perpetual')), key=lambda item: item.id)
+                try:
+                    from .adapters.cex import CexAdapter
+                    size = min(settings.broad_batch_size, settings.broad_symbol_batch_size) if isinstance(adapter, CexAdapter) else settings.broad_batch_size
+                    plan = adapter.plan_light(catalog, funding=funding, batch_size=size)
+                except Exception as exc:
+                    update(state=f'{type(exc).__name__}; planning retry')
+                    await self.pause(1)
+                    continue
+                present.clear()
+                present.update(batch.full_product for batch in plan)
+                bulk = [batch for batch in plan if batch.full_product]
+                fallback = [batch for batch in plan if not batch.full_product]
+                for layer, layer_jobs in ((True, bulk), (False, fallback)):
+                    signature = tuple((batch.key, tuple(item.id for item in batch.instruments)) for batch in layer_jobs)
+                    if signatures.get(layer) != signature:
+                        signatures[layer] = signature
+                        states[layer] = 'idle'
+                        for values in (completed, completed_clock, cycles, estimates):
+                            values.pop(layer, None)
+                    current_ids = {item.id for batch in layer_jobs for item in batch.instruments}
+                    layer_errors[layer] = {key: value for key, value in layer_errors[layer].items() if key in current_ids}
+                update(subscriptions=len(catalog), bulk_markets=sum(len(batch.instruments) for batch in bulk),
+                       fallback_markets=sum(len(batch.instruments) for batch in fallback), bulk_groups=len(bulk),
+                       mode='public_bulk_with_symbol_fallback' if bulk and fallback else
+                       'public_product_bulk' if bulk else 'bounded_symbol_rotation')
+                if not funding and not hasattr(adapter, 'fetch_funding_light'):
+                    status.funding_bulk_markets = sum(item.kind == 'perpetual' for batch in bulk for item in batch.instruments)
+                    status.funding_fallback_markets = sum(item.kind == 'perpetual' for batch in fallback for item in batch.instruments)
+                    status.funding_bulk_groups = sum(any(item.kind == 'perpetual' for item in batch.instruments) for batch in bulk)
+                summarize()
+                jobs = bulk if full_product else fallback
+                sweep_signature = signatures[full_product]
+                minimum = (adapter.minimum_light_cycle_seconds(jobs, funding=funding)
+                           if hasattr(adapter, 'minimum_light_cycle_seconds') else 0)
+                if minimum:
+                    estimates[full_product] = max(period, minimum)
+                layer_ids = {item.id for batch in jobs for item in batch.instruments}
+                layer_errors[full_product] = {key: value for key, value in layer_errors[full_product].items() if key in layer_ids}
+                if not jobs:
+                    states[full_product] = 'not_applicable'
+                    summarize()
+                    await self.pause(min(period, 5))
+                    continue
+                started = monotonic()
+                finished = 0
+                for batch in jobs:
+                    if self.stopping.is_set():
+                        return
+                    if signatures[full_product] != sweep_signature:
+                        break
+                    current = self.store.settings()
+                    if not current.collection_enabled or not current.broad_collection_enabled or name not in current.enabled_venues:
+                        break
+                    states[full_product] = 'polling'
+                    update(last_attempt_at=now_ms())
+                    try:
+                        result = await asyncio.wait_for(adapter.fetch_light_batch(batch, funding=funding),
+                                                        timeout=current.broad_request_timeout_seconds)
+                        ids = {item.id for item in batch.instruments}
+                        if any(row.instrument_id not in ids or row.venue != name for row in result.snapshots):
+                            raise ValueError('Bulk adapter returned unexpected market identity')
+                        for key in ids:
+                            layer_errors[full_product].pop(key, None)
+                        layer_errors[full_product].update(result.errors)
+                        if result.unsupported:
+                            layer_errors[full_product].update((key, 'Public capability unavailable') for key in ids if key not in result.errors)
+                        snapshots = [self.merge_patch(row) for row in result.snapshots]
+                        self.snapshots.update({row.instrument_id: row for row in snapshots})
+                        await asyncio.to_thread(self.store.save_snapshots, snapshots, current.history_enabled)
+                        if snapshots:
+                            update(last_received_at=max(row.received_at for row in result.snapshots))
+                        states[full_product] = 'online' if snapshots else 'no_data'
+                        if not funding and not hasattr(adapter, 'fetch_funding_light'):
+                            status.funding_state = 'via_light_rest'
+                            status.funding_mode = 'via_public_price_bulk'
+                            funding_rows = [row for row in result.snapshots if row.funding_rate is not None]
+                            if funding_rows:
+                                status.funding_last_received_at = max(row.received_at for row in funding_rows)
+                        failures = failures + 1 if result.error_type else 0
+                        if result.error_type:
+                            update(retries=getattr(status, f'{prefix}_retries') + 1)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        failures += 1
+                        layer_errors[full_product].update((item.id, type(exc).__name__) for item in batch.instruments)
+                        states[full_product] = 'retry'
+                        update(retries=getattr(status, f'{prefix}_retries') + 1)
+                    finished += 1
+                    elapsed = max(.001, monotonic() - started)
+                    if signatures[full_product] == sweep_signature:
+                        estimates[full_product] = max(period, minimum, elapsed * len(jobs) / finished)
+                    summarize()
+                    gap = max(current.broad_inter_batch_seconds,
+                              getattr(adapter, 'light_min_bulk_interval', 0) if full_product else 0)
+                    if failures and not full_product:
+                        gap = max(gap, min(300, period * 2 ** min(failures - 1, 5)))
+                    if finished < len(jobs):
+                        await self.pause(gap)
+                if finished == len(jobs) and signatures[full_product] == sweep_signature:
+                    ended = monotonic()
+                    if full_product in completed_clock:
+                        cycles[full_product] = max(0, ended - completed_clock[full_product])
+                    completed_clock[full_product] = ended
+                    completed[full_product] = now_ms()
+                    estimates[full_product] = max(period, minimum, ended - started)
+                    summarize()
+                # Cadence is start-to-start for a whole sweep, not a sleep per
+                # 20/100 markets. A long fallback sweep never delays native bulk.
+                delay = max(.01, period - (monotonic() - started))
+                if failures:
+                    delay = max(delay, min(300, period * 2 ** min(failures - 1, 5)))
+                await self.pause(delay)
+
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(worker(True))
+            tasks.create_task(worker(False))
+
     async def run_light(self, name, adapter, funding=False):
         """Rotate over the active catalog independently of detailed watchlist polling."""
+        if hasattr(adapter, 'plan_light') and getattr(adapter, 'layered_light', True):
+            return await self.run_planned_light(name, adapter, funding)
         status = self.statuses[name]
         prefix = 'funding' if funding else 'light'
 
@@ -319,6 +532,7 @@ class Collector:
 
     async def watch_health(self):
         while not self.stopping.is_set():
+            self.refresh_status_coverage()
             settings = self.store.settings()
             if settings.collection_enabled and not settings.demo_mode:
                 for snapshot in list(self.snapshots.values()):

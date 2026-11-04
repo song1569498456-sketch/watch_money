@@ -60,6 +60,17 @@
 | --- | --- | --- | --- | --- | --- |
 | U01 发现 → 详情 → 测算 → 监控 / P1 | 本地实现与浏览器主流程通过 | [main.tsx](../frontend/src/main.tsx)、[ScannerPage.tsx](../frontend/src/ScannerPage.tsx)、[FundingPage.tsx](../frontend/src/FundingPage.tsx) | 后端575、Node25、构建与静态检查通过；导航9、原浏览器6/12/7、资金费专项6组通过 | [本批汇总](evidence/interface-validation.json)、[导航证据](evidence/browser-navigation.json)、[使用流程](INTERFACE.md) | 四项主导航；价差紧凑资产表与资金费矩阵默认，手动测算次级入口；保留完整性和只读边界，不替代真实行情验收 |
 
+## 数据独立复审（本批）
+
+父线程在旧提交 `6dde23e` 报告：OKX 一轮约9分钟、Bitget约23分钟，133秒时1409快照中691过期；7145目录仅3个可靠跨平台资产组。这些是父线程实测报告，不是本环境本批成功采集证据。本环境实际公开探测均为 ProxyError，见 [data-review-live-probes.json](evidence/data-review-live-probes.json)。不扩大stale阈值，不把fixture吞吐当实网性能。
+
+| ID / Priority | Status | Code | Tests | Evidence / 限制 |
+| --- | --- | --- | --- | --- |
+| R01 全目录新鲜度与真实覆盖 / P0 | 已实现，整合验证通过；实网未验 | adapters/cex.py、adapters/dex.py、collector.py、models.py、main.tsx | test_collection_schedule.py、test_cex_light.py、test_followup_acceptance.py | 已审查原生产品bulk不按100币重复截断请求；独立回退轮转，按整轮起点调度；读时重算新鲜双边盘口与资金费字段，新增目录清旧轮次标记。默认stale仍60秒；单symbol接口限流可能天然超过60秒，必须报告未覆盖，不能宣称全部新鲜 |
+| R02 可溯源批量身份核验 / P0 | 本地服务与8组浏览器通过；公开响应实网受阻 | asset_verification.py、identity.py、storage.py、AssetVerification.tsx | test_asset_verification.py、test_identity.py、browser_asset_verification.py | [来源与流程](ASSET_VERIFICATION.md)、[浏览器证据](evidence/browser-asset-verification.json)。Gate/Bitget公开币种合约元数据按原生ID关联，不按ticker；多链/缩放/冲突保留未核实，预览/应用/撤销原子审计。覆盖以活跃市场为母集，人工与公开证据区分；不宣称28平台全币身份已确认 |
+| R03 OKX时间与兼容费率分组 / P0 | 已修，独立回归通过 | adapters/cex.py、scanner.py、funding_view.py、fundingMatrix.ts | test_funding_correctness.py、test_data_review_acceptance.py、fundingMatrix.test.mjs | 已安装CCXT parser离线复现timestamp为空而info.ts保留，按官方更新时间取值；不以fundingTime/nextFundingTime冒充源时间。scanner/矩阵共用门槛，current/predicted/settled在各自同类型组比较，单个异类平台不毒化有效pair。官方字段形状样本非本次实网响应 |
+| R04 DEX同名报价币净值与可靠排行 / P0 | 漏洞已复现并修复，独立正负例通过 | quote_identity.py、strategies.py、scanner.py、adapters/dex.py | test_data_review_acceptance.py、test_scanner_quote_identity.py、test_strategies.py、test_dex_catalog.py | 原同symbol缺身份证据可返回净值4.8/5.0，现必须chain+contract+来源/时效、route绑定；跨token/ledger换算绑定两端资产，同名不豁免。合法同token与明确FX正例保留。静态proof有独立受限expiry，价格不续期，回放遵守截止时间。部分永续DEX的报价/抵押/结算身份尚未覆盖，保持未知，见[计算边界](CALCULATIONS.md) |
+
 ## 全部28平台的覆盖链接
 
 CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE.md#bybit)、[Bitget](COVERAGE.md#bitget)、[Gate](COVERAGE.md#gate)、[MEXC](COVERAGE.md#mexc)、[KuCoin](COVERAGE.md#kucoin)、[Coinbase](COVERAGE.md#coinbase)、[Kraken](COVERAGE.md#kraken)、[HTX](COVERAGE.md#htx)、[Deribit](COVERAGE.md#deribit)、[Upbit](COVERAGE.md#upbit)。
@@ -83,3 +94,5 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 ```
 
 最终563 Python / 18 Node、build/Ruff/diffcheck见 [followup-validation.json](evidence/followup-validation.json)；本审计者只额外独立跑上述9项，不重复full。root最终整合浏览器baseline6/followup12/fee7组均通过；旧171或中间总数不替代最终结果。每批至少更新对应 ID：问题是否重现、改动范围、命令/结果、mock或真实来源、尚缺什么；新问题先开项，修复后凭对应定向测试和集成证据升级状态，不能收到即 done。
+
+本批整合验收：677后端、29前端、48组浏览器、构建/Ruff通过；最后HL节流调整另25项通过。详见 [data-review-validation.json](evidence/data-review-validation.json)。成功数据均为合成或本地模拟，公开真实探测仍受代理限制。

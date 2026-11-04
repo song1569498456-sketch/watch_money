@@ -22,7 +22,8 @@ from typing import Any, ClassVar
 
 import httpx
 
-from watch_money.models import CoverageEntry, Instrument, MarketSnapshot, OrderBook, Pool
+from watch_money.models import CoverageEntry, Instrument, MarketSnapshot, OrderBook, Pool, now_ms
+from watch_money.quote_identity import MAX_QUOTE_IDENTITY_TTL_MS
 
 
 class UnsupportedMarketData(RuntimeError):
@@ -79,6 +80,38 @@ class BroadPublicData:
     light_fetch_mode = "reuse-public-fetch"
     light_fetch_cost = "Same public API calls as fetch; no order book requests"
     on_payload: Callable[[str, str, Any], Awaitable[None]] | None = None
+
+    @property
+    def layered_light(self):
+        # Only these reviewed fetch paths are bounded all-market payloads.
+        # Search/RFQ/pool readers and 1+N funding methods retain bounded rotation.
+        return self.venue in {"hyperliquid", "lighter", "dydx", "gmx"}
+
+    @property
+    def light_min_bulk_interval(self):
+        # Hyperliquid info weights are shared with discovery/detailed requests.
+        return 2.0 if self.venue == "hyperliquid" else 0.0
+
+    def plan_light(self, instruments, *, funding=False, batch_size=100):
+        from .cex import LightPollBatch
+
+        if funding or not self.layered_light:
+            return []
+        groups = defaultdict(list)
+        for item in instruments:
+            if item.venue != self.venue:
+                raise ValueError("Foreign market in public bulk plan")
+            namespace = item.native_symbol.split(":", 1)[0] if self.venue == "hyperliquid" and ":" in item.native_symbol else ""
+            groups[namespace].append(item)
+        return [LightPollBatch(f"{self.venue}:{namespace}", tuple(items), True) for namespace, items in groups.items()]
+
+    async def fetch_light_batch(self, batch, *, funding=False):
+        from .cex import LightPollResult
+
+        try:
+            return LightPollResult(await self.fetch_light(list(batch.instruments)), {}, [])
+        except Exception as exc:
+            return LightPollResult([], {item.id: type(exc).__name__ for item in batch.instruments}, [], type(exc).__name__)
 
     async def _record_payload(self, transport: str, payload: Any):
         if self.on_payload is not None:
@@ -637,6 +670,7 @@ class AggregatedSpotAdapter(PublicREST):
             address = address.lower()
         identity = f"{self.venue}:{chain}:{version}:{address}"
         base_address = base["address"] if chain == "solana" else base["address"].lower()
+        observed_at = now_ms()
         instrument = Instrument(
             id=identity,
             venue=self.venue,
@@ -647,6 +681,11 @@ class AggregatedSpotAdapter(PublicREST):
             kind="pool",
             mechanism="amm",
             chain=chain,
+            quote_asset_id=f"{chain}:{quote['address'] if chain == 'solana' else quote['address'].lower()}",
+            native_quote_asset_id=f"{chain}:{quote['address'] if chain == 'solana' else quote['address'].lower()}",
+            quote_identity_source=f"{self.endpoint}/pairs/{chain}/{address}#quoteToken.address",
+            quote_identity_at=observed_at,
+            quote_identity_expires_at=observed_at + MAX_QUOTE_IDENTITY_TTL_MS,
         )
         self._instruments[identity] = instrument
         self._pairs[identity] = pair

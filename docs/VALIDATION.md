@@ -1,5 +1,11 @@
 # 验证记录
 
+## 数据独立复审批次（2026-11-04）
+
+根任务完整后端677 passed（19.38s，1条上游弃用提示）、前端29 passed、TS/Vite构建、Ruff通过。最后Hyperliquid节流间隔从1秒调整为2秒后专项25 passed；其后最终六套浏览器 baseline6 / followup12 / fee7 / navigation9 / funding6 / asset-verification8，共48组通过。资产证据浏览器使用真实本地API完成导入、预览、应用、重载、冲突降级和撤销；只有公共拉取失败通过浏览器模拟。
+
+新增独立数据验收29例覆盖调度/费率/身份/DEX报价币边界。全部成功数据为合成样本或本地模拟，不是实网。当前公开端点真实探测均ProxyError，未取得成功响应或24小时证据。汇总见 [data-review-validation.json](evidence/data-review-validation.json)，具体范围与未完成项见 [AUDIT_BACKLOG.md](AUDIT_BACKLOG.md)。
+
 ## 前端信息组织批次（2026-11-04）
 
 根任务独立运行完整后端 **575 passed**（17.80s，1条上游Starlette弃用提示）、Node **25 passed**、TS/Vite生产构建、Ruff `E4,E7,E9,F`、diff检查通过。新增测试覆盖类型筛选在扫描预算前生效、矩阵平台筛选在排序/截断前生效、同名未知身份隔离、原始周期与字段TTL。

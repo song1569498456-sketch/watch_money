@@ -15,7 +15,7 @@ const reasonLabel: Record<string, string> = {
   funding_interval_hours_missing: "实际周期未知", next_funding_at_missing: "下次结算时间未知",
   funding_rate_stale: "费率已过期", funding_interval_hours_stale: "周期元数据已过期",
   next_funding_at_stale: "结算时间数据已过期", funding_kind_stale: "费率类型已过期", snapshot_missing: "尚未采集到快照",
-  source_timestamp_missing: "源事件时间未提供，仅依据本地观测", funding_kinds_differ: "费率类型不同，未直接计算费差",
+  source_timestamp_missing: "源事件时间未提供，仅依据本地观测", funding_kinds_differ: "存在不同费率类型；仅在同类型内比较，其余类型独立核对",
   two_venues_with_valid_normalized_rates_required: "至少需要两个平台的有效归一化费率",
   normalized_rate_difference_is_not_settlement_cashflow: "归一化费差不是实际结算现金流",
   quotes_differ_equal_valuation_notionals_required: "报价币不同，比较需同估值名义规模", settlement_times_differ: "实际结算时间不同",
@@ -104,7 +104,8 @@ export const FundingPage = memo(function FundingPage({ active = true, onSelectCa
   const ranking = useMemo(() => [...(data?.rows ?? [])].filter((row) => !rankingVenue || row.venue === rankingVenue)
     .sort((left, right) => {
       if (sort === "asset") return (left.base ?? left.native_symbol).localeCompare(right.base ?? right.native_symbol);
-      const value = (row: FundingMarket) => basis === "raw" ? fundingFieldFresh(row, "funding_rate", data!.as_of, clock) ? row.raw_rate : null :
+      const value = (row: FundingMarket) => basis === "raw" ? fundingFieldFresh(row, "funding_rate", data!.as_of, clock) &&
+        fundingFieldFresh(row, "funding_kind", data!.as_of, clock) ? row.raw_rate : null :
         fundingMarketState(row, data!.as_of, clock).code === "fresh" ? row.normalized_8h_rate : null;
       return Number(value(left) == null) - Number(value(right) == null) || (value(right) ?? 0) - (value(left) ?? 0);
     }), [data, rankingVenue, sort, basis, clock]);
@@ -174,7 +175,7 @@ export const FundingPage = memo(function FundingPage({ active = true, onSelectCa
         <tbody>{matrix.map(({ group, comparison }) => <tr key={group.id} data-funding-asset={group.id}>
           <td className="funding-asset"><strong>{group.symbols.join(" / ")}</strong><small className={group.identity_status === "verified" ? "muted" : "warning"}>{identityLabel[group.identity_status ?? "unverified"] ?? "身份待核验"}</small><small className="funding-identity" title={group.asset_id}>{group.asset_id}</small>
             {!!group.warnings.filter((item) => item !== "normalized_rate_difference_is_not_settlement_cashflow").length && <small className="warning">{group.warnings.filter((item) => item !== "normalized_rate_difference_is_not_settlement_cashflow").map(explain).join("；")}</small>}</td>
-          <td className="funding-spread"><strong className="mono">{comparison.spread == null ? "不可比" : rate(comparison.spread)}</strong><small>{comparison.spread == null ? comparison.reason : "8h归一化费率相减"}</small></td>
+          <td className="funding-spread"><strong className="mono">{comparison.spread == null ? "不可比" : rate(comparison.spread)}</strong><small>{comparison.spread == null ? comparison.reason : `${kindLabel[comparison.low?.kind ?? ""] ?? "同类型"}内8h归一化费率相减`}</small></td>
           <td>{comparison.high && comparison.low ? <><strong>高：{comparison.high.venue}</strong><small>{comparison.high.native_symbol} · {rate(comparison.high.normalized_8h_rate)} / 8h</small><strong>低：{comparison.low.venue}</strong><small>{comparison.low.native_symbol} · {rate(comparison.low.normalized_8h_rate)} / 8h</small><small className="muted">{kindLabel[comparison.high.kind ?? ""] ?? "类型未知"}</small></> : <span className="muted">—</span>}</td>
           {activeVenues.map((venue) => <td key={venue}>{group.cells.some((cell) => cell.venue === venue) ? group.cells.filter((cell) => cell.venue === venue).map((cell) => marketButton(cell, group.symbols.join(" / "))) : <span className="funding-no-market">无市场</span>}</td>)}</tr>)}</tbody>
       </table></div> : <div className="funding-table-wrap"><table className="funding-ranking-table"><thead><tr><th>资产 / 市场</th><th>状态</th><th>原始费率 / 实际周期</th><th>8h归一化比较</th><th>费率类型 / 下次结算</th><th>源时间 / 操作</th></tr></thead>
@@ -199,12 +200,12 @@ export const FundingPage = memo(function FundingPage({ active = true, onSelectCa
           <button type="button" className="button primary" onClick={() => onSelectCandidate({
             buy_instrument_id: selectedPair.low!.instrument_id, sell_instrument_id: selectedPair.high!.instrument_id,
             strategy: "perp_spread",
-          })}>测算此组合</button><small className="muted"> 低费率 {selectedPair.low.venue} / 高费率 {selectedPair.high.venue}；仅带入市场，不自动计算。</small>
+          })}>测算此组合</button><small className="muted"> 低费率 {selectedPair.low.venue} / 高费率 {selectedPair.high.venue}；组合类型：{kindLabel[selectedPair.low.kind ?? ""] ?? "类型未知"}。其余类型独立比较；仅带入市场，不自动计算。</small>
         </p>}
         {[...selected.row.missing, ...selected.row.warnings, ...(selected.row.identity_blockers ?? [])].map((reason, index) => <p className="warning break" key={`${reason}:${index}`}>{explain(reason)}</p>)}
       </div><div className="funding-field-sources">{Object.entries(selected.row.field_validity ?? {}).map(([field, validity]) => <div key={field}>
         <strong>{({ funding_rate: "原始费率", funding_kind: "费率类型", funding_interval_hours: "实际周期", next_funding_at: "结算时间" } as Record<string, string>)[field] ?? field}</strong>
-        <span className={fundingFieldFresh(selected.row, field, selected.asOf, clock) ? "muted" : "warning"}>{fundingFieldFresh(selected.row, field, selected.asOf, clock) ? "字段有效" : explain(validity.reason ?? "字段已过期")}</span>
+        <span className={fundingFieldFresh(selected.row, field, selected.asOf, clock) ? "muted" : "warning"}>{fundingFieldFresh(selected.row, field, selected.asOf, clock) ? "字段有效" : explain(validity.reason ?? (validity.rankable === false ? "来源或源事件时间未核验" : "字段已过期"))}</span>
         <small>源事件 {time(validity.source_at)} · 本地接收 {time(validity.received_at)}</small>{validity.metadata_observation && <small>周期按元数据观察时间检查，不是交易所事件时间</small>}<small className="break">{validity.source ?? "来源未提供"}</small></div>)}</div>
       <section aria-labelledby="funding-history-heading" className="funding-history-section"><h3 id="funding-history-heading">已结算公共历史</h3><p>按当前市场手动读取；本地行情快照不当作结算历史，未知历史周期不回填。</p>
         <div className="funding-history-actions"><button type="button" className="button secondary" disabled={historyLoading} onClick={() => void loadHistory(false)}>读取已保存历史</button><button type="button" className="button secondary" disabled={historyLoading} onClick={() => void loadHistory(true)}>{historyLoading ? <Loader2 size={13} className="spin" /> : <Database size={13} />}获取已结算历史</button></div>

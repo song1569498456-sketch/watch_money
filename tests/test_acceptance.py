@@ -358,10 +358,18 @@ def test_calculator_contract_multiplier_changes_executable_base_capacity():
 def test_calculator_exact_dex_quote_fee_and_price_impact_are_not_charged_twice():
     from watch_money.strategies import calculate
     at = 1_700_000_000_000
+    # Synthetic contract and conversion proofs isolate fee deduplication;
+    # these fixture URLs are never fetched and are not real API evidence.
+    quote_asset = "ethereum:0x" + "22" * 20
     req = calculation_request(strategy="cex_dex_spot",
         instruments=[instrument("a", "alpha"),
-                     instrument("b", "beta", kind="pool", mechanism="amm", chain="ethereum")],
+                     instrument("b", "beta", kind="pool", mechanism="amm", chain="ethereum",
+                                quote_asset_id=quote_asset, native_quote_asset_id=quote_asset,
+                                quote_identity_source="https://synthetic.invalid/token-proof", quote_identity_at=at)],
+        fx_rates=[dict(base="USD", quote="USD", rate=1, base_asset_id=quote_asset,
+                       quote_asset_id="cex:alpha:USD", source="https://synthetic.invalid/conversion-proof", at=at)],
         route_quotes=[dict(instrument_id="b", side="sell", input_asset="BTC", output_asset="USD",
+                           quote_asset_id=quote_asset,
                            input_amount=1, output_amount=120, route=["ethereum/pool-address"], block_number=100,
                            source="explicit quote fixture", source_at=at, received_at=at,
                            fees_included=True, gas_amount=2, gas_currency="USD")])

@@ -6,7 +6,8 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable
 
-from .models import Instrument
+from .models import Instrument, now_ms
+from .quote_identity import quote_identity, requires_quote_identity
 
 _EVM_CHAINS = {"ethereum", "arbitrum", "base", "bsc", "optimism", "polygon", "avalanche",
                "linea", "scroll", "zksync"}
@@ -37,12 +38,18 @@ def _symbol(instrument: Instrument) -> str:
     return instrument.base.strip().upper()
 
 
-def _evidence(instrument: Instrument) -> dict:
+def _evidence(instrument: Instrument, as_of: int) -> dict:
     native_id = getattr(instrument, "native_asset_id", None) or instrument.asset_id
     native_address = _chain_address(native_id)
     mapped_address = _chain_address(instrument.asset_id)
     address = native_address or mapped_address
     issues = []
+    if instrument.mapping_expires_at is not None and instrument.mapping_expires_at <= max(as_of, now_ms()):
+        issues.append("mapping_evidence_expired")
+    if instrument.mapping_verified_at is not None and instrument.mapping_verified_at > as_of:
+        issues.append("mapping_not_known_as_of")
+    if instrument.mapping_evidence_status not in {None, "verified"}:
+        issues.append("mapping_evidence_" + instrument.mapping_evidence_status)
     if address and instrument.chain and address[0] != instrument.chain:
         issues.append("chain_metadata_conflict")
     if native_address and mapped_address and native_address != mapped_address:
@@ -70,7 +77,7 @@ def _stable_id(kind: str, key: str) -> str:
     return f"{kind}:{hashlib.sha256(key.encode()).hexdigest()[:24]}"
 
 
-def _row(kind: str, key: str, members: list[Instrument], evidence: dict[str, dict]) -> dict:
+def _row(kind: str, key: str, members: list[Instrument], evidence: dict[str, dict], as_of: int) -> dict:
     members = sorted(members, key=lambda item: item.id)
     facts = [evidence[item.id] for item in members]
     symbols = sorted({_symbol(item) for item in members})
@@ -107,8 +114,20 @@ def _row(kind: str, key: str, members: list[Instrument], evidence: dict[str, dic
         requirements.add("contract_quantity_to_base_conversion")
     if any(item.kind == "perpetual" and not item.linear for item in members):
         requirements.add("inverse_contract_conversion")
-    if any(item.chain for item in members):
-        warnings.add("quote_token_contract_identity_unavailable")
+    for item in members:
+        if not requires_quote_identity(item):
+            continue
+        _, problems = quote_identity(item, as_of, 60000)
+        if not problems:
+            continue
+        if any("metadata review has expired" in problem for problem in problems):
+            warnings.add("quote_identity_evidence_expired")
+        elif all("stale or from the future" in problem for problem in problems):
+            # The real strategy may use a different stale_seconds value. Do not
+            # describe present contract/source fields as missing on that basis.
+            warnings.add("quote_identity_requires_freshness_check")
+        else:
+            warnings.add("quote_token_contract_identity_unavailable")
     markets = []
     for item, fact in zip(members, facts, strict=True):
         markets.append({"instrument_id": item.id, "venue": item.venue, "native_symbol": item.native_symbol,
@@ -126,7 +145,7 @@ def _row(kind: str, key: str, members: list[Instrument], evidence: dict[str, dic
             "warnings": sorted(warnings), "markets": markets}
 
 
-def identity_candidates(instruments: Iterable[Instrument]) -> list[dict]:
+def identity_candidates(instruments: Iterable[Instrument], *, as_of: int | None = None) -> list[dict]:
     """Return deterministic JSON-ready identity groups and same-ticker reviews.
 
     Every discovered market appears in one ``identity`` row. A ``ticker_candidate``
@@ -138,14 +157,15 @@ def identity_candidates(instruments: Iterable[Instrument]) -> list[dict]:
     """
     identities, symbols = defaultdict(list), defaultdict(list)
     evidence = {}
+    as_of = now_ms() if as_of is None else as_of
     for instrument in instruments:
         if instrument.id in evidence:
             raise ValueError("Duplicate instrument id in asset identity catalog")
-        fact = _evidence(instrument)
+        fact = _evidence(instrument, as_of)
         evidence[instrument.id] = fact
         identities[fact["group_key"]].append(instrument)
         symbols[_symbol(instrument)].append(instrument)
-    rows = [_row("identity", key, members, evidence) for key, members in sorted(identities.items())]
-    rows.extend(_row("ticker_candidate", symbol, members, evidence) for symbol, members in sorted(symbols.items())
+    rows = [_row("identity", key, members, evidence, as_of) for key, members in sorted(identities.items())]
+    rows.extend(_row("ticker_candidate", symbol, members, evidence, as_of) for symbol, members in sorted(symbols.items())
                 if len({evidence[item.id]["group_key"] for item in members}) > 1)
     return rows

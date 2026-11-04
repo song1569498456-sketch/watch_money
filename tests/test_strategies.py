@@ -7,6 +7,36 @@ from watch_money.strategies import CalculateRequest, _fill_book, calculate, rout
 
 NOW = 1_800_000_000_000
 HOUR = 3_600_000
+QUOTE_ASSET = "base:0x" + "22" * 20
+OTHER_QUOTE_ASSET = "base:0x" + "33" * 20
+
+
+def confirm_quote_assets(data):
+    """Synthetic token evidence, not live RPC/API certification."""
+    identities = {}
+    for item in data["instruments"]:
+        if item.get("chain"):
+            identities[item["id"]] = QUOTE_ASSET
+            item.update(quote_asset_id=QUOTE_ASSET, native_quote_asset_id=QUOTE_ASSET,
+                        quote_identity_source="https://synthetic.example/pool-token-metadata", quote_identity_at=NOW)
+    for route in data.get("route_quotes", []):
+        route["quote_asset_id"] = identities[route["instrument_id"]]
+
+
+def confirmed_dex_pair():
+    data = request_data(strategy="dex_pool_spread")
+    for item in data["instruments"]:
+        item.update(kind="pool", mechanism="amm", chain="base")
+    data["route_quotes"] = [
+        {"instrument_id": identity, "side": side, "input_asset": input_asset, "output_asset": output_asset,
+         "input_amount": input_amount, "output_amount": output_amount, "route": [f"pool:{identity}"],
+         "block_number": 123, "source": "synthetic manual route", "source_at": NOW, "received_at": NOW,
+         "gas_amount": .1, "gas_currency": "USDT"}
+        for identity, side, input_asset, output_asset, input_amount, output_amount in (
+            ("a", "buy", "USDT", "BTC", 100, 1), ("b", "sell", "BTC", "USDT", 1, 105))
+    ]
+    confirm_quote_assets(data)
+    return data
 
 
 def request_data(kind="spot", strategy="spot_spread"):
@@ -467,6 +497,10 @@ def test_dex_exact_size_route_gas_and_impact_not_double_counted():
                               "route": ["pool:0x123"], "block_number": 123, "source": "test:route",
                               "source_at": NOW, "received_at": NOW,
                               "gas_amount": 0.25, "gas_currency": "USDT"}]
+    confirm_quote_assets(data)
+    data["fx_rates"] = [{"base": "USDT", "quote": "USDT", "rate": 1,
+                         "base_asset_id": QUOTE_ASSET, "quote_asset_id": "cex:a:USDT",
+                         "source": "https://synthetic.example/scoped-conversion", "at": NOW}]
     out = result(data)
     assert out["gross_profit"] == 8
     assert out["known_costs"] == pytest.approx(0.35)  # CEX .1 + gas .25, route fee embedded
@@ -603,11 +637,145 @@ def test_same_chain_routes_require_distinct_liquidity_and_coherent_blocks():
          "input_amount": 1, "output_amount": 105, "route": ["pool:b"], "block_number": 123,
          "source": "test", "source_at": NOW, "received_at": NOW, "gas_amount": 0.1, "gas_currency": "USDT"},
     ]
+    confirm_quote_assets(data)
     assert result(data)["net_profit"] == pytest.approx(4.8)
     data["route_quotes"][1]["block_number"] = 124
     assert result(data)["net_profit"] is None
     data["route_quotes"][1]["route"] = ["pool:a"]
     assert result(data)["status"] == "invalidated"
+
+
+def test_manual_dex_same_symbol_without_quote_contract_evidence_cannot_produce_net():
+    data = request_data(strategy="dex_pool_spread")
+    for item in data["instruments"]:
+        item.update({"kind": "pool", "mechanism": "amm", "chain": "base"})
+    data["route_quotes"] = [
+        {"instrument_id": identity, "side": side, "input_asset": input_asset, "output_asset": output_asset,
+         "input_amount": input_amount, "output_amount": output_amount, "route": [f"pool:{identity}"],
+         "block_number": 123, "source": "synthetic manual route", "source_at": NOW, "received_at": NOW,
+         "gas_amount": .1, "gas_currency": "USDT"}
+        for identity, side, input_asset, output_asset, input_amount, output_amount in (
+            ("a", "buy", "USDT", "BTC", 100, 1), ("b", "sell", "BTC", "USDT", 1, 105))
+    ]
+    out = result(data)
+    assert out["net_profit"] is None
+    assert any("quote" in reason.lower() for reason in out["invalid_reasons"] + out["missing_prerequisites"])
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("quote_asset_id", "USDT", "invalid chain/address"),
+    ("native_quote_asset_id", OTHER_QUOTE_ASSET, "conflicts with native"),
+    ("quote_identity_source", "verified", "traceable source"),
+    ("quote_identity_source", "https://[", "traceable source"),
+    ("quote_identity_at", NOW + 1, "future"),
+    ("quote_identity_at", NOW - 60_001, "stale"),
+    ("chain", "arbitrum", "quote token chain"),
+])
+def test_dex_quote_evidence_conflict_time_and_source_cannot_be_replaced_by_manual_flags(field, value, reason):
+    data = confirmed_dex_pair()
+    data["instruments"][0][field] = value
+    for snapshot in data["snapshots"]:
+        snapshot.update(valid=True, is_demo=True, issues=[])
+    out = result(data)
+    assert out["net_profit"] is None and out["status"] != "threshold_met"
+    assert any(reason in text for text in out["invalid_reasons"])
+
+
+def test_same_symbol_different_quote_contracts_require_fresh_exact_bound_conversion():
+    data = confirmed_dex_pair()
+    data["instruments"][1].update(quote_asset_id=OTHER_QUOTE_ASSET, native_quote_asset_id=OTHER_QUOTE_ASSET)
+    data["route_quotes"][1]["quote_asset_id"] = OTHER_QUOTE_ASSET
+    assert result(data)["net_profit"] is None
+    conversion = {"base": "USDT", "quote": "USDT", "rate": 0.5,
+                  "source": "https://synthetic.example/specific-token-conversion", "at": NOW}
+    data["fx_rates"] = [conversion]
+    assert result(data)["net_profit"] is None  # A symbol-only conversion is insufficient.
+    conversion.update(base_asset_id=OTHER_QUOTE_ASSET, quote_asset_id=QUOTE_ASSET)
+    out = result(data)
+    assert out["gross_profit"] == pytest.approx(105 * 0.5 - 100)
+    assert out["known_costs"] == pytest.approx(.1 + .1 * 0.5)  # Quote-denominated gas follows each token.
+    assert out["net_profit"] == pytest.approx(105 * 0.5 - 100 - .15)
+    assert any(row.get("from_asset_id") == OTHER_QUOTE_ASSET for row in out["fx_rates"])
+    conversion["at"] = NOW - 3_600_001
+    assert result(data)["net_profit"] is None
+    conversion["at"] = NOW + 1
+    assert result(data)["net_profit"] is None
+    conversion["at"], conversion["source"] = NOW, "user guessed parity"
+    assert result(data)["net_profit"] is None
+
+
+def test_route_token_labels_cannot_replace_or_conflict_with_confirmed_instrument_evidence():
+    data = confirmed_dex_pair()
+    data["route_quotes"][1]["quote_asset_id"] = OTHER_QUOTE_ASSET
+    assert result(data)["net_profit"] is None
+    assert any("Route quote token identity" in text for text in result(data)["invalid_reasons"])
+    data["instruments"][1]["quote_asset_id"] = None
+    data["instruments"][1]["native_quote_asset_id"] = None
+    assert result(data)["net_profit"] is None
+
+
+def test_quote_address_canonicalization_retains_solana_case_and_allows_same_evm_token():
+    from watch_money.quote_identity import canonical_asset_id
+
+    data = confirmed_dex_pair()
+    data["instruments"][1]["quote_asset_id"] = "base:0x" + "22" * 20
+    assert result(data)["net_profit"] == pytest.approx(4.8)
+    assert canonical_asset_id("base:0x" + "AA" * 20) == "base:0x" + "aa" * 20
+    mint = "So11111111111111111111111111111111111111112"
+    assert canonical_asset_id(f"solana:{mint}") == f"solana:{mint}"
+    assert canonical_asset_id(f"solana:{mint.lower()}") != f"solana:{mint}"
+
+
+def test_third_valuation_token_cannot_be_invented_from_an_fx_symbol():
+    data = confirmed_dex_pair()
+    data["valuation_currency"] = "USDC"
+    data["fx_rates"] = [{"base": "USDT", "quote": "USDC", "rate": 1,
+                         "base_asset_id": QUOTE_ASSET, "quote_asset_id": "valuation:USDC",
+                         "source": "https://synthetic.example/scoped-conversion", "at": NOW}]
+    assert result(data)["net_profit"] is None
+    # A fiat unit is explicitly distinct from a chain token; its conversion is
+    # still bound to the specific source token and is not a stablecoin peg.
+    data["valuation_currency"] = "USD"
+    data["fx_rates"][0].update(quote="USD", quote_asset_id="fiat:USD", rate=.99)
+    assert result(data)["net_profit"] == pytest.approx(4.8 * .99)
+
+
+def test_bounded_static_quote_metadata_is_separate_from_dynamic_price_freshness():
+    data = confirmed_dex_pair()
+    for item in data["instruments"]:
+        item.update(quote_identity_at=NOW - HOUR, quote_identity_expires_at=NOW + HOUR)
+    assert result(data)["net_profit"] == pytest.approx(4.8)
+    data["instruments"][0]["quote_identity_expires_at"] = NOW
+    out = result(data)
+    assert out["net_profit"] is None
+    assert any("metadata review has expired" in reason for reason in out["invalid_reasons"])
+    # New executable route/market timestamps cannot renew old identity evidence.
+    for snapshot in data["snapshots"]:
+        snapshot.update(source_at=NOW, received_at=NOW)
+    for route in data["route_quotes"]:
+        route.update(source_at=NOW, received_at=NOW)
+    assert result(data)["net_profit"] is None
+    data["instruments"][0]["quote_identity_expires_at"] = NOW + 6 * HOUR
+    assert result(data)["net_profit"] is None  # Seven hours from observation exceeds the policy limit.
+
+
+def test_saved_dex_quote_identity_cannot_cross_replay_information_cutoff(tmp_path):
+    data = confirmed_dex_pair()
+    for snapshot in data["snapshots"]:
+        snapshot.update(source_at=NOW - 1000, received_at=NOW - 1000)
+    for route in data["route_quotes"]:
+        route.update(source_at=NOW - 1000, received_at=NOW - 1000)
+    app = FastAPI()
+    app.include_router(router)
+    app.state.data_dir = tmp_path
+    with TestClient(app) as client:
+        saved = client.post("/api/opportunities/saved", json={"name": "quote evidence cutoff", "calculation": data}).json()
+        assert saved["result"]["opportunities"][0]["net_profit"] == pytest.approx(4.8)
+        replay = client.post("/api/opportunities/replay", json={"sample_id": saved["id"], "as_of": NOW,
+                                                                "operation_delay_ms": 1}).json()
+        out = replay["opportunities"][0]
+        assert out["net_profit"] is None
+        assert any("quote token identity observation time" in text for text in out["invalid_reasons"])
 
 
 def test_held_inverse_and_future_fee_configuration_do_not_invent_net():

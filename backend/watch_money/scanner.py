@@ -11,11 +11,25 @@ from fastapi import APIRouter, Query, Request
 
 from .identity import identity_candidates
 from .models import Instrument, MarketSnapshot, now_ms
+from .quote_identity import quote_identity, requires_quote_identity
 
 router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 Sort = Literal["spread", "funding", "asset"]
 MarketType = Literal["all", "spot", "perpetual", "spot_perp"]
 MAX_CANDIDATES = 100000
+
+
+def _field_provenance(snapshot: MarketSnapshot | None, field: str) -> dict:
+    source = snapshot.field_sources.get(field, snapshot.source) if snapshot else None
+    source_at = snapshot.field_timestamps.get(field, snapshot.source_at) if snapshot else None
+    received_at = snapshot.field_received_at.get(field, snapshot.received_at) if snapshot else None
+    metadata = (field == "funding_interval_hours" and source_at is None and snapshot is not None
+                and field in snapshot.field_received_at and isinstance(source, str) and source.endswith(
+                    (":catalog_metadata_observed_at", ":public_metadata_observed_at")))
+    return {"source": source, "source_at": source_at, "received_at": received_at,
+            "metadata_observation": metadata,
+            "trusted": isinstance(source, str) and bool(source.strip()) and received_at is not None
+            and received_at > 0 and ((source_at is not None and source_at > 0) or metadata)}
 
 
 def _field(snapshot: MarketSnapshot | None, instrument: Instrument, field: str,
@@ -80,24 +94,32 @@ def _scan_field(snapshot, instrument, field, as_of, stale_seconds):
     return value, issue
 
 
+def funding_field_state(snapshot: MarketSnapshot | None, instrument: Instrument, field: str,
+                        as_of: int, stale_seconds: float) -> dict:
+    """Shared numeric/category validity, provenance and reliable-ranking gate.
+
+    Values may survive as labelled observations even when source timing is
+    unverified. Only explicit interval metadata may use local observation time.
+    """
+    value, issue = _scan_field(snapshot, instrument, field, as_of, stale_seconds)
+    provenance = _field_provenance(snapshot, field)
+    return {**provenance, "value": value, "issue": issue,
+            "rankable": issue is None and provenance["trusted"]}
+
+
 def _market_detail(instrument, snapshot, as_of, stale_seconds):
     fields, values = {}, {}
     for field in ("bid", "ask", "funding_rate", "funding_kind", "funding_interval_hours", "next_funding_at"):
-        value, issue = _scan_field(snapshot, instrument, field, as_of, stale_seconds)
-        source_at = snapshot.field_timestamps.get(field, snapshot.source_at) if snapshot else None
-        received_at = snapshot.field_received_at.get(field, snapshot.received_at) if snapshot else None
+        state = funding_field_state(snapshot, instrument, field, as_of, stale_seconds)
+        value, issue = state["value"], state["issue"]
+        source_at, received_at = state["source_at"], state["received_at"]
         stamp = min(source_at, received_at) if source_at is not None and received_at is not None else received_at
-        source = snapshot.field_sources.get(field, snapshot.source) if snapshot else None
-        observed_metadata = (field == "funding_interval_hours" and source_at is None and snapshot is not None
-                             and field in snapshot.field_received_at
-                             and snapshot.field_sources.get(field, "").endswith(
-                                 (":catalog_metadata_observed_at", ":public_metadata_observed_at")))
+        source = state["source"]
         values[field] = value
         fields[field] = {"valid": issue is None, "issue": issue, "source": source,
                          "source_at": source_at, "received_at": received_at,
                          "age_seconds": max(0, (as_of - stamp) / 1000) if stamp is not None else None,
-                         "rankable": issue is None and bool(source)
-                         and (source_at is not None or observed_metadata)}
+                         "rankable": state["rankable"]}
     return {"instrument_id": instrument.id, "venue": instrument.venue, "native_symbol": instrument.native_symbol,
             "native_asset_id": instrument.native_asset_id or instrument.asset_id, "asset_id": instrument.asset_id,
             "base": instrument.base, "quote": instrument.quote, "kind": instrument.kind,
@@ -124,6 +146,17 @@ def _candidate(buy: Instrument, sell: Instrument, snapshots: dict[str, MarketSna
     same_quote = buy.quote == sell.quote
     if not same_quote:
         missing.append("quote_fx_not_provided")
+    quote_problems, quote_assets = [], {}
+    has_chain_quote = any(requires_quote_identity(item) for item in (buy, sell))
+    if has_chain_quote:
+        for role, item in (("buy", buy), ("sell", sell)):
+            asset_id, problems = quote_identity(item, as_of, stale_seconds * 1000)
+            quote_assets[item.id] = asset_id
+            quote_problems.extend(f"{role}:{problem}" for problem in problems)
+        if not quote_problems and quote_assets[buy.id] != quote_assets[sell.id]:
+            quote_problems.append("quote_asset_fx_not_provided")
+        missing.extend(quote_problems)
+    quote_rankable = not quote_problems
     spread = bid - ask if same_quote and ask is not None and bid is not None else None
     spread_rate = spread / ask if spread is not None else None
     if spread_rate is not None and not math.isfinite(spread_rate * 100):
@@ -166,7 +199,7 @@ def _candidate(buy: Instrument, sell: Instrument, snapshots: dict[str, MarketSna
         warnings.extend(["normalized_rates_are_not_actual_settlement_cashflows",
                          "funding_comparison_assumes_equal_valuation_notionals"])
     buy_detail, sell_detail = details[buy.id], details[sell.id]
-    price_rankable = (spread_rate is not None and buy_detail["fields"]["ask"]["rankable"]
+    price_rankable = (spread_rate is not None and quote_rankable and buy_detail["fields"]["ask"]["rankable"]
                       and sell_detail["fields"]["bid"]["rankable"])
     reverse_ask, reverse_bid = sell_detail["ask"], buy_detail["bid"]
     reverse = ((reverse_bid - reverse_ask) / reverse_ask if same_quote
@@ -192,8 +225,9 @@ def _candidate(buy: Instrument, sell: Instrument, snapshots: dict[str, MarketSna
         requirements.append("contract_quantity_to_base_conversion")
     if not buy.linear or not sell.linear:
         requirements.append("inverse_contract_conversion")
-    if buy.chain or sell.chain:
-        requirements.append("quote_token_contract_identity_not_verified")
+    if has_chain_quote and quote_problems:
+        requirements.append("quote_asset_fx_not_provided" if quote_problems == ["quote_asset_fx_not_provided"]
+                            else "quote_token_contract_identity_not_verified")
     strategy = ("perp_spread" if buy.kind == sell.kind == "perpetual" else
                 "spot_perp_basis" if "perpetual" in {buy.kind, sell.kind} else "spot_spread")
     return {"id": f"{buy.id}->{sell.id}", "asset_id": buy.asset_id, "asset_symbols": symbols,
@@ -204,8 +238,9 @@ def _candidate(buy: Instrument, sell: Instrument, snapshots: dict[str, MarketSna
             "spread_pct": spread_rate * 100 if spread_rate is not None else None,
             "spread_quote": buy.quote if same_quote else None,
             "price_rankable": price_rankable, "funding_rankable": funding_rankable,
+            "quote_assets": quote_assets,
             "reverse_spread_rate": reverse,
-            "reverse_price_rankable": reverse is not None and sell_detail["fields"]["ask"]["rankable"]
+            "reverse_price_rankable": reverse is not None and quote_rankable and sell_detail["fields"]["ask"]["rankable"]
             and buy_detail["fields"]["bid"]["rankable"],
             "buy_market": buy_detail, "sell_market": sell_detail,
             "settlement_alignment": alignment,

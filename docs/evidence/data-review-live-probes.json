@@ -1,0 +1,29 @@
+{
+  "evidence_kind": "actual public HTTP probes from selected cloud environment, no credentials or proxy bypass",
+  "probes": [
+    {
+      "name": "okx_funding",
+      "url": "https://www.okx.com/api/v5/public/funding-rate?instId=BTC-USDT-SWAP",
+      "requested_at": "2026-11-04T17:10:38.887240+00:00",
+      "error_type": "ProxyError",
+      "result": "public_request_failed",
+      "elapsed_seconds": 0.095
+    },
+    {
+      "name": "bitget_tickers",
+      "url": "https://api.bitget.com/api/v2/mix/market/tickers?productType=USDT-FUTURES",
+      "requested_at": "2026-11-04T17:10:38.941741+00:00",
+      "error_type": "ProxyError",
+      "result": "public_request_failed",
+      "elapsed_seconds": 0.045
+    },
+    {
+      "name": "gate_public_currencies",
+      "url": "https://api.gateio.ws/api/v4/spot/currencies",
+      "requested_at": "2026-11-04T17:10:38.956955+00:00",
+      "error_type": "ProxyError",
+      "result": "public_request_failed",
+      "elapsed_seconds": 0.027
+    }
+  ]
+}

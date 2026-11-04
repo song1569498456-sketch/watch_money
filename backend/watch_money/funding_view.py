@@ -10,7 +10,7 @@ from fastapi import APIRouter, Query, Request
 
 from .identity import identity_candidates
 from .models import Instrument, MarketSnapshot, now_ms
-from .scanner import _field
+from .scanner import funding_field_state
 
 router = APIRouter(prefix="/api/funding", tags=["funding"])
 Sort = Literal["rate", "spread", "asset"]
@@ -20,19 +20,13 @@ _FIELDS = ("funding_rate", "funding_kind", "funding_interval_hours", "next_fundi
 
 def _value(snapshot: MarketSnapshot | None, instrument: Instrument, field: str, as_of: int,
            stale_seconds: float) -> tuple[object, dict]:
-    value, issue = _field(snapshot, instrument, field, as_of, stale_seconds)
-    # Reuse the scanner's exact freshness/provenance checks. Its final numeric
-    # type check is deliberately replaced for this categorical field only.
-    if (field == "funding_kind" and issue == "funding_kind_invalid" and snapshot
-            and snapshot.funding_kind in {"current", "predicted", "settled"}):
-        value, issue = snapshot.funding_kind, None
-    source_at = snapshot.field_timestamps.get(field, snapshot.source_at) if snapshot else None
-    received_at = snapshot.field_received_at.get(field, snapshot.received_at) if snapshot else None
-    source = snapshot.field_sources.get(field, snapshot.source) if snapshot else None
-    metadata = (field == "funding_interval_hours" and source_at is None and source is not None
-                and source.endswith((":catalog_metadata_observed_at", ":public_metadata_observed_at")))
+    provenance = funding_field_state(snapshot, instrument, field, as_of, stale_seconds)
+    value, issue = provenance["value"], provenance["issue"]
+    source_at, received_at, source = [provenance[key] for key in ("source_at", "received_at", "source")]
+    metadata = provenance["metadata_observation"]
     effective = min(received_at, source_at) if received_at is not None and source_at is not None else received_at
-    return value, {"valid": issue is None, "reason": issue, "source": source,
+    return value, {"valid": issue is None, "rankable": provenance["rankable"],
+                   "reason": issue, "source": source,
                    "source_at": source_at, "received_at": received_at,
                    "age_seconds": max(0, (as_of - effective) / 1000) if effective is not None else None,
                    "source_timestamp_missing": source_at is None, "metadata_observation": metadata,
@@ -72,13 +66,16 @@ def _market(instrument: Instrument, snapshot: MarketSnapshot | None, identity: d
             "source": snapshot.source if snapshot else None, "source_at": snapshot.source_at if snapshot else None,
             "received_at": snapshot.received_at if snapshot else None,
             "field_validity": {field: validity for field, (_, validity) in fields.items()},
+            "rate_rankable": all(fields[field][1]["rankable"] for field in ("funding_rate", "funding_kind")),
+            "comparison_rankable": normalized is not None and all(fields[field][1]["rankable"]
+                                      for field in ("funding_rate", "funding_kind", "funding_interval_hours")),
             "observed": {field: getattr(snapshot, field, None) if snapshot else None for field in _FIELDS},
             "missing": sorted(set(missing)), "warnings": warnings,
             "observation_type": "local_public_snapshot", "is_settled_history": False}
 
 
 def _group(identity: dict, rows: list[dict], *, details: bool = False) -> dict:
-    valid = [row for row in rows if row["normalized_8h_rate"] is not None]
+    valid = [row for row in rows if row["comparison_rankable"]]
     kinds = {row["kind"] for row in valid}
     missing, warnings = [], ["normalized_rate_difference_is_not_settlement_cashflow"]
     if not identity["comparison_ready"]:
@@ -88,7 +85,7 @@ def _group(identity: dict, rows: list[dict], *, details: bool = False) -> dict:
     if None in kinds or not kinds:
         missing.append("funding_kind_unknown")
     if len(kinds) > 1:
-        missing.append("funding_kinds_differ")
+        warnings.append("funding_kinds_differ")
     if len({row["quote"] for row in rows}) > 1:
         warnings.append("quotes_differ_equal_valuation_notionals_required")
     if len({row["next_funding_at"] for row in valid if row["next_funding_at"] is not None}) > 1:
@@ -97,21 +94,35 @@ def _group(identity: dict, rows: list[dict], *, details: bool = False) -> dict:
         warnings.append("settled_snapshots_are_not_forward_estimates")
     if any("source_timestamp_missing" in row["warnings"] for row in valid):
         warnings.append("source_timestamp_missing")
-    best = None
+    best, comparisons = None, []
     if not missing:
-        # Find the best cross-venue pair without O(n²) matrix enumeration.
-        # The best two venue maxima suffice when excluding the long leg's venue.
-        by_venue = {}
-        for row in valid:
-            previous = by_venue.get(row["venue"])
-            if previous is None or row["normalized_8h_rate"] > previous["normalized_8h_rate"]:
-                by_venue[row["venue"]] = row
-        maxima = sorted(by_venue.values(), key=lambda row: (-row["normalized_8h_rate"], row["instrument_id"]))[:2]
-        for long in valid:
-            short = next(item for item in maxima if item["venue"] != long["venue"])
-            difference = short["normalized_8h_rate"] - long["normalized_8h_rate"]
-            if best is None or difference > best[0]:
-                best = difference, long, short
+        # Compare current/predicted/settled within their own type. A third,
+        # incompatible venue must not disable an otherwise valid two-venue pair.
+        for kind in sorted(kinds):
+            compatible = [row for row in valid if row["kind"] == kind]
+            by_venue = {}
+            for row in compatible:
+                previous = by_venue.get(row["venue"])
+                if previous is None or row["normalized_8h_rate"] > previous["normalized_8h_rate"]:
+                    by_venue[row["venue"]] = row
+            maxima = sorted(by_venue.values(), key=lambda row: (-row["normalized_8h_rate"], row["instrument_id"]))[:2]
+            kind_best = None
+            for long in compatible:
+                short = next((item for item in maxima if item["venue"] != long["venue"]), None)
+                if short is None:
+                    continue
+                difference = short["normalized_8h_rate"] - long["normalized_8h_rate"]
+                if math.isfinite(difference) and (kind_best is None or difference > kind_best[0]):
+                    kind_best = difference, long, short
+            comparisons.append({"funding_kind": kind, "spread_8h_rate": kind_best[0] if kind_best else None,
+                                "long_instrument_id": kind_best[1]["instrument_id"] if kind_best else None,
+                                "short_instrument_id": kind_best[2]["instrument_id"] if kind_best else None,
+                                "comparison_ready": kind_best is not None})
+            if kind_best is not None and (best is None or kind_best[0] > best[0]):
+                best = kind_best
+        if best is None:
+            missing.append("funding_kinds_differ" if len(kinds) > 1
+                           else "two_venues_with_valid_normalized_rates_required")
     columns = ("instrument_id", "venue", "native_symbol", "quote", "raw_rate", "kind", "interval_hours",
                "normalized_8h_rate", "next_funding_at", "countdown_seconds", "missing", "warnings")
     if details:
@@ -121,7 +132,8 @@ def _group(identity: dict, rows: list[dict], *, details: bool = False) -> dict:
     return {"id": identity["id"], "asset_id": rows[0]["asset_id"], "symbols": identity["symbols"],
             "instrument_ids": identity["instrument_ids"], "venues": identity["venues"],
             "cells": [{key: row[key] for key in columns} for row in rows],
-            "spread_8h_rate": spread, "funding_kind": next(iter(kinds)) if len(kinds) == 1 else None,
+            "spread_8h_rate": spread, "funding_kind": best[1]["kind"] if best else next(iter(kinds)) if len(kinds) == 1 else None,
+            "compatible_comparisons": comparisons,
             "long_instrument_id": best[1]["instrument_id"] if best else None,
             "short_instrument_id": best[2]["instrument_id"] if best else None,
             "identity_status": rows[0]["identity_status"], "identity_blockers": identity["blockers"],
@@ -170,15 +182,16 @@ def build_funding_view(instruments: Iterable[Instrument] | Mapping[str, Instrume
         groups.sort(key=lambda group: (group["spread_8h_rate"] is None, -(group["spread_8h_rate"] or 0), group["id"]))
         matrix_groups.sort(key=lambda group: (group["spread_8h_rate"] is None, -(group["spread_8h_rate"] or 0), group["id"]))
     else:
-        rows.sort(key=lambda row: (row[metric] is None, -(row[metric] or 0), row["instrument_id"]))
+        rankability = "rate_rankable" if rate_basis == "raw" else "comparison_rankable"
+        rows.sort(key=lambda row: (not row[rankability], row[metric] is None, -(row[metric] or 0), row["instrument_id"]))
         groups.sort(key=lambda group: (group["asset_id"], group["id"]))
         matrix_groups.sort(key=lambda group: (group["asset_id"], group["id"]))
     return {"as_of": as_of, "observation_type": "local_public_snapshots",
             "is_settled_history": False, "rows": rows[:limit], "groups": groups[:limit],
             "matrix_groups": matrix_groups[:limit], "venues": sorted({row["venue"] for row in rows}), "stats": {
                 "catalog_markets": len(catalog), "perpetual_markets": len(markets),
-                "fresh_rates": sum(row["raw_rate"] is not None for row in rows),
-                "normalized_rates": sum(row["normalized_8h_rate"] is not None for row in rows),
+                "fresh_rates": sum(row["rate_rankable"] for row in rows),
+                "normalized_rates": sum(row["comparison_rankable"] for row in rows),
                 "unknown_periods": sum(row["interval_hours"] is None for row in rows),
                 "unverified_markets": sum(row["identity_status"] != "verified" for row in rows),
                 "rows_total": len(rows), "rows_returned": min(len(rows), limit),

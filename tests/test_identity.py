@@ -164,3 +164,33 @@ def test_native_identity_survives_mapping_restart_resave_and_remapping(tmp_path)
     row = identity_candidates([final])[0]
     assert row["markets"][0]["address"] == ADDRESS_A
     assert row["markets"][0]["native_asset_id"] == f"base:{ADDRESS_A}"
+
+
+def test_valid_quote_contract_proof_does_not_report_missing_identity_or_relax_base_gate():
+    at = 1800000000000
+    item = market("a", asset_id=f"ethereum:{ADDRESS_A}", chain="ethereum", mapping_verified=True,
+                  quote_asset_id=f"ethereum:{ADDRESS_B}", native_quote_asset_id=f"ethereum:{ADDRESS_B}",
+                  quote_identity_source="https://quote-proof-fixture.invalid/pool", quote_identity_at=at,
+                  quote_identity_expires_at=at + 21600000)
+    row = identity_candidates([item], as_of=at)[0]
+    assert "quote_token_contract_identity_unavailable" not in row["warnings"]
+    assert "quote_identity_requires_freshness_check" not in row["warnings"]
+    original_blockers = row["blockers"]
+    item.quote_asset_id = item.native_quote_asset_id = None
+    missing = identity_candidates([item], as_of=at)[0]
+    assert "quote_token_contract_identity_unavailable" in missing["warnings"]
+    assert missing["blockers"] == original_blockers  # Quote warnings do not establish the base asset.
+
+
+def test_old_quote_evidence_distinguishes_unknown_policy_from_explicit_expiry():
+    at = 1800000000000
+    item = market("a", asset_id=f"ethereum:{ADDRESS_A}", chain="ethereum", mapping_verified=True,
+                  native_quote_asset_id=f"ethereum:{ADDRESS_B}",
+                  quote_identity_source="https://quote-proof-fixture.invalid/pool", quote_identity_at=at - 120000)
+    row = identity_candidates([item], as_of=at)[0]
+    assert "quote_identity_requires_freshness_check" in row["warnings"]
+    assert "quote_token_contract_identity_unavailable" not in row["warnings"]
+    item.quote_identity_expires_at = at - 1
+    expired = identity_candidates([item], as_of=at)[0]
+    assert "quote_identity_evidence_expired" in expired["warnings"]
+    assert "quote_token_contract_identity_unavailable" not in expired["warnings"]

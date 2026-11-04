@@ -1,6 +1,7 @@
 export type FundingValidity = {
   valid: boolean; reason: string | null; source: string | null; source_at: number | null;
   received_at: number | null; age_seconds: number | null; metadata_observation: boolean; ttl_seconds?: number;
+  rankable?: boolean;
 };
 export type FundingMarket = {
   instrument_id: string; venue: string; native_symbol: string; quote: string; base?: string; asset_id?: string;
@@ -26,9 +27,17 @@ export type FundingResult = {
     matrix_groups_total?: number; matrix_groups_returned?: number; matrix_groups_truncated?: boolean };
 };
 const finite = (value: number | null | undefined): value is number => typeof value === "number" && Number.isFinite(value);
+function fieldTrusted(row: FundingMarket, field: string, asOf: number) {
+  const value = row.field_validity?.[field];
+  if (!value?.valid || value.rankable === false || !value.source?.trim() || !finite(value.received_at) ||
+      value.received_at <= 0 || value.received_at > asOf) return false;
+  if (finite(value.source_at)) return value.source_at > 0 && value.source_at <= asOf;
+  return field === "funding_interval_hours" && value.metadata_observation &&
+    /:(catalog_metadata_observed_at|public_metadata_observed_at)$/.test(value.source);
+}
 export function fundingFieldFresh(row: FundingMarket, field: string, asOf: number, now: number) {
   const validity = row.field_validity?.[field];
-  if (!validity?.valid || !finite(validity.age_seconds)) return false;
+  if (!fieldTrusted(row, field, asOf) || !finite(validity?.age_seconds) || validity.age_seconds < 0) return false;
   const ttl = validity.ttl_seconds ?? (validity.metadata_observation ? 21600 : 60);
   return validity.age_seconds + Math.max(0, now - asOf) / 1000 <= ttl;
 }
@@ -38,6 +47,8 @@ export function fundingMarketState(row: FundingMarket | undefined, asOf: number,
   if (reasons.includes("snapshot_missing")) return { code: "uncollected", label: "未采集", tone: "pending" };
   const rateFresh = fundingFieldFresh(row, "funding_rate", asOf, now);
   const lastRate = row.observed?.funding_rate ?? row.raw_rate;
+  if (finite(lastRate) && row.field_validity?.funding_rate?.valid && !fieldTrusted(row, "funding_rate", asOf))
+    return { code: "untrusted_time", label: "来源或源事件时间未核验", tone: "pending" };
   if (reasons.some((reason) => reason?.includes("stale") && !reason.startsWith("next_funding_at")) || (finite(lastRate) && !rateFresh &&
       row.field_validity?.funding_rate?.valid)) return { code: "stale", label: "过期", tone: "stale" };
   if (!rateFresh || !finite(row.raw_rate)) return { code: "unavailable", label: "费率未提供或无效", tone: "pending" };
@@ -54,22 +65,24 @@ export function fundingComparison(group: FundingGroup, venues: string[], asOf: n
   const none = (reason: string) => ({ spread: null, low: null, high: null, reason });
   if (group.identity_status !== "verified") return none("身份未核验，不计算跨平台费差");
   if (new Set(valid.map((cell) => cell.venue)).size < 2) return none("不足两个平台的有效归一化费率");
-  if (new Set(valid.map((cell) => cell.kind)).size !== 1) return none("费率类型不同，不直接比较");
   // Exclude a venue from its own high/low comparison, including multiple quotes.
-  const byVenue = new Map<string, FundingMarket>();
-  for (const cell of valid) {
-    const previous = byVenue.get(cell.venue);
-    if (!previous || cell.normalized_8h_rate! > previous.normalized_8h_rate!) byVenue.set(cell.venue, cell);
-  }
-  const maxima = [...byVenue.values()].sort((a, b) => b.normalized_8h_rate! - a.normalized_8h_rate!);
   let best: { spread: number; low: FundingMarket; high: FundingMarket; reason: string | null } | null = null;
-  for (const low of valid) {
-    const high = maxima.find((cell) => cell.venue !== low.venue);
-    if (!high) continue;
-    const spread = high.normalized_8h_rate! - low.normalized_8h_rate!;
-    if (Number.isFinite(spread) && (best === null || spread > best.spread)) best = { spread, low, high, reason: null };
+  for (const kind of new Set(valid.map((cell) => cell.kind))) {
+    const compatible = valid.filter((cell) => cell.kind === kind);
+    const byVenue = new Map<string, FundingMarket>();
+    for (const cell of compatible) {
+      const previous = byVenue.get(cell.venue);
+      if (!previous || cell.normalized_8h_rate! > previous.normalized_8h_rate!) byVenue.set(cell.venue, cell);
+    }
+    const maxima = [...byVenue.values()].sort((a, b) => b.normalized_8h_rate! - a.normalized_8h_rate!);
+    for (const low of compatible) {
+      const high = maxima.find((cell) => cell.venue !== low.venue);
+      if (!high) continue;
+      const spread = high.normalized_8h_rate! - low.normalized_8h_rate!;
+      if (Number.isFinite(spread) && (best === null || spread > best.spread)) best = { spread, low, high, reason: null };
+    }
   }
-  return best ?? none("有效费差不可计算");
+  return best ?? none("不足两个平台具有相同费率类型的有效数据");
 }
 
 /** New matrix groups include isolated identities; the legacy fallback never merges by ticker. */

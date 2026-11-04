@@ -499,12 +499,16 @@ async def test_catalog_funding_rotation_includes_small_caps_and_does_not_refresh
 
     async def pause(delay):
         pauses.append(delay)
-        if len(pauses) == 2:
+        # Planned bulk/fallback workers yield independently. Stop after the
+        # complete funding catalog is observed, rather than counting idle ticks.
+        await asyncio.sleep(0)
+        if all(item.id in collector.snapshots and collector.snapshots[item.id].funding_rate is not None
+               for item in catalog if item.kind == 'perpetual'):
             collector.stopping.set()
 
     collector.pause = pause
     await collector.run_light("bybit", adapter, funding=True)
-    assert pauses == [60, 60]
+    assert any(delay < 1 for delay in pauses), 'Symbol batches must not each sleep the full 60s cadence'
     assert set(collector.snapshots) == {item.id for item in catalog if item.kind == "perpetual"}
     assert collector.statuses["bybit"].funding_subscriptions == 3
     assert collector.statuses["bybit"].funding_state == "online"

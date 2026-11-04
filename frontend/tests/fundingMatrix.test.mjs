@@ -37,6 +37,7 @@ test("no market, uncollected, stale and unknown period remain distinct states", 
 test("custom source TTL and metadata TTL are honored without moving source timestamps", () => {
   const row = market("a", "alpha", 0);
   row.field_validity.funding_interval_hours = validity({ age_seconds: 3600, source_at: null,
+    received_at: NOW - 3600000, source: "fixture:catalog_metadata_observed_at",
     ttl_seconds: 21600, metadata_observation: true });
   const before = JSON.stringify(row);
   assert.ok(fundingFieldFresh(row, "funding_rate", NOW, NOW + 61000));
@@ -63,4 +64,39 @@ test("legacy fallback preserves single-platform and same-ticker unverified ident
   const rows = fundingGroups({ rows: [a, b], groups: [] });
   assert.equal(rows.length, 2); assert.equal(rows[0].cells.length, 1);
   assert.equal(rows[0].identity_status, "unverified");
+});
+test("a third predicted or settled market cannot poison a compatible current pair", () => {
+  for (const kind of ["predicted", "settled"]) {
+    const cells = [market("a", "alpha", .001), market("b", "beta", .002), market("c", "gamma", .9, { kind })];
+    const result = fundingComparison(group(cells), ["alpha", "beta", "gamma"], NOW, NOW);
+    assert.equal(result.spread, .001);
+    assert.equal(result.low.instrument_id, "a"); assert.equal(result.high.instrument_id, "b");
+  }
+});
+test("same-kind subsets compete independently without creating cross-kind extrema", () => {
+  const cells = [market("a", "alpha", .001), market("b", "beta", .002),
+    market("c", "gamma", .1, { kind: "predicted" }), market("d", "delta", .105, { kind: "predicted" })];
+  const result = fundingComparison(group(cells), ["alpha", "beta", "gamma", "delta"], NOW, NOW);
+  assert.ok(Math.abs(result.spread - .005) < 1e-12);
+  assert.equal(result.low.kind, "predicted"); assert.equal(result.high.kind, "predicted");
+});
+test("unknown source time, empty provenance and future fields cannot become fresh matrix cells", () => {
+  for (const field of ["funding_rate", "funding_kind", "funding_interval_hours"]) {
+    for (const patch of [{ source_at: null }, { source: "" }, { source_at: NOW + 1 }, { rankable: false }]) {
+      const a = market("a", "alpha", .001), b = market("b", "beta", .9);
+      b.field_validity[field] = validity(patch);
+      assert.equal(fundingFieldFresh(b, field, NOW, NOW), false);
+      assert.notEqual(fundingMarketState(b, NOW, NOW).code, "fresh");
+      assert.equal(fundingComparison(group([a, b]), ["alpha", "beta"], NOW, NOW).spread, null);
+    }
+  }
+});
+test("only explicit period metadata can use local observation time", () => {
+  const row = market("a", "alpha");
+  row.field_validity.funding_interval_hours = validity({ source_at: null,
+    source: "fixture:public_metadata_observed_at", metadata_observation: true, ttl_seconds: 21600 });
+  assert.equal(fundingFieldFresh(row, "funding_interval_hours", NOW, NOW), true);
+  row.field_validity.funding_rate = validity({ source_at: null,
+    source: "fixture:public_metadata_observed_at", metadata_observation: true });
+  assert.equal(fundingFieldFresh(row, "funding_rate", NOW, NOW), false);
 });

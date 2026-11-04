@@ -19,6 +19,7 @@ from watch_money.adapters.dex import (
     build_dex_adapters,
 )
 from watch_money.models import Instrument
+from watch_money.quote_identity import MAX_QUOTE_IDENTITY_TTL_MS, quote_identity
 
 
 @pytest.mark.asyncio
@@ -192,6 +193,27 @@ def pair(address="0xABC", **changes):
     return {"chainId": "ethereum", "dexId": "uniswap", "labels": ["v3"], "pairAddress": address,
             "baseToken": {"address": "0xSMALL", "symbol": "SMALL"},
             "quoteToken": {"address": "0xOTHER", "symbol": "OTHER"}, "priceNative": "2", **changes}
+
+
+def test_catalog_quote_identity_uses_explicit_token_address_and_independent_metadata_observation(monkeypatch):
+    from watch_money.adapters import dex
+
+    observed_at = 1_793_820_000_000
+    monkeypatch.setattr(dex, "now_ms", lambda: observed_at)
+    payload = pair("0x" + "aa" * 20, quoteToken={"address": "0x" + "BB" * 20, "symbol": "USDT"})
+    adapter = AggregatedSpotAdapter("uniswap", search_queries=[])
+    item = adapter.register(payload)
+    assert item.quote_asset_id == "ethereum:0x" + "bb" * 20
+    assert item.native_quote_asset_id == item.quote_asset_id
+    assert item.quote_identity_at == observed_at
+    assert item.quote_identity_expires_at == observed_at + MAX_QUOTE_IDENTITY_TTL_MS
+    assert "#quoteToken.address" in item.quote_identity_source
+    assert quote_identity(item, observed_at + 3_600_000, 60_000)[1] == []
+    # New prices without the token identity payload cannot renew the old proof.
+    monkeypatch.setattr(dex, "now_ms", lambda: observed_at + MAX_QUOTE_IDENTITY_TTL_MS)
+    assert adapter.register({**payload, "quoteToken": {"symbol": "USDT"}, "priceNative": "999"}) is None
+    assert item.quote_identity_at == observed_at
+    assert any("expired" in reason for reason in quote_identity(item, observed_at + MAX_QUOTE_IDENTITY_TTL_MS, 60_000)[1])
 
 
 @pytest.mark.asyncio

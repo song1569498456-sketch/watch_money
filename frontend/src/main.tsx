@@ -60,6 +60,7 @@ import type {
   VenueStatus,
 } from "./types";
 import { IdentityCandidates } from "./IdentityCandidates";
+import { AssetVerification } from "./AssetVerification";
 import { NativePoolPanel } from "./NativePoolPanel";
 import { ScannerPage } from "./ScannerPage";
 import { fundingHistorySeries, marketPriceSummary } from "./marketData";
@@ -581,6 +582,7 @@ function App() {
               />
               <details className="panel settings-advanced"><summary>高级诊断 · 原生池状态</summary><NativePoolPanel settings={settings} /></details>
               <details className="panel settings-advanced"><summary>资产身份与映射管理</summary>
+              <AssetVerification onChanged={() => { void load(); setToast("身份核验状态已更新"); }} />
               <IdentityCandidates refreshKey={identityVersion} />
               <AssetMappings
                 instruments={markets.instruments}
@@ -1558,6 +1560,20 @@ function Metric({
     </div>
   );
 }
+function CollectionCoverage({ status, prefix }: { status: VenueStatus; prefix: "light" | "funding" }) {
+  const observed = status[`${prefix}_observed_markets`];
+  const fresh = status[`${prefix}_fresh_markets`];
+  const cycle = status[`${prefix}_cycle_seconds`];
+  const estimate = status[`${prefix}_estimated_cycle_seconds`];
+  const mode = status[`${prefix}_mode`];
+  return <div className="collection-coverage">
+    <small>覆盖统计：已观测 {num(observed, 0)} / {prefix === "light" ? "新鲜双边盘口" : "有效费率与周期"} {num(fresh, 0)} · {status[`${prefix}_coverage_ratio`] == null ? "未知" : `${num(status[`${prefix}_coverage_ratio`]! * 100, 1)}%`}</small>
+    <small>批量 {num(status[`${prefix}_bulk_markets`], 0)} 市场 / {num(status[`${prefix}_bulk_groups`], 0)} 组 · 单市场回退 {num(status[`${prefix}_fallback_markets`], 0)}</small>
+    <small>实测整轮间隔 {cycle == null ? "尚不足两轮" : `${num(cycle, 2)} 秒`} · 估计刷新间隔 {estimate == null ? "未知" : `${num(estimate, 2)} 秒`}</small>
+    <small>最近完整轮转 {time(status[`${prefix}_last_cycle_at`])}</small>
+    <small className="muted">{mode ?? "采集方式未提供"} · 统计按字段来源与既定过期阈值判断，目录数量不代表新鲜覆盖</small>
+  </div>;
+}
 function Status({
   statuses,
   coverage,
@@ -1673,6 +1689,7 @@ function Status({
                       {stateName[s.stream_state] ?? s.stream_state ?? "未提供"}
                     </small>
                     <small>全目录：{s.light_state ?? "未提供"} · {s.light_subscriptions ?? 0} 市场 · 最近 {age(s.light_last_received_at, now)}</small>
+                    <CollectionCoverage status={s} prefix="light" />
                     <small>轻量重试：{num(s.light_retries, 0)} · 目录发现：{s.discovery_complete ? "已完成" : "尚未完成"}
                       {s.discovery_state ? ` · ${stateName[s.discovery_state] ?? s.discovery_state}` : ""}</small>
                   </td>
@@ -1682,6 +1699,7 @@ function Status({
                     </Badge>
                     <small className="muted">{num(s.funding_subscriptions, 0)} 个市场 · 重试 {num(s.funding_retries, 0)}</small>
                     <small className="muted" title={time(s.funding_last_received_at)}>最近 {age(s.funding_last_received_at, now)}</small>
+                    <CollectionCoverage status={s} prefix="funding" />
                   </td>
                   <td className="mono">{num(s.stream_reconnects, 0)}</td>
                   <td title={time(s.last_received_at)}>
@@ -1958,17 +1976,29 @@ function SettingsPage({
                 onChange={(e) => update("poll_seconds", Number(e.target.value))}
               />
             </Field>
-            <Field label="全目录每批间隔 / 秒">
+            <Field label="全目录目标刷新周期 / 秒" hint="按整轮起点计时；已审查批量接口与逐市场回退独立调度，实际周期见数据源诊断">
               <input type="number" min={10} max={3600} required value={draft.broad_poll_seconds}
                 onChange={(e) => update("broad_poll_seconds", Number(e.target.value))} />
             </Field>
-            <Field label="全目录每批市场数" hint="1–100；完成整轮所需时间随市场数增长">
+            <Field label="其他来源每批市场数" hint="1–100；未适配批量计划的来源继续有界采集，目录规模与真实限流决定整轮耗时">
               <input type="number" min={1} max={100} required value={draft.broad_batch_size}
                 onChange={(e) => update("broad_batch_size", Number(e.target.value))} />
             </Field>
-            <Field label="资金费采集周期 / 秒" hint="资金费目录独立刷新；行情源未提供的字段不会用零替代">
-              <input type="number" min={10} max={3600} required value={draft.funding_poll_seconds ?? 60}
+            <Field label="CEX 逐市场回退每批数量" hint="1–100；只约束无法使用已审查批量接口的市场">
+              <input type="number" min={1} max={100} required value={draft.broad_symbol_batch_size ?? 20}
+                onChange={(e) => update("broad_symbol_batch_size", Number(e.target.value))} />
+            </Field>
+            <Field label="资金费采集周期 / 秒" hint="资金费整轮独立刷新；未达新鲜覆盖时明确显示，不放宽过期阈值">
+              <input type="number" min={10} max={3600} required value={draft.funding_poll_seconds ?? 30}
                 onChange={(e) => update("funding_poll_seconds", Number(e.target.value))} />
+            </Field>
+            <Field label="回退批次之间间隔 / 秒" hint="一轮内的短间隔，平台自身限流仍生效">
+              <input type="number" min={0} max={60} step="any" required value={draft.broad_inter_batch_seconds ?? .25}
+                onChange={(e) => update("broad_inter_batch_seconds", Number(e.target.value))} />
+            </Field>
+            <Field label="单次采集超时 / 秒" hint="超时隔离失败市场，避免阻塞整轮">
+              <input type="number" min={5} max={90} required value={draft.broad_request_timeout_seconds ?? 25}
+                onChange={(e) => update("broad_request_timeout_seconds", Number(e.target.value))} />
             </Field>
             <Field label="市场目录刷新 / 秒" hint="300–21600；定期发现新增币种、市场及下架状态">
               <input type="number" min={300} max={21600} required value={draft.discovery_seconds ?? 1800}

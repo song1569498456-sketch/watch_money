@@ -61,6 +61,7 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     from .funding_history import FundingHistoryService
     from .funding_history import router as funding_history_router
     from .fee_profiles import router as fees_router
+    from .asset_verification import AssetVerificationService, router as asset_verification_router
     notifications = NotificationService(data_dir)
     notifications.set_enabled(store.settings().notifications_enabled)
     collector = Collector(store, adapters, notifications)
@@ -77,6 +78,7 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
             yield
         finally:
             await monitors.stop()
+            await app.state.asset_verification.close()
             await collector.stop()
             await notifications.stop()
 
@@ -94,6 +96,8 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     app.include_router(funding_router)
     app.include_router(funding_history_router)
     app.include_router(fees_router)
+    app.state.asset_verification = AssetVerificationService(store, collector)
+    app.include_router(asset_verification_router)
 
     @app.get('/api/health')
     def health():
@@ -105,6 +109,7 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
 
     @app.get('/api/status')
     def status():
+        collector.refresh_status_coverage()
         from .adapters.cex import coverage as cex_coverage
         from .adapters.dex import coverage as dex_coverage
         return {'venues': [s.model_dump() for s in collector.statuses.values()],

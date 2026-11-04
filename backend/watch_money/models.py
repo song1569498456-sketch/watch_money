@@ -28,6 +28,11 @@ class Instrument(Model):
     native_symbol: str
     asset_id: str
     native_asset_id: str | None = None
+    quote_asset_id: str | None = None
+    native_quote_asset_id: str | None = None
+    quote_identity_source: str | None = None
+    quote_identity_at: int | None = None
+    quote_identity_expires_at: int | None = None
     base: str
     quote: str
     settle: str | None = None
@@ -44,6 +49,10 @@ class Instrument(Model):
     min_notional: float | None = None
     index_source: str | None = None
     mapping_verified: bool = False
+    mapping_evidence_ids: list[str] = Field(default_factory=list)
+    mapping_verified_at: int | None = None
+    mapping_expires_at: int | None = None
+    mapping_evidence_status: str | None = None
 
 class Pool(Model):
     id: str
@@ -127,10 +136,32 @@ class VenueStatus(Model):
     funding_last_received_at: int | None = None
     funding_retries: int = 0
     funding_errors: dict[str, str] = Field(default_factory=dict)
+    funding_bulk_markets: int = 0
+    funding_fallback_markets: int = 0
+    funding_bulk_groups: int = 0
+    funding_observed_markets: int = 0
+    funding_fresh_markets: int = 0
+    funding_coverage_ratio: float = 0
+    funding_cycle_seconds: float | None = None
+    funding_estimated_cycle_seconds: float | None = None
+    funding_last_cycle_at: int | None = None
+    funding_last_attempt_at: int | None = None
+    funding_mode: str | None = None
     light_state: str = 'idle'
     light_subscriptions: int = 0
     light_last_received_at: int | None = None
     light_retries: int = 0
+    light_bulk_markets: int = 0
+    light_fallback_markets: int = 0
+    light_bulk_groups: int = 0
+    light_observed_markets: int = 0
+    light_fresh_markets: int = 0
+    light_coverage_ratio: float = 0
+    light_cycle_seconds: float | None = None
+    light_estimated_cycle_seconds: float | None = None
+    light_last_cycle_at: int | None = None
+    light_last_attempt_at: int | None = None
+    light_mode: str | None = None
     detail_errors: dict[str, str] = Field(default_factory=dict)
     discovery_state: str | None = None
     discovery_complete: bool = False
@@ -152,9 +183,12 @@ class Settings(Model):
     prefer_websocket: bool = True
     broad_collection_enabled: bool = True
     broad_poll_seconds: float = Field(default=30, ge=10, le=3600)
-    funding_poll_seconds: float = Field(default=60, ge=10, le=3600)
+    funding_poll_seconds: float = Field(default=30, ge=10, le=3600)
     discovery_seconds: float = Field(default=1800, ge=300, le=21600)
     broad_batch_size: int = Field(default=100, ge=1, le=100)
+    broad_symbol_batch_size: int = Field(default=20, ge=1, le=100)
+    broad_inter_batch_seconds: float = Field(default=.25, ge=0, le=60)
+    broad_request_timeout_seconds: float = Field(default=25, ge=5, le=90)
     recording_enabled: bool = False
     recording_venues: list[str] = Field(default_factory=list)
     recording_max_mb: int = Field(default=100, ge=1, le=10000)

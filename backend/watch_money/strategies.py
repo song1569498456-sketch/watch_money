@@ -18,6 +18,12 @@ from pydantic import Field, model_validator
 
 from .identity import identity_candidates
 from .models import Instrument, MarketSnapshot, Model, OrderBook, now_ms
+from .quote_identity import (
+    canonical_asset_id,
+    quote_identity,
+    requires_quote_identity,
+    traceable_quote_source,
+)
 
 Strategy = Literal[
     "spot_spread", "spot_perp_basis", "perp_spread", "funding_spread",
@@ -31,6 +37,10 @@ class FXRate(Model):
     rate: float = Field(gt=0)
     source: str = Field(min_length=1)
     at: int
+    # Required for a conversion involving on-chain quote denominations, even
+    # when both tokens share the same display symbol.
+    base_asset_id: str | None = None
+    quote_asset_id: str | None = None
 
 
 class LegCost(Model):
@@ -65,6 +75,7 @@ class RouteQuote(Model):
     source: str = Field(min_length=1)
     source_at: int
     received_at: int
+    quote_asset_id: str | None = None
     # The output already includes pool / route fees and price impact.
     fees_included: bool = True
     gas_amount: float | None = Field(default=None, ge=0)
@@ -167,7 +178,32 @@ def _field_fresh(snapshot: MarketSnapshot, field: str, req: CalculateRequest) ->
     return _fresh(source, received, req)
 
 
-def _fx(currency: str, req: CalculateRequest) -> tuple[float | None, dict | None]:
+def _fx(currency: str, req: CalculateRequest, *, asset_id: str | None = None,
+        valuation_asset_id: str | None = None) -> tuple[float | None, dict | None]:
+    if asset_id is not None or valuation_asset_id is not None:
+        if asset_id is not None and asset_id == valuation_asset_id:
+            return 1.0, {"base": currency, "quote": req.valuation_currency, "rate": 1.0,
+                         "source": "same confirmed quote asset identity", "asset_id": asset_id,
+                         "at": req.as_of}
+        candidates = []
+        for item in req.fx_rates:
+            base_id = canonical_asset_id(item.base_asset_id) or item.base_asset_id
+            quote_id = canonical_asset_id(item.quote_asset_id) or item.quote_asset_id
+            if (not 0 <= req.as_of - item.at <= req.fx_stale_seconds * 1000
+                    or not traceable_quote_source(item.source)):
+                continue
+            if (base_id == asset_id and quote_id == valuation_asset_id and item.base == currency
+                    and item.quote == req.valuation_currency):
+                candidates.append((item, item.rate))
+            elif (quote_id == asset_id and base_id == valuation_asset_id and item.quote == currency
+                  and item.base == req.valuation_currency):
+                candidates.append((item, 1 / item.rate))
+        if not candidates:
+            return None, None
+        item, rate = max(candidates, key=lambda pair: pair[0].at)
+        return rate, {**item.model_dump(), "applied_rate": rate, "from": currency,
+                      "to": req.valuation_currency, "from_asset_id": asset_id,
+                      "to_asset_id": valuation_asset_id}
     if currency == req.valuation_currency:
         return 1.0, {"base": currency, "quote": currency, "rate": 1.0, "source": "identity", "at": req.as_of}
     candidates = [f for f in req.fx_rates if
@@ -244,6 +280,10 @@ def _fill_book(instrument: Instrument, book: OrderBook, side: str, size: float) 
 
 
 def _fill_route(instrument: Instrument, route: RouteQuote, size: float) -> dict:
+    if requires_quote_identity(instrument):
+        expected_quote = canonical_asset_id(instrument.native_quote_asset_id or instrument.quote_asset_id)
+        if expected_quote is None or canonical_asset_id(route.quote_asset_id) != expected_quote:
+            raise ValueError("Route quote token identity must match the instrument's confirmed quote token contract")
     expected_in = instrument.quote if route.side == "buy" else instrument.base
     expected_out = instrument.base if route.side == "buy" else instrument.quote
     if route.input_asset != expected_in or route.output_asset != expected_out:
@@ -258,7 +298,8 @@ def _fill_route(instrument: Instrument, route: RouteQuote, size: float) -> dict:
         raise ValueError("DEX quote must include pool and route fees in its input/output amounts")
     quote_amount = route.input_amount if route.side == "buy" else route.output_amount
     return {"instrument_id": instrument.id, "venue": instrument.venue, "side": route.side,
-            "quote_currency": instrument.quote, "size_base": size, "filled_base": size,
+            "quote_currency": instrument.quote, "quote_asset_id": canonical_asset_id(route.quote_asset_id),
+            "size_base": size, "filled_base": size,
             "capacity_base": size, "complete": True, "average_price": quote_amount / size,
             "quote_amount": quote_amount, "quantity_unit": "base", "source": route.source,
             "source_at": route.source_at, "received_at": route.received_at,
@@ -289,7 +330,7 @@ def _classification(req: CalculateRequest, buy: Instrument, sell: Instrument) ->
     # A reviewed mapping cannot erase native token addresses, chain conflicts
     # or scaled/wrapped base units. Share the catalog review's identity gate;
     # its quote/contract conversion requirements remain separate below.
-    shared_identity = next((row for row in identity_candidates([buy, sell])
+    shared_identity = next((row for row in identity_candidates([buy, sell], as_of=req.as_of)
                             if row["kind"] == "identity" and len(row["instrument_ids"]) == 2), None)
     if shared_identity is None:
         return ["Asset identity evidence does not establish a comparable base unit"]
@@ -369,13 +410,23 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
            "missing_prerequisites": [], "invalid_reasons": [], "legs": [], "costs": [], "scenarios": [],
            "fx_rates": [], "assumptions": [], "is_demo": False, "stale": False,
            "data_age_seconds": None, "breakeven_hours": None, "venues": [], "funding_events": [],
-           "holding_cost": None, "borrowing_cost": None, "holding_costs": []}
+           "holding_cost": None, "borrowing_cost": None, "holding_costs": [], "quote_assets": []}
     missing, invalid = out["missing_prerequisites"], out["invalid_reasons"]
     if buy is None or sell is None:
         missing.append("Explicit metadata for both instruments is required")
         return out
     out["venues"] = list(dict.fromkeys([buy.venue, sell.venue]))
     invalid.extend(_classification(req, buy, sell))
+    quote_ids = {}
+    has_chain_quote = any(requires_quote_identity(inst) for inst in (buy, sell))
+    if has_chain_quote:
+        for inst in (buy, sell):
+            asset_id, problems = quote_identity(inst, req.as_of, req.stale_seconds * 1000)
+            quote_ids[inst.id] = asset_id
+            invalid.extend(f"{inst.id}: {problem}" for problem in problems)
+            out["quote_assets"].append({"instrument_id": inst.id, "symbol": inst.quote,
+                                        "asset_id": asset_id, "source": inst.quote_identity_source,
+                                        "at": inst.quote_identity_at, "expires_at": inst.quote_identity_expires_at})
     if invalid:
         out["status"] = "invalidated"
         return out
@@ -389,7 +440,23 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
     out["assumptions"].append(f"Inventory path: {req.inventory_path}")
     if req.inventory_path == "prepositioned":
         out["assumptions"].append("Assets and collateral are available on both venues; account feasibility is not verified")
+    valuation_asset_id = None
+    if has_chain_quote:
+        if req.valuation_currency == buy.quote:
+            valuation_asset_id = quote_ids[buy.id]
+        elif req.valuation_currency == sell.quote:
+            valuation_asset_id = quote_ids[sell.id]
+        elif canonical_asset_id(req.valuation_currency):
+            valuation_asset_id = canonical_asset_id(req.valuation_currency)
+        elif req.valuation_currency in {"USD", "EUR", "GBP", "JPY", "KRW", "CHF", "CAD", "AUD", "CNY", "HKD", "SGD"}:
+            valuation_asset_id = f"fiat:{req.valuation_currency}"
+        else:
+            invalid.append("Valuation quote token identity is unavailable; use a confirmed leg denomination or qualified chain:address")
+            out["status"] = "invalidated"
+            return out
+    out["valuation_asset_id"] = valuation_asset_id
     leg_fx = {}
+    leg_fx_evidence = {}
     snapshots = {}
     costs = {c.instrument_id: c for c in req.costs}
     for inst, side in ((buy, "buy"), (sell, "sell")):
@@ -404,10 +471,12 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
             if not snap.field_timestamps and not _fresh(snap.source_at, snap.received_at, req):
                 invalid.append(f"{inst.id}: stale or future market snapshot")
                 out["stale"] = True
-        factor, fx = _fx(inst.quote, req)
+        factor, fx = _fx(inst.quote, req, asset_id=quote_ids.get(inst.id), valuation_asset_id=valuation_asset_id)
         leg_fx[inst.id] = factor
+        leg_fx_evidence[inst.id] = fx
         if factor is None:
-            missing.append(f"{inst.quote}/{req.valuation_currency}: fresh sourced FX rate required")
+            suffix = " with both specific quote asset identities bound" if has_chain_quote else ""
+            missing.append(f"{inst.quote}/{req.valuation_currency}: fresh sourced FX rate required{suffix}")
         elif fx not in out["fx_rates"]:
             out["fx_rates"].append(fx)
         try:
@@ -464,8 +533,12 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
     entry_buy, entry_sell = long_leg["valuation_amount"], short_leg["valuation_amount"]
     out["entry_spread"] = entry_sell - entry_buy
 
-    def add_cost(name, amount, currency, source=None, at=None, category="execution"):
-        factor, provenance = _fx(currency, req)
+    def add_cost(name, amount, currency, source=None, at=None, category="execution", instrument_id=None):
+        inst = instruments.get(instrument_id)
+        if inst is not None and currency == inst.quote:
+            factor, provenance = leg_fx[inst.id], leg_fx_evidence[inst.id]
+        else:
+            factor, provenance = _fx(currency, req)
         value = None if amount is None or factor is None else amount * factor
         if amount is None:
             missing.append(f"{name}: cost pending configuration")
@@ -518,16 +591,16 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
                                  "source": leg["source"], "included_in_price": True, "category": "embedded"})
             if leg.get("gas_amount") is not None and not leg.get("gas_currency"):
                 missing.append(f"{inst.id}: gas currency is required")
-            add_cost(f"{inst.id}: gas", leg.get("gas_amount"), leg.get("gas_currency") or inst.quote, leg["source"], leg["source_at"])
+            add_cost(f"{inst.id}: gas", leg.get("gas_amount"), leg.get("gas_currency") or inst.quote, leg["source"], leg["source_at"], instrument_id=inst.id)
         else:
             fee = config.open_fee_rate if config else None
             add_cost(f"{inst.id}: opening fee", leg["quote_amount"] * fee if fee is not None else None,
-                     inst.quote, config.source if config else None, config.at if config else None)
+                     inst.quote, config.source if config else None, config.at if config else None, instrument_id=inst.id)
         if held:
             fee = config.close_fee_rate if config else None
             amount = size * close_native[inst.id] * fee if fee is not None and inst.id in close_native else None
             add_cost(f"{inst.id}: closing fee", amount, inst.quote,
-                     config.source if config else None, config.at if config else None)
+                     config.source if config else None, config.at if config else None, instrument_id=inst.id)
     for extra in req.extra_costs:
         add_cost(extra.name, extra.amount if extra.at is None or extra.at <= req.as_of else None,
                  extra.currency, extra.source, extra.at)
@@ -806,6 +879,11 @@ def replay_sample(payload: ReplayRequest, request: Request):
     req.route_quotes = [q for q in req.route_quotes if q.received_at <= cutoff and q.source_at <= cutoff]
     req.fx_rates = [f for f in req.fx_rates if f.at <= cutoff]
     req.funding_events = [e for e in req.funding_events if e.known_at <= cutoff]
+    for inst in req.instruments:
+        if inst.quote_identity_at is not None and inst.quote_identity_at > cutoff:
+            inst.quote_identity_at = None
+        if inst.mapping_verified_at is not None and inst.mapping_verified_at > cutoff:
+            inst.mapping_verified = False
     for config in req.costs:
         if config.at is not None and config.at > cutoff:
             config.open_fee_rate = config.close_fee_rate = config.holding_rate_per_hour = None

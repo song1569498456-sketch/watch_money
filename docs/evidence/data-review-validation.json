@@ -1,0 +1,27 @@
+{
+  "date": "2026-11-04",
+  "python": {
+    "passed": 677,
+    "seconds": 19.38,
+    "warnings": 1
+  },
+  "frontend_tests": 29,
+  "build": "passed",
+  "ruff": "passed",
+  "final_throttle_targeted_tests": 25,
+  "browser": {
+    "baseline": 6,
+    "followup": 12,
+    "fee": 7,
+    "navigation": 9,
+    "funding": 6,
+    "asset_verification": 8,
+    "total": 48,
+    "passed": true
+  },
+  "data_mode": "synthetic fixtures, mocked public responses, actual isolated local APIs and browser checks",
+  "live_probes": "data-review-live-probes.json; all three public endpoints ProxyError",
+  "live_acceptance": false,
+  "soak_24h": false,
+  "trading_or_account_api_used": false
+}

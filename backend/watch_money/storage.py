@@ -32,6 +32,8 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS latest (id TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS mappings (
                     instrument_id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, at INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS asset_mapping_verifications (
+                    instrument_id TEXT PRIMARY KEY, metadata TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS audit (
                     id INTEGER PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL, payload TEXT NOT NULL);
             ''')
@@ -63,6 +65,15 @@ class Storage:
         with self.connect() as db:
             rows = db.execute('SELECT value FROM instruments').fetchall()
             mappings = dict(db.execute('SELECT instrument_id,asset_id FROM mappings'))
+            verifications = dict(db.execute('SELECT instrument_id,metadata FROM asset_mapping_verifications'))
+            evidence_statuses = {}
+            evidence_targets = {}
+            if verifications and db.execute("SELECT 1 FROM sqlite_master WHERE name='asset_identity_evidence'").fetchone():
+                for evidence_id, record, evidence_status in db.execute('SELECT id,record,status FROM asset_identity_evidence'):
+                    evidence_statuses[evidence_id] = evidence_status
+                    fact = json.loads(record)
+                    if evidence_status == 'active' and fact.get('canonical_asset_id') and fact['expires_at'] > now_ms():
+                        evidence_targets.setdefault(fact['instrument_id'], set()).add(fact['canonical_asset_id'])
         result = {}
         for row in rows:
             instrument = Instrument.model_validate_json(row[0])
@@ -71,15 +82,20 @@ class Storage:
             if instrument.id in mappings:
                 instrument.asset_id = mappings[instrument.id]
                 instrument.mapping_verified = True
+            if instrument.id in verifications:
+                from .asset_verification import project_mapping_metadata
+                instrument = project_mapping_metadata(instrument, json.loads(verifications[instrument.id]), evidence_statuses,
+                                                       len(evidence_targets.get(instrument.id, set())) > 1)
             result[instrument.id] = instrument
         return result
 
     def map_asset(self, instrument_id: str, asset_id: str):
         self.map_assets([instrument_id], asset_id)
 
-    def map_assets(self, instrument_ids: list[str], asset_id: str):
+    def map_assets(self, instrument_ids: list[str], asset_id: str, *, evidence: dict[str, dict] | None = None,
+                   connection=None):
         # A single transaction prevents partially applied cross-venue confirmations.
-        with self.lock, self.connect() as db:
+        def update(db):
             for instrument_id in dict.fromkeys(instrument_ids):
                 previous = db.execute('SELECT asset_id FROM mappings WHERE instrument_id=?', (instrument_id,)).fetchone()
                 db.execute('INSERT INTO mappings VALUES (?,?,?) ON CONFLICT(instrument_id) DO UPDATE SET asset_id=excluded.asset_id,at=excluded.at',
@@ -87,6 +103,34 @@ class Storage:
                 db.execute('INSERT INTO audit(at,action,payload) VALUES (?,?,?)',
                            (now_ms(), 'asset_mapping', json.dumps({'instrument_id': instrument_id, 'asset_id': asset_id,
                                                                   'previous': previous[0] if previous else None})))
+                if evidence is not None and instrument_id in evidence:
+                    db.execute('INSERT INTO asset_mapping_verifications VALUES(?,?) '
+                               'ON CONFLICT(instrument_id) DO UPDATE SET metadata=excluded.metadata',
+                               (instrument_id, json.dumps(evidence[instrument_id], allow_nan=False)))
+                else:
+                    db.execute('DELETE FROM asset_mapping_verifications WHERE instrument_id=?', (instrument_id,))
+        with self.lock:
+            if connection is not None:
+                update(connection)
+            else:
+                with self.connect() as db:
+                    update(db)
+
+    def unmap_assets(self, instrument_ids: list[str], *, reason: str, connection=None):
+        def update(db):
+            for instrument_id in dict.fromkeys(instrument_ids):
+                previous = db.execute('SELECT asset_id FROM mappings WHERE instrument_id=?', (instrument_id,)).fetchone()
+                db.execute('DELETE FROM mappings WHERE instrument_id=?', (instrument_id,))
+                db.execute('DELETE FROM asset_mapping_verifications WHERE instrument_id=?', (instrument_id,))
+                db.execute('INSERT INTO audit(at,action,payload) VALUES (?,?,?)',
+                           (now_ms(), 'asset_mapping_revoke', json.dumps({'instrument_id': instrument_id,
+                            'previous': previous[0] if previous else None, 'reason': reason})))
+        with self.lock:
+            if connection is not None:
+                update(connection)
+            else:
+                with self.connect() as db:
+                    update(db)
 
     def audit(self):
         with self.connect() as db:
