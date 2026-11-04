@@ -16,7 +16,7 @@ class QueryOverloaded(Exception):
 
 
 class QueryWork:
-    def __init__(self, *, max_queued=2, queue_timeout=1.0, sample_interval=.5):
+    def __init__(self, *, max_queued=2, queue_timeout=1.0, sample_interval=.5, stall_probe=False):
         self.max_queued = max_queued
         self.queue_timeout = queue_timeout
         self.sample_interval = sample_interval
@@ -26,18 +26,24 @@ class QueryWork:
         self.routes = {}
         self.jobs = set()
         self.closed = False
+        from .stall_probe import StallProbe
+        self.stall_probe = StallProbe() if stall_probe else None
         self.sampler = None
         self.loop_lag = {'sample_interval_seconds': sample_interval, 'samples': 0,
                          'last_delay_ms': None, 'max_delay_ms': None, 'last_sample_at': None}
 
     def start(self):
         if self.sampler is None and not self.closed:
+            if self.stall_probe is not None:
+                self.stall_probe.start()
             self.sampler = asyncio.create_task(self._sample_loop(), name='public-query-loop-lag')
 
     async def _sample_loop(self):
         while True:
             deadline = perf_counter() + self.sample_interval
             await asyncio.sleep(self.sample_interval)
+            if self.stall_probe is not None:
+                self.stall_probe.beat()
             delay = round(max(0, perf_counter() - deadline) * 1000, 3)
             self.loop_lag.update(samples=self.loop_lag['samples'] + 1, last_delay_ms=delay,
                                  max_delay_ms=max(self.loop_lag['max_delay_ms'] or 0, delay),
@@ -155,7 +161,8 @@ class QueryWork:
                 headers={'Retry-After': '2'})
 
     def diagnostics(self):
-        return {'capacity': 1, 'active': self.active, 'queued': self.queued,
+        return {'stall_probe': self.stall_probe.snapshot() if self.stall_probe else {'enabled': False},
+                'capacity': 1, 'active': self.active, 'queued': self.queued,
                 'max_queued': self.max_queued, 'queue_timeout_seconds': self.queue_timeout,
                 'closed': self.closed, 'routes': deepcopy(self.routes),
                 'event_loop': {**self.loop_lag,
@@ -164,6 +171,8 @@ class QueryWork:
 
     async def close(self):
         self.closed = True
+        if self.stall_probe is not None:
+            self.stall_probe.close()
         if self.sampler is not None:
             self.sampler.cancel()
             await asyncio.gather(self.sampler, return_exceptions=True)

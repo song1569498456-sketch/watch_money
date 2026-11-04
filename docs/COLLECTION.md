@@ -204,3 +204,18 @@ app lifespan启动每0.5秒的本地timer采样，提供最近/最大调度迟�
 总览价格状态现在与显示字段对应：`price_fields`选择bid/ask或last/mark/index，`price_valid`描述这些价格和时序是否有效，`price_source_known`说明是否有其自身源时间，`price_fresh`还要求未过期。既有`valid`保留结构层意义，不应单独用于绿点/新鲜计数；无价格、单侧且无参考价格、未知源时间或异常时间不计新鲜。无关资金费字段的stale标记保留，不给价格字段续期，也不替代资金费门槛。
 
 本批合成10000市场样本：markets0.481秒、scanner0.730秒、并行二查询1.215秒，10ms诊断timer最大延迟约113ms；实际query-work的0.5秒采样只测到最大6.253ms，采样间隔不同不可相互替代。此次与完整pytest/浏览器工作共享机器，不把数字当吞吐保证。证据query-admission-diagnostic.json中的每路队列/CPU/阶段计时用于定位，诊断端点包含最后完成与进程启动以来总耗时最慢的任务（slowest_execution，样本采集后新增并单独回归）；不记录请求参数或返回行情。此前父线程markets27.16秒和HL应用pong超时仍需同时间实网轨迹解释，未放宽任何阈值。
+
+## 可控卡顿取证（2026-11-04）
+
+在同一环境、同一公开平台集合下，启动应用前设置 `WATCH_MONEY_STALL_PROBE=1`，重启应用后访问 `/api/query-work`。默认不开启；不改账户设置、不读取账户 API，也不改变价格/资金费有效期。诊断线程每 0.5 秒检查事件循环心跳；超过 2 秒捕获，10 秒冷却，只在内存保留最近 12 次（重启清空）。关闭应用会停止线程。
+
+`stall_probe.events` 含观测 UTC 时间、心跳年龄、独立线程自身调度延迟、最多 16 个线程各 24 帧的文件 basename/函数名/行号，以及累计进程 CPU、最大 RSS、上下文切换、可读时的 cgroup v2 CPU 限流和 OOM 计数。无局部变量、源代码、参数、环境、绝对路径、请求体或凭证。`ru_maxrss` 在 Linux 单位 KiB；CPU/限流计数要比较相邻样本差值，不是当前使用率。未知 cgroup 数据为 null。捕获有开销，所以默认关闭且限频。
+
+建议外部验证分两轮，每轮记录启动/结束时间、提交、平台、是否开启探针及 `/api/query-work`：
+
+1. status-only：固定低频请求 status 与 query-work，记录客户端请求耗时、失败和采样空窗；不调用 markets/scanner/funding。同时观察 HL/OKX 原始来源新鲜度及断连原因，保持既定有效性门槛。
+2. 相同配置下按固定频率加入 markets/scanner/funding，记录 query-work 中 active/queued、各阶段 CPU/墙钟时间、拒绝计数和探针事件。不要无界并发。若外部执行服务也断开，单独记录其时间区间，与应用观测对齐。
+
+`loop_heartbeat_stall` 表示观察线程仍调度而循环心跳停止，查看 event_loop 栈是否持续停在同一同步调用；其他线程可提供锁/工作线程线索。`shared_scheduling_gap` 表示观察线程自身也晚醒，可能是环境暂停、CPU 限流、GIL 或调度问题，不能据此唯一归因。恢复后抓到的栈不代表停顿期间的栈。Python 无法保证在进程被冻结或 GIL 被长期持有时抓栈，需结合宿主或执行服务证据。该探针不测网络 RTT，也不能独自证明网络故障；不要把时间相关性当成因果。
+
+不探测或绕过 Lighter 的 restricted jurisdiction。此环境公开交易所网络受限，本地可控阻塞只验证取证功能，不替代持续实网和 24 小时验收。

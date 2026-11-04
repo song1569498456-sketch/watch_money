@@ -1,0 +1,266 @@
+{
+  "kind": "local synthetic event-loop blocking experiment; no exchange/network validation",
+  "diagnostics": {
+    "stall_probe": {
+      "enabled": true,
+      "running": true,
+      "baseline": {
+        "at_ms": 1793822043860,
+        "resources": {
+          "ru_utime": 0.20247199999999999,
+          "ru_stime": 0.032247,
+          "ru_maxrss": 35204,
+          "ru_nvcsw": 0,
+          "ru_nivcsw": 1,
+          "cpu.stat": {
+            "usage_usec": 1661691741,
+            "nr_throttled": 181,
+            "throttled_usec": 6689262
+          },
+          "memory.events": {
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0
+          }
+        }
+      },
+      "threshold_seconds": 0.04,
+      "cooldown_seconds": 0.1,
+      "capacity": 12,
+      "total_captures": 2,
+      "events": [
+        {
+          "at_ms": 1793822043921,
+          "loop_heartbeat_age_ms": 40.217,
+          "watchdog_delay_ms": 0.088,
+          "kind": "loop_heartbeat_stall",
+          "resources": {
+            "ru_utime": 0.203145,
+            "ru_stime": 0.032354,
+            "ru_maxrss": 35332,
+            "ru_nvcsw": 11,
+            "ru_nivcsw": 1,
+            "cpu.stat": {
+              "usage_usec": 1661692588,
+              "nr_throttled": 181,
+              "throttled_usec": 6689262
+            },
+            "memory.events": {
+              "high": 0,
+              "max": 0,
+              "oom": 0,
+              "oom_kill": 0
+            }
+          },
+          "threads": [
+            {
+              "role": "event_loop",
+              "stack": [
+                {
+                  "file": "<stdin>",
+                  "function": "main",
+                  "line": 10
+                },
+                {
+                  "file": "events.py",
+                  "function": "_run",
+                  "line": 88
+                },
+                {
+                  "file": "base_events.py",
+                  "function": "_run_once",
+                  "line": 1999
+                },
+                {
+                  "file": "base_events.py",
+                  "function": "run_forever",
+                  "line": 645
+                },
+                {
+                  "file": "base_events.py",
+                  "function": "run_until_complete",
+                  "line": 678
+                },
+                {
+                  "file": "runners.py",
+                  "function": "run",
+                  "line": 118
+                },
+                {
+                  "file": "runners.py",
+                  "function": "run",
+                  "line": 195
+                },
+                {
+                  "file": "<stdin>",
+                  "function": "<module>",
+                  "line": 16
+                }
+              ]
+            },
+            {
+              "role": "other",
+              "stack": [
+                {
+                  "file": "stall_probe.py",
+                  "function": "stacks",
+                  "line": 39
+                },
+                {
+                  "file": "stall_probe.py",
+                  "function": "observe",
+                  "line": 81
+                },
+                {
+                  "file": "stall_probe.py",
+                  "function": "_run",
+                  "line": 90
+                },
+                {
+                  "file": "threading.py",
+                  "function": "run",
+                  "line": 1012
+                },
+                {
+                  "file": "threading.py",
+                  "function": "_bootstrap_inner",
+                  "line": 1075
+                },
+                {
+                  "file": "threading.py",
+                  "function": "_bootstrap",
+                  "line": 1032
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "at_ms": 1793822044022,
+          "loop_heartbeat_age_ms": 141.367,
+          "watchdog_delay_ms": 0.077,
+          "kind": "loop_heartbeat_stall",
+          "resources": {
+            "ru_utime": 0.203543,
+            "ru_stime": 0.032417999999999995,
+            "ru_maxrss": 35332,
+            "ru_nvcsw": 21,
+            "ru_nivcsw": 1,
+            "cpu.stat": {
+              "usage_usec": 1661693050,
+              "nr_throttled": 181,
+              "throttled_usec": 6689262
+            },
+            "memory.events": {
+              "high": 0,
+              "max": 0,
+              "oom": 0,
+              "oom_kill": 0
+            }
+          },
+          "threads": [
+            {
+              "role": "event_loop",
+              "stack": [
+                {
+                  "file": "<stdin>",
+                  "function": "main",
+                  "line": 10
+                },
+                {
+                  "file": "events.py",
+                  "function": "_run",
+                  "line": 88
+                },
+                {
+                  "file": "base_events.py",
+                  "function": "_run_once",
+                  "line": 1999
+                },
+                {
+                  "file": "base_events.py",
+                  "function": "run_forever",
+                  "line": 645
+                },
+                {
+                  "file": "base_events.py",
+                  "function": "run_until_complete",
+                  "line": 678
+                },
+                {
+                  "file": "runners.py",
+                  "function": "run",
+                  "line": 118
+                },
+                {
+                  "file": "runners.py",
+                  "function": "run",
+                  "line": 195
+                },
+                {
+                  "file": "<stdin>",
+                  "function": "<module>",
+                  "line": 16
+                }
+              ]
+            },
+            {
+              "role": "other",
+              "stack": [
+                {
+                  "file": "stall_probe.py",
+                  "function": "stacks",
+                  "line": 39
+                },
+                {
+                  "file": "stall_probe.py",
+                  "function": "observe",
+                  "line": 81
+                },
+                {
+                  "file": "stall_probe.py",
+                  "function": "_run",
+                  "line": 90
+                },
+                {
+                  "file": "threading.py",
+                  "function": "run",
+                  "line": 1012
+                },
+                {
+                  "file": "threading.py",
+                  "function": "_bootstrap_inner",
+                  "line": 1075
+                },
+                {
+                  "file": "threading.py",
+                  "function": "_bootstrap",
+                  "line": 1032
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "meaning": "Stacks at capture, not causal proof. Shared gaps may be GIL, CPU throttling, process/host suspension or scheduling. No network latency measurement. Resources are cumulative; compare successive captures. maxrss is KiB on Linux."
+    },
+    "capacity": 1,
+    "active": 0,
+    "queued": 0,
+    "max_queued": 2,
+    "queue_timeout_seconds": 1.0,
+    "closed": false,
+    "routes": {},
+    "event_loop": {
+      "sample_interval_seconds": 0.01,
+      "samples": 5,
+      "last_delay_ms": 0.124,
+      "max_delay_ms": 160.259,
+      "last_sample_at": 1793822044071,
+      "meaning": "Local timer scheduling delay; not network latency or source freshness."
+    },
+    "cpu_meaning": "worker_cpu_ms is this worker thread; process_cpu_ms_during_job includes other threads."
+  },
+  "thread_stopped": true
+}

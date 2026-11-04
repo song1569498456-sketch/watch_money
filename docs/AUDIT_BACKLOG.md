@@ -175,3 +175,9 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 证据：`docs/evidence/browser-market-view-order.json`、`browser-navigation.json`、`browser-overview-freshness.json` 与截图；行情为本地合成，未访问账户或执行交易。原始 source/receipt 时间不变，未放宽有效性门槛。实网超时、资金费空窗、24 小时和其他未完成清单仍开放。
 
 - 最终完整验证：851 项后端测试（31.02 秒）、44 项前端测试、生产构建、Ruff 与 diff 检查通过。后端仅一条上游 TestClient 弃用警告。
+
+### R25 持续时效与停顿归因（2026-11-04，开放）
+
+- 独立 e4405d6 实网证据：Bitget 921/928 可比较；重查询时 HL 347→0、OKX 540→0。status-only 无重查询仍出现 21.64 秒 loop 延迟、37.97 秒 status 与 HL ApplicationPongTimeout；执行服务亦曾断连。不能仅由时延认定程序或环境为唯一根因。
+- 已实现取证：`stall_probe.py` 可选独立线程/循环心跳对照，限频、限容量栈与固定资源计数；由 `WATCH_MONEY_STALL_PROBE=1` 开启，`/api/query-work` 获取。默认关闭、不采集局部值或凭证。可控循环阻塞、共同调度空窗、关闭清理、默认禁用及隐私边界见 `test_stall_probe.py`。
+- 待验收：按 COLLECTION.md 两轮对照，在真实卡顿时收集事件、资源增量、客户端采样空窗和执行服务时间线；尚未取得根因证据，HL/OKX 持续时效未通过。身份映射真实覆盖、原生 DEX 和 24 小时运行仍按原清单开放；不以本次诊断实现标记完成，也不重试受限 Lighter。

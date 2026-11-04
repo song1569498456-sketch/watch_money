@@ -68,7 +68,7 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     notifications.set_enabled(store.settings().notifications_enabled)
     collector = Collector(store, adapters, notifications)
     monitors = MonitorService(store, collector, notifications)
-    query_work = QueryWork()
+    query_work = QueryWork(stall_probe=os.getenv('WATCH_MONEY_STALL_PROBE', '0') == '1')
     run_collectors = start_collector if start_collector is not None else os.getenv('WATCH_MONEY_COLLECT', '1') == '1'
 
     @asynccontextmanager
