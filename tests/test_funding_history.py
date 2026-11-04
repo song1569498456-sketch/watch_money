@@ -496,3 +496,62 @@ async def test_htx_installed_parser_routes_inverse_public_but_returns_advertised
         assert calls == [{'contract_code': 'BTC-USD', 'page_size': 50, 'page_index': 1}]
     finally:
         await adapter.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["instrument", "market", "removed", "adapter", "client"])
+async def test_history_rejects_scope_changes_during_request(setup_history, change):
+    service, item, client, adapter = setup_history()
+
+    async def fetch(*args):
+        if change == "instrument":
+            service.collector.instruments[item.id] = item.model_copy(update={"settle": "USDC"})
+        elif change == "market":
+            adapter._markets[item.id][1]["settle"] = "USDC"
+        elif change == "removed":
+            del adapter._markets[item.id]
+        elif change == "adapter":
+            service.collector.adapters[item.venue] = object()
+        else:
+            adapter._markets[item.id] = ("binancecoinm", adapter._markets[item.id][1])
+        return [entry()]
+
+    client.fetch_funding_rate_history = fetch
+    with pytest.raises(HTTPException) as exc:
+        await service.get(item.id, refresh=True)
+    assert exc.value.status_code == 409
+    assert service._read(item.id, None, 100) == ([], 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock_kind", ["refresh", "limiter"])
+async def test_queued_history_rechecks_scope_before_request(setup_history, lock_kind):
+    service, item, client, adapter = setup_history()
+    if lock_kind == "limiter":
+        adapter._semaphore = asyncio.Semaphore(1)
+    lock = service._refresh_lock if lock_kind == "refresh" else adapter._semaphore
+    await lock.acquire()
+    task = asyncio.create_task(service.get(item.id, refresh=True))
+    # Run until the task reaches its first blocked acquisition.
+    await asyncio.sleep(0)
+    service.collector.instruments[item.id] = item.model_copy(update={"settle": "USDC"})
+    lock.release()
+    with pytest.raises(HTTPException) as exc:
+        await task
+    assert exc.value.status_code == 409
+    assert client.calls == []
+    assert service._read(item.id, None, 100) == ([], 0)
+
+
+@pytest.mark.asyncio
+async def test_history_allows_unrelated_metadata_refresh(setup_history):
+    service, item, client, adapter = setup_history()
+
+    async def fetch(*args):
+        adapter._markets[item.id][1]["info"]["fundingIntervalHours"] = 4
+        return [entry()]
+
+    client.fetch_funding_rate_history = fetch
+    result = await service.get(item.id, refresh=True)
+    assert result["summary"]["accepted_count"] == 1
+    assert result["records"][0]["funding_interval_hours"] is None

@@ -151,3 +151,7 @@ HTX线性CCXT已路由v5 market funding_rate_history，不直接沿用旧USDT文
 dYdX v4公共historicalFunding新增已结算历史，准确ticker、带时区effectiveAt、原始height/rate；治理可能改变epoch，逐条周期未证实则null。最新单页最多100条，不提供旧页自动回填，尚无实网验证。官方来源/临时库复测步骤见FUNDING_VIEW R43；生产身份未批准。
 
 独立长测的403发生于OKX公共ticker WebSocket经本地代理建连，保留错误仅代理地址，缺底层响应详情；此前51.7秒计时延迟及其他平台覆盖同时下降。不能归因单平台，亦不能确认代理策略/上游/短暂基础设施原因。守卫在13分50秒停止，24小时未完成、不重试或绕过；需要用户环境或支持方核查运行、代理和网络条件。更新证据摘要deribit-replay-and-guard-stop.json，未触碰原环境。
+
+### R44 身份及历史边界复核
+
+本批修复历史请求与目录更新的一致性，未新增平台或批准身份。四个官方公开身份来源继续遵守原生client/现货范围，Coinbase Exchange证据不能替代Advanced Trade或永续证据；199组Gate/Bitget候选仅隔离演练。未知合约证据及历史周期保持未知，详见AUDIT_BACKLOG R44。未调用受阻OKX WS，24小时验收仍未完成。

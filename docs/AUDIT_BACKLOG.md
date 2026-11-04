@@ -349,3 +349,12 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 长测证据更新：OKX公共ticker WS通过本地代理建连返回403，原记录仅含代理地址，无法确认代理/平台/基础设施责任；51.7秒计时延迟与其他来源覆盖下降同时保留。24h在830秒停止、未完成，不重试/绕过。需要用户环境/支持方进一步核查验收条件，当前未执行任何环境设置变更。
 
 - 最终验证：1155项完整后端（42.52秒）、72项联合历史专项、CI范围Ruff/diff通过；上游TestClient弃用警告一条。本批无前端/浏览器变更，新路径实网与远端CI未确认。
+
+### R44 历史请求与目录更新一致性（2026-11-04）
+
+- 修复CEX历史请求排队及网络等待期间沿用旧目录的缺口。入口复制Instrument，取得刷新锁后重检；CEX在取得限流容量后、响应返回后重检目录、适配器、client ID及原生合约范围（id/symbol/base/quote/settle/swap/linear/inverse/contractSize/active）。变更返回409，不解析保存该响应；无关info更新不误拒绝。Hyperliquid/dYdX既有响应后目录检查增加适配器替换检查。
+- 新8项离线回归覆盖目录/原生字段/client/adapter替换与删除、两个排队边界和无关元数据变更。未改变资金费来源、单位、未知周期或新鲜度门槛；不把历史记录解释为账户支付。
+- 身份复核：Gate/Bitget/KuCoin/Coinbase Exchange公开证据、平台覆盖统计和可撤销批量审核已有实现；证据的客户端与现货范围必须精确匹配，不向永续或Coinbase Advanced Trade隐式扩展。现有199组演练候选不是生产批准，本批没有新增身份批准或声称覆盖扩大。缺少可靠官方合同证据的来源继续未知。
+- 复现命令：`.venv/bin/pytest -q tests/test_funding_history.py tests/test_hyperliquid_funding_history.py tests/test_dydx_funding_history.py`。本批仅合成测试、无实网调用；未重试受阻OKX WS或修改独立环境。24小时未完成与来源归因不明仍开放。
+
+- 验证：80项历史专项、1163项完整后端（42.55秒，1条上游弃用警告）、CI范围Ruff/diff通过。最终取时位置微调后重跑80项历史专项；无浏览器/实网验证，远端CI未确认。

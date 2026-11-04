@@ -5,6 +5,7 @@ import asyncio
 import json
 import sqlite3
 from contextlib import closing
+from copy import deepcopy
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -110,6 +111,7 @@ class FundingHistoryService:
         instrument = self.collector.instruments.get(instrument_id)
         if instrument is None:
             raise HTTPException(404, "Unknown instrument")
+        instrument = deepcopy(instrument)
         issues = []
         summary = {"refreshed": False, "requested_since": since, "limit": limit,
                    "pages": 0, "fetched_count": 0, "accepted_count": 0,
@@ -119,6 +121,8 @@ class FundingHistoryService:
             try:
                 async with asyncio.timeout(self.timeout_seconds):
                     async with self._refresh_lock:
+                        if self.collector.instruments.get(instrument_id) != instrument:
+                            raise HTTPException(409, "Market scope changed while waiting to retrieve history")
                         summary.update(await self._refresh(instrument, since, limit))
             except TimeoutError:
                 raise HTTPException(504, "Public funding history request timed out") from None
@@ -152,7 +156,8 @@ class FundingHistoryService:
                 raise HTTPException(504, "Public funding history request timed out") from None
             raise HTTPException(502, {"error": "Public funding history request failed", "type": type(exc).__name__}) from None
         received = now_ms()
-        if self.collector.instruments.get(instrument.id) != instrument:
+        if (self.collector.instruments.get(instrument.id) != instrument
+                or self.collector.adapters.get(instrument.venue) is not adapter):
             raise HTTPException(409, "Market scope changed while retrieving history")
         rows = payload.get("historicalFunding") if isinstance(payload, dict) else None
         if not isinstance(rows, list) or len(rows) > page_limit:
@@ -233,7 +238,8 @@ class FundingHistoryService:
             raise HTTPException(502, {"error": "Public funding history request failed", "type": type(exc).__name__}) from None
         received = now_ms()
         current = self.collector.instruments.get(instrument.id)
-        if current != instrument or adapter._quotes.get(namespace) != instrument.settle:
+        if (current != instrument or adapter._quotes.get(namespace) != instrument.settle
+                or self.collector.adapters.get(instrument.venue) is not adapter):
             raise HTTPException(409, "Market scope changed while retrieving history")
         if not isinstance(rows, list) or len(rows) > 500:
             raise HTTPException(502, "Malformed or oversized public funding history response")
@@ -309,6 +315,22 @@ class FundingHistoryService:
                     or _market.get("symbol") != instrument.native_symbol
                     or _market.get("settle") != instrument.settle or instrument.settle != instrument.base):
                 raise HTTPException(409, "HTX inverse native contract and fee currency scope is unresolved")
+        # Snapshot the interpretation, not mutable metadata shared with discovery.
+        scope_fields = ("id", "symbol", "base", "quote", "settle", "swap", "linear", "inverse", "contractSize", "active")
+        market_scope = {key: deepcopy(_market.get(key)) for key in scope_fields}
+        _market = deepcopy(_market)
+
+        def check_scope():
+            if (self.collector.instruments.get(instrument.id) != instrument
+                    or self.collector.adapters.get(instrument.venue) is not adapter):
+                raise HTTPException(409, "Market scope changed while retrieving history")
+            try:
+                current_client, current_market = adapter._resolve(instrument)
+            except ValueError:
+                raise HTTPException(409, "Market scope changed while retrieving history") from None
+            if current_client != client_id or any(current_market.get(key) != value for key, value in market_scope.items()):
+                raise HTTPException(409, "Market scope changed while retrieving history")
+
         client = adapter._client(client_id)
         if client.has.get("fetchFundingRateHistory") is not True:
             raise HTTPException(501, "Native public funding rate history is not supported")
@@ -336,7 +358,10 @@ class FundingHistoryService:
             # Count both limiter wait and I/O against a bounded manual refresh.
             async with asyncio.timeout(self.timeout_seconds):
                 async with adapter._semaphore:
+                    check_scope()
                     payloads = await client.fetch_funding_rate_history(instrument.native_symbol, since, page_limit, params)
+        except HTTPException:
+            raise
         except Exception as exc:
             name = type(exc).__name__
             if name in {"AuthenticationError", "PermissionDenied"} or getattr(exc, "status_code", None) in {401, 403}:
@@ -346,9 +371,10 @@ class FundingHistoryService:
             if name == "NotSupported":
                 raise HTTPException(501, "Public funding history endpoint unavailable") from None
             raise HTTPException(502, {"error": "Public funding history request failed", "type": name}) from None
+        received = now_ms()
+        check_scope()
         if not isinstance(payloads, list):
             raise HTTPException(502, "Malformed public funding history response")
-        received = now_ms()
         records = []
         rejected = 0
         reasons: dict[str, int] = {}
