@@ -380,3 +380,15 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 下一项：核对Coinbase Exchange公开目录与现有同client身份证据的衔接，先确认产品和报价时间语义，再决定是否增加行情client；不会直接扩张Advanced Trade身份白名单。
 
 - 最终验证：1182项完整后端（46.11秒，1条上游TestClient弃用警告）、99项联合历史专项、CI范围Ruff/diff通过。首次路由测试发现CCXT默认主机不符，修复为显式官方地址后全量通过；没有实网/浏览器验收，远端CI未确认。
+
+### R47 Coinbase Exchange目录与原生盘口（2026-11-04）
+
+- 官方：[products](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-all-known-trading-pairs)、[book](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-book)、[ticker](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-ticker)、[currencies](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/currencies/get-all-known-currencies)。新增coinbaseexchange现货client，与原coinbase Advanced Trade并存、instrument/native_asset_id分离，不是故障回退或地域替代。目录需原始id/base_currency/quote_currency与解析结果一致；不一致项拒收并记录NativeCurrencyMismatch，discovery_complete=false。
+- 新目录可进入既有Exchange currencies同client公开身份证据流程；public_source_scope仍拒绝Advanced Trade与永续继承。合约地址/链证据不充分、冲突或缺失仍待审，不因接入目录批准映射，不改变BTC/ETH/SOL既有审核规则。
+- 安装版CCXT fetch_tickers走products/spark-lines，不能用于BBO。新client轻量及详细快照显式用GET products/{id}/book?level=1；选中组合深度用level=2，保持并发上限与CCXT公共限流，不轮询level3。保留原生带时区time，未知时间不补receipt；ticker最后成交时间不用于盘口。
+- bids/asks为完整快照，空侧产生清除屏障；auction_mode=true指示性价格清除两侧且不进入正常排行，深度为空。数量取已聚合size，不乘num-orders。畸形、非有限/负数拒收；过期/未来由共同字段门槛排除，乱序/同刻正值不能复活清除，较新完整快照可恢复。观察者之前固定receipt，取消不返回patch。
+- 新17项离线测试：安装版公开目录/盘口路由、无鉴权、原生币种冲突报告、Advanced Trade身份隔离、L1/L2及数量、auction/空侧、未知/过期/未来时间、延迟/取消、清除恢复。已有111项CEX/身份测试通过；未访问行情主机或受阻OKX WS，没有实网/浏览器证据或生产身份批准。
+- 全目录发现不代表全目录实时新鲜：当前按既有有界单市场轮转采集，未接Exchange WS或批量BBO，覆盖/扫描周期需独立实测。没有为追求新鲜而放宽有效期。其它服务失败可报告部分目录，不静默替代。
+- 独立复测：在临时数据目录discover Coinbase adapter，分别统计coinbase与coinbaseexchange ID，检查discovery_errors；选一个coinbaseexchange现货运行fetch_light/orderbook核对原始book.time/size/auction_mode。身份证据须显式刷新coinbase源并检查仅Exchange匹配，不能自动批准。拒绝即停、不换连接。下一项优先做Exchange短时公开实样与全目录时效评估；只有授权环境可达时执行。
+
+- 最终验证：1199项完整后端（49.32秒，1条上游TestClient弃用警告）、17项Exchange专项、111项既有CEX/身份回归、CI范围Ruff/diff通过。最终增加目录冲突可见诊断后再跑17项专项；无实网/浏览器复测，远端CI未确认。

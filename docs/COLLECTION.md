@@ -291,3 +291,13 @@ python scripts/probe_okx_funding_timing.py --live --samples 18 --interval 10 --s
 新增确定性时钟回归：返回时源超前10ms、观察者推进40ms仍不排行；正常过去帧仍通过；bulk/single/detailed在观察者中取消无patch且下一次调用独立取时，详细funding后到不移动旧盘口receipt。这个偏移是模拟扰动，不是实网已观察到错误。
 
 独立父线程4d89f2e验证144个Deribit永续价格/源时间/base量一致、64个交割合约排除、51项专项通过。其24小时尝试830秒因本地代理403被守卫停止，原因未知，未完成；不自动重试或替代路由。摘要见evidence/deribit-replay-and-guard-stop.json，新修复需要另一批独立验证。
+
+### R47 Coinbase Exchange目录与原生盘口（2026-11-04）
+
+- 官方：[products](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-all-known-trading-pairs)、[book](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-book)、[ticker](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-ticker)、[currencies](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/currencies/get-all-known-currencies)。新增coinbaseexchange现货client，与原coinbase Advanced Trade并存、instrument/native_asset_id分离，不是故障回退或地域替代。目录需原始id/base_currency/quote_currency与解析结果一致；不一致项拒收并记录NativeCurrencyMismatch，discovery_complete=false。
+- 新目录可进入既有Exchange currencies同client公开身份证据流程；public_source_scope仍拒绝Advanced Trade与永续继承。合约地址/链证据不充分、冲突或缺失仍待审，不因接入目录批准映射，不改变BTC/ETH/SOL既有审核规则。
+- 安装版CCXT fetch_tickers走products/spark-lines，不能用于BBO。新client轻量及详细快照显式用GET products/{id}/book?level=1；选中组合深度用level=2，保持并发上限与CCXT公共限流，不轮询level3。保留原生带时区time，未知时间不补receipt；ticker最后成交时间不用于盘口。
+- bids/asks为完整快照，空侧产生清除屏障；auction_mode=true指示性价格清除两侧且不进入正常排行，深度为空。数量取已聚合size，不乘num-orders。畸形、非有限/负数拒收；过期/未来由共同字段门槛排除，乱序/同刻正值不能复活清除，较新完整快照可恢复。观察者之前固定receipt，取消不返回patch。
+- 新17项离线测试：安装版公开目录/盘口路由、无鉴权、原生币种冲突报告、Advanced Trade身份隔离、L1/L2及数量、auction/空侧、未知/过期/未来时间、延迟/取消、清除恢复。已有111项CEX/身份测试通过；未访问行情主机或受阻OKX WS，没有实网/浏览器证据或生产身份批准。
+- 全目录发现不代表全目录实时新鲜：当前按既有有界单市场轮转采集，未接Exchange WS或批量BBO，覆盖/扫描周期需独立实测。没有为追求新鲜而放宽有效期。其它服务失败可报告部分目录，不静默替代。
+- 独立复测：在临时数据目录discover Coinbase adapter，分别统计coinbase与coinbaseexchange ID，检查discovery_errors；选一个coinbaseexchange现货运行fetch_light/orderbook核对原始book.time/size/auction_mode。身份证据须显式刷新coinbase源并检查仅Exchange匹配，不能自动批准。拒绝即停、不换连接。下一项优先做Exchange短时公开实样与全目录时效评估；只有授权环境可达时执行。

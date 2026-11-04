@@ -1,5 +1,7 @@
 # 当前开发状态
 
+2026-11-04 R47：新增Coinbase Exchange独立现货目录及book L1/L2原生盘口；与Advanced Trade身份隔离，目录原生币种冲突显式诊断，已有Exchange currencies证据仅同client可用。避免CCXT批量spark-line及ticker成交时间冒充BBO；保留book.time、聚合size、竞价/空侧清除与receipt。**1199项全量后端（49.32秒）、17项新Exchange专项、已有111项CEX/身份回归、CI范围Ruff/diff通过**；最终目录冲突诊断后重跑17项专项。仅离线，无行情主机请求、身份批准或前端变更；全目录时效、实网和24小时未验收。来源/复测/下一项见COLLECTION与AUDIT_BACKLOG R47。
+
 2026-11-04 R46：新增HTX USDT线性永续v1公开已结算历史，严格realized_rate/原生合约/费用币/毫秒时间，周期未知、最多50条最新页。固定文档api.hbdm.com并保留限流，不修改共享客户端或切换主机；v5未审阅。**1182项完整后端（46.11秒）、99项联合历史专项、CI范围Ruff/diff通过**；新增14项回归含安装版底层公共请求URL及配置不变。仅离线，无行情主机请求或身份批准，接口当前实网可用性未知；24小时仍未完成。下一项为Coinbase Exchange目录与同client身份资料衔接，先验证报价时间。详见FUNDING_VIEW/COVERAGE/AUDIT_BACKLOG R46。
 
 2026-11-04 R45：修复父线程离线复现的dYdX历史未来结算误收及同费率区块高度变化未留修订问题。PublicREST在观察者前固定每响应receipt，dYdX/Hyperliquid历史使用该时间；来源内容变化保存旧完整记录并递增revision。**1168项完整后端（42.77秒）、85项历史专项、CI范围Ruff/diff通过**。新增未来/过去延迟、取消及下次取时、高度修订去重和Hyperliquid延迟回归；详见FUNDING_VIEW/AUDIT_BACKLOG R45。仅合成验证，无实网或前端变更；未重试受阻OKX WS，未改独立环境。24小时、广泛身份覆盖及远端CI仍未验收。

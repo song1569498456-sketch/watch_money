@@ -14,6 +14,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -62,8 +63,8 @@ SPECS: dict[str, VenueSpec] = {
     "gate": VenueSpec(("gate",), "https://www.gate.com/docs/developers/apiv4/en/"),
     "mexc": VenueSpec(("mexc",), "https://www.mexc.com/api-docs/spot-v3/introduction"),
     "kucoin": VenueSpec(("kucoin", "kucoinfutures"), "https://www.kucoin.com/docs-new"),
-    "coinbase": VenueSpec(("coinbase",), "https://docs.cdp.coinbase.com/advanced-trade/docs/welcome",
-                          ("spot",), "Advanced Trade public spot service. International/US derivatives "
+    "coinbase": VenueSpec(("coinbase", "coinbaseexchange"), "https://docs.cdp.coinbase.com/advanced-trade/docs/welcome",
+                          ("spot",), "Advanced Trade and Exchange public spot clients have separate identities. International/US derivatives "
                           "are separate services and are not claimed as supported."),
     "kraken": VenueSpec(("kraken", "krakenfutures"), "https://docs.kraken.com/api/"),
     "htx": VenueSpec(("htx",), "https://huobiapi.github.io/docs/spot/v1/en/"),
@@ -255,6 +256,13 @@ class CexAdapter:
                 if size is None or (kind == "perpetual" and market.get("linear") is None
                                     and market.get("inverse") is None):
                     continue
+                if client_id == "coinbaseexchange":
+                    raw = market.get("info") or {}
+                    if (raw.get("base_currency") != market.get("baseId")
+                            or raw.get("quote_currency") != market.get("quoteId")
+                            or raw.get("id") != market["id"]):
+                        self.discovery_errors[f"{client_id}:native_currency_scope"] = "NativeCurrencyMismatch"
+                        continue  # Do not infer registry identity from a product-name alias.
                 base = market["base"]
                 base_id = str(market.get("baseId") or "")
                 verified = base in _BASE_IDS and base_id.upper() in _BASE_IDS[base]
@@ -488,6 +496,8 @@ class CexAdapter:
             # Keep those calls on our explicitly bounded single-ticker path.
             multiple = client.has.get("fetchTickers") is True and self._poll_key(items[0], False) not in self._bulk_unavailable
             single = client.has.get("fetchTicker") is True
+            if client_id == "coinbaseexchange":
+                multiple, single = False, True  # Unified bulk uses spark-line candles, not BBO.
             batch_size = len(items) if _full_product else self.light_batch_size
             for offset in range(0, len(items), batch_size):
                 batch = items[offset:offset + batch_size]
@@ -547,6 +557,9 @@ class CexAdapter:
                 async def fetch_single(item: Instrument) -> MarketSnapshot | None:
                     async with self._symbol_semaphore, self._semaphore:
                         try:
+                            if client_id == "coinbaseexchange":
+                                payload, observed = await self._coinbase_book(item, 1)
+                                return _coinbase_book_patch(item, payload, observed)
                             ticker = await client.fetch_ticker(item.native_symbol)
                             observed = now_ms()
                         except Exception as exc:
@@ -806,6 +819,9 @@ class CexAdapter:
             market = {**market, "_funding_interval_metadata": interval_metadata}
         client = self._client(client_id)
         symbol = instrument.native_symbol
+        if client_id == "coinbaseexchange":
+            payload, observed = await self._coinbase_book(instrument, 1)
+            return _coinbase_book_patch(instrument, payload, observed)
         ticker = await client.fetch_ticker(symbol)
         received = now_ms()
         await self._record_payload("fetch_ticker", ticker)
@@ -891,8 +907,27 @@ class CexAdapter:
                               field_timestamps=times, field_received_at=receipts, issues=issues, valid=valid and
                               "crossed orderbook: bid exceeds ask" not in issues, **fields)
 
+    async def _coinbase_book(self, instrument: Instrument, level: int):
+        client_id, market = self._resolve(instrument)
+        native = market["id"]
+        if client_id != "coinbaseexchange" or instrument.kind != "spot":
+            raise ValueError("Coinbase Exchange spot scope required")
+        payload = await self._client(client_id).publicGetProductsIdBook({"id": native, "level": level})
+        received = now_ms()
+        await self._record_payload("publicGetProductsIdBook", payload)
+        if self._resolve(instrument)[0] != client_id or self._resolve(instrument)[1]["id"] != native:
+            raise ValueError("Coinbase Exchange market changed during request")
+        return payload, received
+
     async def orderbook(self, instrument: Instrument) -> OrderBook:
         client_id, _market = self._resolve(instrument)
+        if client_id == "coinbaseexchange":
+            async with self._semaphore:
+                payload, received = await self._coinbase_book(instrument, 2)
+            bids, asks, stamp, auction = _coinbase_book_values(payload)
+            return OrderBook(instrument_id=instrument.id, bids=[] if auction else bids,
+                             asks=[] if auction else asks, quantity_unit="base", source_at=stamp, received_at=received,
+                             source=f"coinbaseexchange:public:book:{_market['id']}:level2")
         payload = await self._client(client_id).fetch_order_book(instrument.native_symbol)
         # Deribit quantities are base units (linear) or quote notional (inverse),
         # whereas its market contract_size denotes one exchange contract.
@@ -1018,6 +1053,53 @@ def _deribit_summary_patch(instrument: Instrument, ticker: dict, market: dict,
     return patch.model_copy(update={"bid": normalized["bid"], "ask": normalized["ask"],
                                     "cleared_fields": clears, "field_sources": fields,
                                     "field_timestamps": times})
+
+
+def _coinbase_book_values(payload):
+    if not isinstance(payload, dict) or not all(isinstance(payload.get(side), list) for side in ("bids", "asks")):
+        raise ValueError("Malformed Coinbase Exchange book")
+    stamp = None
+    raw_time = payload.get("time")
+    try:
+        parsed = datetime.fromisoformat(raw_time) if isinstance(raw_time, str) and "T" in raw_time else None
+        if parsed is not None and parsed.tzinfo is not None:
+            stamp = _timestamp(parsed.timestamp() * 1000)
+    except (ValueError, OverflowError, OSError):
+        pass
+    sides = []
+    for side in ("bids", "asks"):
+        values = []
+        for row in payload[side]:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                raise ValueError("Malformed Coinbase Exchange level")
+            price, size = _number(row[0], positive=True), _number(row[1], positive=True)
+            if price is None or size is None:
+                raise ValueError("Invalid Coinbase Exchange level")
+            values.append((price, size))  # Aggregate size; never multiply by number of orders.
+        sides.append(sorted(values, reverse=side == "bids"))
+    auction = payload.get("auction_mode", False)
+    if not isinstance(auction, bool):
+        raise ValueError("Invalid Coinbase Exchange auction mode")
+    return sides[0], sides[1], stamp, auction
+
+
+def _coinbase_book_patch(instrument, payload, received):
+    bids, asks, stamp, auction = _coinbase_book_values(payload)
+    bid = bids[0][0] if bids and not auction else None
+    ask = asks[0][0] if asks and not auction else None
+    source = f"coinbaseexchange:public:book:{instrument.native_symbol}:level1"
+    clears = [field for field, value in (("bid", bid), ("ask", ask)) if value is None]
+    issues = ["Coinbase Exchange auction indicative quotes excluded"] if auction else []
+    if stamp is None:
+        issues.append("Coinbase Exchange book source time unavailable; receipt is not source time")
+    crossed = bid is not None and ask is not None and bid > ask
+    if crossed:
+        issues.append("crossed orderbook: bid exceeds ask")
+    return MarketSnapshot(instrument_id=instrument.id, venue=instrument.venue, bid=bid, ask=ask,
+        source=source, source_at=stamp, received_at=received, cleared_fields=clears,
+        field_sources={field: source + (":explicit_unavailable" if field in clears else ":native_book_time")
+                       for field in ("bid", "ask")}, field_timestamps={"bid": stamp, "ask": stamp},
+        valid=not auction and not crossed, issues=issues, is_demo=False)
 
 
 def _light_ticker_patch(instrument: Instrument, client_id: str, ticker: dict,

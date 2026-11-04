@@ -165,3 +165,7 @@ dYdX/Hyperliquid历史保留观察者前HTTP响应receipt，来源字段变化�
 新增官方USDT v1公开已结算历史，固定文档主机api.hbdm.com，严格USDT永续/realized_rate/原生身份和毫秒时间，最多50条最新页、历史周期未知，不使用未审阅的v5替代。14项新离线回归、99项联合历史专项；当前接口实网可用性仍未知，没有生产身份批准。官方来源、边界及复测见FUNDING_VIEW R46。R38/R40中“线性未接”描述的是当时状态；目前v1已实现但未实网验收，v5仍未审阅。
 
 下一项为Coinbase Exchange公开目录与现有身份资料的client范围衔接；需要单独验证行情时间，不向Advanced Trade或永续继承身份。已拒绝OKX WS及Lighter连接不重试，24小时未完成。
+
+## R47 Coinbase Exchange已接入的边界
+
+新增独立coinbaseexchange现货目录和原生book L1/L2，衔接已有Exchange currencies证据，不套用到Advanced Trade或永续。原生目录币种冲突显式记录且目录不标完整；时间使用book.time、数量不乘num-orders、竞价/空侧不保留旧盘口。17项新离线回归及已有111项相关回归通过；无实网和身份批准。R38中“尚未接Exchange client”为当时状态，现已实现但全目录实时覆盖、公共端点可达性和长期运行仍待独立验收。详见COLLECTION R47官方来源及步骤。
