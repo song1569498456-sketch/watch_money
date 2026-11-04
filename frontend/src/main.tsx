@@ -44,10 +44,9 @@ import {
   stateName,
   time,
   relevantPriceTimestamp,
-  primaryPriceFields,
-  fieldSourceTimestamp,
   fieldTimestamp,
 } from "./api";
+import { priceOverviewState } from "./marketData";
 import type {
   Asset,
   Book,
@@ -160,21 +159,19 @@ function DataAge({
 }) {
   if (!snapshot) return <Badge>未接收</Badge>;
   const timestamp = relevantPriceTimestamp(snapshot);
-  const fields = primaryPriceFields(snapshot);
-  const sourceKnown = fields.length
-    ? fields.every((key) => fieldSourceTimestamp(snapshot, key) != null)
-    : snapshot.source_at != null;
-  const old = !!snapshot.stale || now - timestamp > staleSeconds * 1000;
+  const status = priceOverviewState(snapshot, now, staleSeconds);
+  const sourceKnown = status.sourceKnown;
+  const old = status.stale;
   return (
     <span
       title={`显示价格字段时间 ${time(timestamp)} · 最新消息来源 ${time(snapshot.source_at)} · 最新消息接收 ${time(snapshot.received_at)}`}
-      className={old ? "muted warning" : "muted"}
+      className={!status.fresh ? "muted warning" : "muted"}
     >
-      <i className={`dot ${old ? "amber" : "green"}`} />
+      <i className={`dot ${!status.fresh ? "amber" : "green"}`} />
       {age(timestamp, now)}
       {!sourceKnown ? " · 来源时间未提供" : ""}
       {old ? " · 过期" : ""}
-      {!snapshot.valid ? " · 无效" : ""}
+      {!status.valid ? " · 无效" : ""}
       {snapshot.is_demo && <Badge tone="amber">演示</Badge>}
     </span>
   );
@@ -376,9 +373,7 @@ function App() {
   };
   const fresh = markets.snapshots.filter(
     (s) =>
-      s.valid &&
-      !s.stale &&
-      now - relevantPriceTimestamp(s) < (settings?.stale_seconds ?? 60) * 1000,
+      priceOverviewState(s, now, settings?.stale_seconds ?? 60).fresh,
   ).length;
   return (
     <div className="app">
@@ -1524,9 +1519,9 @@ function Detail({
                 <dd>{time(snapshot?.source_at)}</dd>
                 <dt>本地接收时间</dt>
                 <dd>{time(snapshot?.received_at)}</dd>
-                <dt>数据有效性</dt>
+                <dt>价格时效</dt>
                 <dd>
-                  {snapshot ? (snapshot.valid ? "有效" : "无效") : "未提供"}
+                  {snapshot ? <DataAge snapshot={snapshot} now={now} staleSeconds={staleSeconds} /> : "未提供"}
                   {snapshot?.is_demo && " · 演示数据"}
                 </dd>
               </dl>

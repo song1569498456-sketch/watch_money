@@ -99,6 +99,7 @@ async def measure(size):
         stages['scanner_json_render_on_loop']['response_bytes'] = len(scan_response.body)
         stages['scanner_worker_build']['scanned_candidates'] = scan['stats']['scanned']
         stages['scanner_worker_build']['groups_total'] = scan['stats']['groups_total']
+        app.state.query_work.start()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://synthetic.local') as client:
             for path, key in [('/api/markets', 'markets_actual_asgi_http'), ('/api/scanner', 'scanner_actual_asgi_http')]:
                 actual, stages[key] = await timed(lambda path=path: client.get(path))
@@ -117,8 +118,10 @@ async def measure(size):
             asyncio.to_thread(store.save_snapshots, write_rows, True) for _ in range(3))))
         stages['three_concurrent_snapshot_history_writes_workers'].update(
             rows_per_write=len(write_rows), lock_acquisition_waits=lock.waits)
+        query_work = app.state.query_work.diagnostics()
         await app.state.asset_verification.close()
-        return {'markets': size, 'venues': len(venues), 'stages': stages}
+        await app.state.query_work.close()
+        return {'markets': size, 'venues': len(venues), 'stages': stages, 'query_work': query_work}
 
 
 async def main(args):

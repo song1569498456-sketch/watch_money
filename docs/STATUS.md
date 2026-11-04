@@ -1,5 +1,7 @@
 # 当前开发状态
 
+2026-11-04 总览可信状态与重查询负载：总览绿点/有效行情计数按显示价格字段与原始时间判断，新增price_valid/price_fresh等派生状态；结构valid及无关资金费字段保留。重HTTP和WS视图共用单worker，最多2个HTTP排队/1秒，超载503而不堆积或续期数据；/api/query-work提供安全CPU/阶段计时、队列、最慢任务与loop采样。**完整833后端（34.65s）、34前端、29组浏览器、构建通过；最后最慢任务统计补充后6项定向/Ruff/diff通过**。本地10000市场样本markets0.481秒、并行1.215秒，不能替代父线程27.16秒/应用pong超时的实网根因验证。R24平台切换HTTP/WS旧视图短暂交替未修复，24小时、身份覆盖与地区限制仍开放。见 [审计清单](AUDIT_BACKLOG.md)、[COLLECTION.md](COLLECTION.md)、[浏览器证据](evidence/browser-overview-freshness.json)。
+
 2026-11-04 压力合并清除屏障修复：同事件时间按买卖两侧保留清除优先，另一侧仍可更新；内部状态携带每侧原始receipt，较新事件允许恢复，缓冲容量不变。新增12项BBO/l2Book压力回归，含300帧重复压缩与逐条collector处理的值/来源/时间对照；独立复审12项通过。**完整818后端测试（28.29s）、Ruff/diff通过**。本批未改前端，未重跑浏览器，未新增实网探测；父线程已独立实测确认Bitget周期回归修复。其他实网断流、24小时与身份覆盖验收仍开放。见 [审计清单](AUDIT_BACKLOG.md) R21 与 [DEX_STREAMING.md](DEX_STREAMING.md)。
 
 2026-11-04 响应/流背压改进：三个大HTTP查询在工作线程编码，浏览器WS视图/delta/编码同样移出事件循环；HL独立reader在订阅前运行，有界压力合并保留原始receipt/明确空侧，应用pong不等下游消费；按阶段展示安全超时类，诊断回调丢弃/未确认完成计数可见。**完整806后端（28.20s）、31前端、构建通过；含最终关闭计数及未来帧门槛修订，Ruff/diff通过；本批24组浏览器检查通过**。合成10000市场ASGI markets从1.387到0.451秒，loop最大迟到1179到109ms；这不是实网断流验收。父线程轻查询仍有HL超时，OKX空窗因果、24小时、身份覆盖与Lighter地区限制继续开放。详见 [COLLECTION.md](COLLECTION.md)、[DEX_STREAMING.md](DEX_STREAMING.md)。

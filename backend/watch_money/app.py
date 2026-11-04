@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .collector import Collector, sanitize_legacy_volume
 from .models import MarketSnapshot, Settings, now_ms
+from .query_work import QueryOverloaded, QueryWork
 from .storage import Storage
 
 
@@ -67,10 +68,12 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     notifications.set_enabled(store.settings().notifications_enabled)
     collector = Collector(store, adapters, notifications)
     monitors = MonitorService(store, collector, notifications)
+    query_work = QueryWork()
     run_collectors = start_collector if start_collector is not None else os.getenv('WATCH_MONEY_COLLECT', '1') == '1'
 
     @asynccontextmanager
     async def lifespan(app):
+        query_work.start()
         await notifications.start()
         if run_collectors:
             await collector.start()
@@ -79,6 +82,7 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
             yield
         finally:
             await monitors.stop()
+            await query_work.close()
             await app.state.asset_verification.close()
             await collector.stop()
             await notifications.stop()
@@ -89,6 +93,7 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     app.state.notifications = notifications
     app.state.data_dir = Path(data_dir)
     app.state.monitors = monitors
+    app.state.query_work = query_work
     app.state.funding_history = FundingHistoryService(data_dir, collector)
     app.include_router(opportunities_router)
     app.include_router(notifications_router)
@@ -105,10 +110,12 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
         return {'status': 'ok', 'version': '0.1.0', 'at': now_ms(), 'mode': 'demo' if store.settings().demo_mode else 'live'}
 
     @app.get('/api/markets')
-    def markets():
-        # This sync endpoint runs in a worker. Render here rather than returning
-        # a large dict for FastAPI to recursively encode on the event loop.
-        return JSONResponse(collector.markets())
+    async def markets():
+        return await query_work.json_response('markets', collector.markets)
+
+    @app.get('/api/query-work')
+    async def query_diagnostics():
+        return query_work.diagnostics()
 
     @app.get('/api/status')
     def status():
@@ -236,14 +243,17 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
         from .market_stream import market_delta
         previous = None
 
-        def build_frame(previous):
-            current = collector.markets()
+        def render_frame(current):
             return current, json.dumps(market_delta(previous, current), ensure_ascii=False,
                                        allow_nan=False, separators=(',', ':'))
 
         try:
             while True:
-                current, frame = await asyncio.to_thread(build_frame, previous)
+                try:
+                    current, frame = await query_work.run('ws', collector.markets, render_frame, wait=False)
+                except QueryOverloaded:
+                    await asyncio.sleep(store.settings().refresh_ms / 1000)
+                    continue
                 await ws.send_text(frame)
                 previous = current
                 await asyncio.sleep(store.settings().refresh_ms / 1000)

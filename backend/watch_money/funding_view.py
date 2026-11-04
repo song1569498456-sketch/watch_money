@@ -7,7 +7,6 @@ from collections.abc import Iterable, Mapping
 from typing import Literal
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import JSONResponse
 
 from .identity import identity_candidates
 from .models import Instrument, MarketSnapshot, now_ms
@@ -206,27 +205,30 @@ def build_funding_view(instruments: Iterable[Instrument] | Mapping[str, Instrume
 
 
 @router.get("")
-def funding_api(request: Request, sort: Sort = "rate", limit: int = Query(500, ge=1, le=5000),
+async def funding_api(request: Request, sort: Sort = "rate", limit: int = Query(500, ge=1, le=5000),
                 rate_basis: RateBasis = "normalized8h", venue: str | None = Query(default=None, max_length=50),
                 search: str = Query(default="", max_length=200),
                 platforms: str | None = Query(default=None, max_length=2000)):
-    collector = request.app.state.collector
-    settings = request.app.state.store.settings()
-    catalog = list(collector.instruments.values())
-    enabled = not settings.demo_mode
-    selected = [item for item in catalog if item.venue in settings.enabled_venues] if enabled else []
-    venues = sorted({item.venue for item in selected if item.active and item.kind == "perpetual"})
-    scoped = [item for item in selected if item.venue == venue] if venue is not None else selected
-    platform_filter = None
-    if platforms is not None:
-        platform_filter = sorted({value.strip() for value in platforms.split(",") if value.strip()})
-        scoped = [item for item in scoped if item.venue in platform_filter]
-    if needle := search.strip().casefold():
-        matching_assets = {item.asset_id for item in scoped if needle in
-                           f"{item.base} {item.asset_id} {item.native_asset_id or ''} {item.native_symbol}".casefold()}
-        scoped = [item for item in scoped if item.asset_id in matching_assets]
-    result = build_funding_view(scoped, dict(collector.snapshots), now_ms(), settings.stale_seconds,
-                                sort=sort, limit=limit, rate_basis=rate_basis)
-    result.update(enabled=enabled, venues=venues, venue_filter=venue, platforms_filter=platform_filter, search=search)
-    result["stats"].update(collector_catalog_markets=len(catalog), excluded_by_settings=len(catalog) - len(selected))
-    return JSONResponse(result)
+    def build():
+        collector = request.app.state.collector
+        settings = request.app.state.store.settings()
+        catalog = list(collector.instruments.values())
+        enabled = not settings.demo_mode
+        selected = [item for item in catalog if item.venue in settings.enabled_venues] if enabled else []
+        venues = sorted({item.venue for item in selected if item.active and item.kind == "perpetual"})
+        scoped = [item for item in selected if item.venue == venue] if venue is not None else selected
+        platform_filter = None
+        if platforms is not None:
+            platform_filter = sorted({value.strip() for value in platforms.split(",") if value.strip()})
+            scoped = [item for item in scoped if item.venue in platform_filter]
+        if needle := search.strip().casefold():
+            matching_assets = {item.asset_id for item in scoped if needle in
+                               f"{item.base} {item.asset_id} {item.native_asset_id or ''} {item.native_symbol}".casefold()}
+            scoped = [item for item in scoped if item.asset_id in matching_assets]
+        result = build_funding_view(scoped, dict(collector.snapshots), now_ms(), settings.stale_seconds,
+                                    sort=sort, limit=limit, rate_basis=rate_basis)
+        result.update(enabled=enabled, venues=venues, venue_filter=venue, platforms_filter=platform_filter, search=search)
+        result["stats"].update(collector_catalog_markets=len(catalog), excluded_by_settings=len(catalog) - len(selected))
+        return result
+
+    return await request.app.state.query_work.json_response('funding', build)

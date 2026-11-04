@@ -52,11 +52,14 @@ def test_stale_cells_retain_last_observed_rate_without_normalizing_it():
 
 
 def test_platform_and_search_filters_precede_group_sort_and_budget(monkeypatch):
+    from watch_money.query_work import QueryWork
     monkeypatch.setattr("watch_money.funding_view.now_ms", lambda: NOW)
     items = [instrument(base, venue) for base, venue in (("X", "alpha"), ("X", "beta"), ("X", "gamma"),
                                                        ("Y", "alpha"), ("Y", "beta"))]
     values = [snapshot(item, rate) for item, rate in zip(items, [.01, .010001, .9, -.02, 0])]
     app = FastAPI()
+    app.state.query_work = QueryWork()
+    app.router.add_event_handler('shutdown', app.state.query_work.close)
     app.include_router(router)
     app.state.collector = SimpleNamespace(instruments={item.id: item for item in items}, snapshots={row.instrument_id: row for row in values})
     app.state.store = SimpleNamespace(settings=lambda: Settings(enabled_venues=["alpha", "beta", "gamma"], stale_seconds=300))

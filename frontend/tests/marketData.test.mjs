@@ -8,7 +8,7 @@ import ts from "typescript";
 const source = readFileSync(new URL("../src/marketData.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022,
   target: ts.ScriptTarget.ES2022 } }).outputText;
-const { fundingHistorySeries, marketPriceSummary } = await import(
+const { fundingHistorySeries, marketPriceSummary, priceOverviewState } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 const NOW = 1_800_000_000_000;
 const snapshot = (patch = {}) => ({ instrument_id: "one", venue: "okx", source: "fixture",
@@ -139,4 +139,33 @@ test("partial field metadata never borrows a new envelope time for another field
   assert.equal(result.ranges[0].sourceKnown, false);
   assert.equal(result.ranges[0].oldestAt, NOW - 5000);
   assert.equal(summary([instrument()], [snapshot({ last: 100 })]).ranges[0].sourceKnown, false);
+});
+
+
+test("overview never turns a future-at-arrival price green after time catches up", () => {
+  const row = snapshot({ bid: 100, ask: 101, stale: false,
+    field_timestamps: { bid: NOW + 100, ask: NOW + 100 },
+    field_received_at: { bid: NOW, ask: NOW } });
+  const state = priceOverviewState(row, NOW + 1000, 60);
+  assert.equal(state.fresh, false);
+  assert.equal(state.valid, false);
+  assert.equal(summary([instrument()], [row], NOW + 1000).includedMarkets, 0);
+});
+
+test("overview preserves field granularity and ages without another response", () => {
+  const row = snapshot({ bid: 100, ask: 101, funding_rate: .001,
+    field_timestamps: { bid: NOW, ask: NOW, funding_rate: NOW - 120000 },
+    field_received_at: { bid: NOW, ask: NOW, funding_rate: NOW - 120000 },
+    field_stale: { funding_rate: true } });
+  assert.equal(priceOverviewState(row, NOW, 60).fresh, true);
+  assert.equal(priceOverviewState(row, NOW + 61000, 60).fresh, false);
+  assert.equal(priceOverviewState({ ...row, field_stale: { bid: true } }, NOW, 60).fresh, false);
+  assert.equal(priceOverviewState({ ...row, price_valid: false }, NOW, 60).fresh, false);
+});
+
+test("overview missing or unknown price timing is never green", () => {
+  for (const row of [snapshot(), snapshot({ bid: 100 }), snapshot({ last: 100, source_at: null }),
+    snapshot({ last: 100, source_at: NOW, field_received_at: { last: NOW } })]) {
+    assert.equal(priceOverviewState(row, NOW, 60).fresh, false);
+  }
 });

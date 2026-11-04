@@ -18,6 +18,24 @@ function fieldTime(snapshot: Snapshot, field: string, legacySource = false) {
     basis: (source !== null ? "source" : fieldReceived !== null ? "field_received" : "snapshot") as TimeBasis };
 }
 
+/** Overview status follows displayed prices, never unrelated funding clocks. */
+export function priceOverviewState(snapshot: Snapshot, now: number, staleSeconds: number) {
+  const fields = snapshot.bid != null && snapshot.ask != null ? ["bid", "ask"] :
+    snapshot.last != null ? ["last"] : snapshot.mark != null ? ["mark"] : snapshot.index != null ? ["index"] : [];
+  const times = fields.map((field) => fieldTime(snapshot, field, true));
+  const valid = snapshot.valid && snapshot.price_valid !== false && fields.length > 0 &&
+    fields.every((field) => typeof snapshot[field as keyof Snapshot] === "number" &&
+      Number.isFinite(snapshot[field as keyof Snapshot]) && Number(snapshot[field as keyof Snapshot]) > 0) &&
+    !(fields.length === 2 && snapshot.bid! >= snapshot.ask!) &&
+    times.every((timing) => timing.received !== null && timing.received <= now &&
+      (timing.source === null || timing.source <= timing.received));
+  const sourceKnown = fields.length > 0 && times.every((timing) => timing.source !== null);
+  const stale = fields.length === 0 || snapshot.stale === true ||
+    fields.some((field) => snapshot.field_stale?.[field] === true) ||
+    times.some((timing) => timing.at === null || now - timing.at > staleSeconds * 1000 || timing.at > now);
+  return { valid, stale, sourceKnown, fresh: valid && sourceKnown && !stale && snapshot.price_fresh !== false };
+}
+
 export interface FundingHistorySeries {
   key: string;
   kind: string;
@@ -103,7 +121,7 @@ export function marketPriceSummary(instruments: Instrument[], snapshots: Map<str
       }
       const times = choice.fields.map((field) => fieldTime(snapshot, field, true));
       if (times.some((timing) => timing.at === null)) { reject("missing_time"); continue; }
-      if (times.some((timing) => timing.received! > now || (timing.source !== null && timing.source > now))) {
+      if (times.some((timing) => timing.received! > now || (timing.source !== null && timing.source > Math.min(now, timing.received!)))) {
         reject("future"); continue;
       }
       const legacyStale = snapshot.stale === true && !Object.keys(snapshot.field_timestamps ?? {}).length &&

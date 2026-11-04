@@ -47,6 +47,10 @@ export interface Snapshot {
   protocol_metric_sources?: Record<string, string>;
   protocol_metric_timestamps?: Record<string, number | null>;
   protocol_metric_received_at?: Record<string, number>;
+  price_valid?: boolean;
+  price_fresh?: boolean;
+  price_source_known?: boolean;
+  price_fields?: string[];
   valid: boolean;
   issues: string[];
   is_demo: boolean;

@@ -1,0 +1,311 @@
+{
+  "fixture": "Synthetic observations only; actual isolated local API, WebSocket and query-worker overload; no live exchange verification",
+  "backend_as_of": 1793820641763,
+  "checks": [
+    "actual API at T+1s rejects price observed with source T+100ms / receipt T; structural validity and normal funding remain intact",
+    "overview reports zero valid price observations and amber invalid/stale price age, while retaining the independent normal funding observation",
+    "adding a second market with normal price and future-at-arrival funding raises the count to exactly one; its price age remains green",
+    "actual shared query worker saturation returns HTTP 503/Retry-After; UI keeps both rows, original time labels and an advancing age instead of resetting freshness",
+    "releasing the worker restores successful refresh without changing source times; 390px overview has no document overflow"
+  ],
+  "api_evidence": {
+    "future_price_normal_funding": {
+      "instrument_id": "freshness-fixture:FUTURE",
+      "venue": "okx",
+      "bid": 100.0,
+      "ask": 102.0,
+      "last": null,
+      "mark": null,
+      "index": null,
+      "volume": null,
+      "volume_unit": null,
+      "open_interest": null,
+      "oi_unit": null,
+      "funding_rate": 0.001,
+      "funding_kind": "current",
+      "funding_interval_hours": 8.0,
+      "next_funding_at": null,
+      "source_at": 1793820640863,
+      "received_at": 1793820640763,
+      "source": "https://synthetic-market.invalid/public-observation",
+      "cleared_fields": [],
+      "field_sources": {
+        "bid": "https://synthetic-market.invalid/FUTURE/bid",
+        "ask": "https://synthetic-market.invalid/FUTURE/ask",
+        "funding_rate": "https://synthetic-market.invalid/FUTURE/funding_rate",
+        "funding_kind": "https://synthetic-market.invalid/FUTURE/funding_kind",
+        "funding_interval_hours": "https://synthetic-market.invalid/FUTURE/funding_interval_hours"
+      },
+      "field_timestamps": {
+        "bid": 1793820640863,
+        "ask": 1793820640863,
+        "funding_rate": 1793820640763,
+        "funding_kind": 1793820640763,
+        "funding_interval_hours": 1793820640763
+      },
+      "field_received_at": {
+        "bid": 1793820640763,
+        "ask": 1793820640763,
+        "funding_rate": 1793820640763,
+        "funding_kind": 1793820640763,
+        "funding_interval_hours": 1793820640763
+      },
+      "protocol_metrics": {},
+      "protocol_metric_sources": {},
+      "protocol_metric_timestamps": {},
+      "protocol_metric_received_at": {},
+      "cleared_protocol_metrics": [],
+      "valid": true,
+      "issues": [],
+      "is_demo": false,
+      "age_seconds": 1.0,
+      "stale": true,
+      "price_valid": false,
+      "price_fresh": false,
+      "price_source_known": true,
+      "price_fields": [
+        "bid",
+        "ask"
+      ],
+      "field_ages_seconds": {
+        "bid": 1.0,
+        "ask": 1.0,
+        "funding_rate": 1.0,
+        "funding_kind": 1.0,
+        "funding_interval_hours": 1.0
+      },
+      "field_stale": {
+        "bid": true,
+        "ask": true,
+        "funding_rate": false,
+        "funding_kind": false,
+        "funding_interval_hours": false
+      },
+      "mid": 101.0,
+      "funding_8h": 0.001
+    },
+    "normal_price_future_funding": {
+      "instrument_id": "freshness-fixture:FRESH",
+      "venue": "bybit",
+      "bid": 100.0,
+      "ask": 102.0,
+      "last": null,
+      "mark": null,
+      "index": null,
+      "volume": null,
+      "volume_unit": null,
+      "open_interest": null,
+      "oi_unit": null,
+      "funding_rate": 0.001,
+      "funding_kind": "current",
+      "funding_interval_hours": 8.0,
+      "next_funding_at": null,
+      "source_at": 1793820640863,
+      "received_at": 1793820640763,
+      "source": "https://synthetic-market.invalid/public-observation",
+      "cleared_fields": [],
+      "field_sources": {
+        "bid": "https://synthetic-market.invalid/FRESH/bid",
+        "ask": "https://synthetic-market.invalid/FRESH/ask",
+        "funding_rate": "https://synthetic-market.invalid/FRESH/funding_rate",
+        "funding_kind": "https://synthetic-market.invalid/FRESH/funding_kind",
+        "funding_interval_hours": "https://synthetic-market.invalid/FRESH/funding_interval_hours"
+      },
+      "field_timestamps": {
+        "bid": 1793820640763,
+        "ask": 1793820640763,
+        "funding_rate": 1793820640863,
+        "funding_kind": 1793820640863,
+        "funding_interval_hours": 1793820640763
+      },
+      "field_received_at": {
+        "bid": 1793820640763,
+        "ask": 1793820640763,
+        "funding_rate": 1793820640763,
+        "funding_kind": 1793820640763,
+        "funding_interval_hours": 1793820640763
+      },
+      "protocol_metrics": {},
+      "protocol_metric_sources": {},
+      "protocol_metric_timestamps": {},
+      "protocol_metric_received_at": {},
+      "cleared_protocol_metrics": [],
+      "valid": true,
+      "issues": [],
+      "is_demo": false,
+      "age_seconds": 1.0,
+      "stale": false,
+      "price_valid": true,
+      "price_fresh": true,
+      "price_source_known": true,
+      "price_fields": [
+        "bid",
+        "ask"
+      ],
+      "field_ages_seconds": {
+        "bid": 1.0,
+        "ask": 1.0,
+        "funding_rate": 1.0,
+        "funding_kind": 1.0,
+        "funding_interval_hours": 1.0
+      },
+      "field_stale": {
+        "bid": false,
+        "ask": false,
+        "funding_rate": true,
+        "funding_kind": true,
+        "funding_interval_hours": false
+      },
+      "mid": 101.0,
+      "funding_8h": 0.001
+    },
+    "overload": {
+      "status": 503,
+      "body": {
+        "detail": "Public query capacity is busy; retry later.",
+        "code": "heavy_query_overloaded",
+        "retry_after_seconds": 2
+      },
+      "age_before": "4 秒前",
+      "age_after": "5 秒前",
+      "original_time_title": "显示价格字段时间 2026/11/4 19:30:40 · 最新消息来源 2026/11/4 19:30:40 · 最新消息接收 2026/11/4 19:30:40",
+      "query_worker_pressure": {
+        "capacity": 1,
+        "active": 1,
+        "queued": 0,
+        "max_queued": 2,
+        "queue_timeout_seconds": 1.0,
+        "closed": false,
+        "routes": {
+          "markets": {
+            "requested": 5,
+            "completed": 4,
+            "failed": 0,
+            "method": "GET",
+            "path": "/api/markets",
+            "rejected": 1,
+            "cancelled_clients": 0,
+            "last_execution": {
+              "build_ms": 6.476,
+              "render_ms": 0.068,
+              "response_bytes": 4763,
+              "worker_cpu_ms": 0.504,
+              "process_cpu_ms_during_job": 0.51,
+              "queue_ms": 0.009,
+              "wall_ms": 6.756,
+              "outcome": "ok",
+              "error_type": null,
+              "finished_at": 1793820645529
+            },
+            "last_rejection": {
+              "reason": "queue_timeout",
+              "queue_ms": 1000.016,
+              "at": 1793820646644
+            }
+          },
+          "funding": {
+            "requested": 1,
+            "completed": 1,
+            "failed": 0,
+            "method": "GET",
+            "path": "/api/funding",
+            "rejected": 0,
+            "cancelled_clients": 0,
+            "last_execution": {
+              "build_ms": 0.484,
+              "render_ms": 0.061,
+              "response_bytes": 5247,
+              "worker_cpu_ms": 0.546,
+              "process_cpu_ms_during_job": 0.55,
+              "queue_ms": 0.007,
+              "wall_ms": 0.765,
+              "outcome": "ok",
+              "error_type": null,
+              "finished_at": 1793820642316
+            },
+            "last_rejection": null
+          },
+          "ws": {
+            "requested": 4,
+            "completed": 3,
+            "failed": 0,
+            "method": "WEBSOCKET",
+            "path": "/ws",
+            "rejected": 1,
+            "cancelled_clients": 0,
+            "last_execution": {
+              "build_ms": 0.501,
+              "render_ms": 0.055,
+              "response_bytes": 118,
+              "worker_cpu_ms": 0.55,
+              "process_cpu_ms_during_job": 0.558,
+              "queue_ms": 0.017,
+              "wall_ms": 0.8,
+              "outcome": "ok",
+              "error_type": null,
+              "finished_at": 1793820645178
+            },
+            "last_rejection": {
+              "reason": "busy_frame_skipped",
+              "queue_ms": 0.01,
+              "at": 1793820646180
+            }
+          },
+          "scanner": {
+            "requested": 2,
+            "completed": 2,
+            "failed": 0,
+            "method": "GET",
+            "path": "/api/scanner",
+            "rejected": 0,
+            "cancelled_clients": 0,
+            "last_execution": {
+              "build_ms": 1.256,
+              "render_ms": 0.063,
+              "response_bytes": 3146,
+              "worker_cpu_ms": 0.785,
+              "process_cpu_ms_during_job": 1.47,
+              "queue_ms": 0.008,
+              "wall_ms": 1.62,
+              "outcome": "ok",
+              "error_type": null,
+              "finished_at": 1793820643206
+            },
+            "last_rejection": null
+          },
+          "synthetic_hold": {
+            "requested": 1,
+            "completed": 0,
+            "failed": 0,
+            "method": "INTERNAL",
+            "path": null,
+            "rejected": 0,
+            "cancelled_clients": 0,
+            "last_execution": null,
+            "last_rejection": null
+          }
+        },
+        "event_loop": {
+          "sample_interval_seconds": 0.5,
+          "samples": 8,
+          "last_delay_ms": 0.247,
+          "max_delay_ms": 1.084,
+          "last_sample_at": 1793820646223,
+          "meaning": "Local timer scheduling delay; not network latency or source freshness."
+        },
+        "cpu_meaning": "worker_cpu_ms is this worker thread; process_cpu_ms_during_job includes other threads."
+      }
+    }
+  },
+  "page_errors": [],
+  "external_requests": [],
+  "private_requests": [],
+  "known_limitations": [
+    {
+      "id": "R24",
+      "scope": "Existing HTTP/WebSocket view overlap during enabled-platform changes",
+      "reproduction": "Start with only okx/FUTURE enabled; enable bybit/FRESH through PUT /api/settings and immediately refresh all data. HTTP can show two markets/count 1 before a queued old WebSocket state briefly restores one market/count 0; the next scoped WebSocket frame restores two/count 1.",
+      "verification_boundary": "The desktop comparison screenshot waits for the actual WebSocket frame containing FRESH. API future-at-arrival, per-field freshness, zero/one count and overload age assertions remain unchanged. The overlap itself is not fixed by this regression script."
+    }
+  ]
+}

@@ -41,7 +41,7 @@ def field_time(snapshot, field):
 def field_stale(snapshot: MarketSnapshot, field: str, stale_seconds: float) -> bool:
     source = snapshot.field_timestamps.get(field, snapshot.source_at)
     received = snapshot.field_received_at.get(field, snapshot.received_at)
-    if source is not None and source > received:
+    if received > now_ms() or (source is not None and source > received):
         return True
     if (field == 'funding_interval_hours' and snapshot.field_timestamps.get(field) is None
             and snapshot.field_sources.get(field, '').endswith(
@@ -54,14 +54,34 @@ def field_stale(snapshot: MarketSnapshot, field: str, stale_seconds: float) -> b
 def enrich(snapshot: MarketSnapshot, stale_seconds: float) -> dict:
     result = snapshot.model_dump()
     primary = ['bid', 'ask'] if snapshot.bid and snapshot.ask else [next(
-        (f for f in ('last', 'mark', 'index', 'bid', 'ask') if getattr(snapshot, f) is not None), 'last')]
-    timestamp = min(field_time(snapshot, f) for f in primary)
-    age = max(0, (now_ms() - timestamp) / 1000)
-    result.update(age_seconds=round(age, 3), stale=age > stale_seconds,
+        (f for f in ('last', 'mark', 'index') if getattr(snapshot, f) is not None), None)]
+    primary = [field for field in primary if field is not None]
+    at = now_ms()
+    timestamp = min((field_time(snapshot, f) for f in primary), default=field_time(snapshot, 'last'))
+    age = max(0, (at - timestamp) / 1000)
+    stale_fields = {f: field_stale(snapshot, f, stale_seconds)
+                    for f in VALUE_FIELDS if getattr(snapshot, f) is not None}
+    legacy_times = not snapshot.field_timestamps and not snapshot.field_received_at
+
+    def price_source(field):
+        return snapshot.field_timestamps.get(field, snapshot.source_at if legacy_times else None)
+
+    # Structural validity remains field-independent. The overview describes
+    # only the displayed price fields, not unrelated funding/volume updates.
+    price_valid = snapshot.valid and bool(primary) and all(
+        getattr(snapshot, f) > 0 and snapshot.field_received_at.get(f, snapshot.received_at) <= at
+        and (price_source(f) is None or price_source(f) <=
+             snapshot.field_received_at.get(f, snapshot.received_at)) for f in primary)
+    if primary == ['bid', 'ask'] and snapshot.bid >= snapshot.ask:
+        price_valid = False
+    source_known = bool(primary) and all(price_source(f) is not None for f in primary)
+    stale = not primary or any(stale_fields.get(f, True) for f in primary)
+    result.update(age_seconds=round(age, 3), stale=stale, price_valid=price_valid,
+                  price_fresh=price_valid and source_known and not stale,
+                  price_source_known=source_known, price_fields=primary,
                   field_ages_seconds={f: max(0, (now_ms() - field_time(snapshot, f)) / 1000)
                                       for f in VALUE_FIELDS if getattr(snapshot, f) is not None},
-                  field_stale={f: field_stale(snapshot, f, stale_seconds)
-                               for f in VALUE_FIELDS if getattr(snapshot, f) is not None},
+                  field_stale=stale_fields,
                   mid=(snapshot.bid + snapshot.ask) / 2 if snapshot.bid and snapshot.ask else None,
                   funding_8h=(snapshot.funding_rate * 8 / snapshot.funding_interval_hours
                               if snapshot.funding_rate is not None and snapshot.funding_interval_hours else None))

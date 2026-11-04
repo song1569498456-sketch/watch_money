@@ -39,7 +39,7 @@ async def test_worker_json_matches_previous_framework_encoding_for_nonempty_publ
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local-test") as client:
         optimized = await client.get(path)
         # Returning the dict restores the prior FastAPI encoding path without changing business logic.
-        monkeypatch.setattr(f"{module}.JSONResponse", lambda content: content)
+        monkeypatch.setattr("watch_money.query_work.JSONResponse", lambda content: content)
         prior_encoding = await client.get(path)
     assert optimized.status_code == prior_encoding.status_code == 200
     assert optimized.headers["content-type"] == prior_encoding.headers["content-type"] == "application/json"
@@ -53,6 +53,7 @@ async def test_worker_json_matches_previous_framework_encoding_for_nonempty_publ
     else:
         assert len(data["rows"]) == 2 and data["matrix_groups"]
     assert {key: value.model_dump() for key, value in app.state.collector.snapshots.items()} == before
+    await app.state.query_work.close()
     await app.state.asset_verification.close()
 
 
@@ -95,7 +96,8 @@ async def test_cancelling_websocket_during_worker_build_never_sends_late_frame_o
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        await app.state.asset_verification.close()
+        await app.state.query_work.close()
+    await app.state.asset_verification.close()
     assert not frames and len(builds) == 1
 
 

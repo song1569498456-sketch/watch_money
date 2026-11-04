@@ -16,7 +16,9 @@ export async function api<T>(
     try {
       const json = await response.json();
       detail =
-        typeof json.detail === "string"
+        json.code === "heavy_query_overloaded"
+          ? "查询繁忙，请稍后重试；已有数据仍按原始时间判断时效"
+          : typeof json.detail === "string"
           ? json.detail
           : JSON.stringify(json.detail ?? json);
     } catch {

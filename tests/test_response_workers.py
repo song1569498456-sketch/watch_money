@@ -30,6 +30,7 @@ async def test_large_http_response_render_is_in_worker(tmp_path, monkeypatch, pa
     assert isinstance(response.json(), dict)
     assert rendered and all(identity != loop_thread for identity in rendered)
     await app.state.asset_verification.close()
+    await app.state.query_work.close()
 
 
 @pytest.mark.asyncio
@@ -68,3 +69,4 @@ async def test_browser_ws_builds_in_worker_sends_on_loop_and_preserves_delta(tmp
     assert frames[1]['instruments'] == []
     assert frames[1]['snapshots'][0]['stale'] is True
     await app.state.asset_verification.close()
+    await app.state.query_work.close()

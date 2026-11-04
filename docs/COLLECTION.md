@@ -132,6 +132,15 @@ DEX资金费若来自同一公开payload，状态mode为 `via_public_price_bulk`
 三个真实写入调用因`Storage.lock`串行，最长锁等待约47ms。该锁覆盖latest序列化、SQLite及Parquet写入；历史查询也持有同一锁，理论上能使等待中的collector保存延后，但此样本**没有复现多秒写争用**，不据此认定数据库为根因。
 测量证实大响应序列化可阻塞本地事件循环，也显示线程中的CPU工作仍可能争用GIL；它没有复现父报告10.6秒，也不能解释具体TimeoutError或OKX源数据更新缺口。下一批性能改动应分别测量序列化、覆盖重算调用频率、推送和真实写入等待，保持现有正确性门槛。
 
+## 重查询准入与诊断
+
+`QueryWork`现在为`GET /api/markets`、`GET /api/scanner`、`GET /api/funding`及`/ws`的build/render提供同一个专用单线程执行槽；HTTP最多排队2项、等待1秒。队列满或超时返回`503`、`Retry-After: 2`及`code=heavy_query_overloaded`，不创建替代行情或刷新旧源时间。前端应保留已有数据并按原字段时间继续老化。
+WebSocket只在执行槽及HTTP队列都空闲时构建新帧，否则跳过本帧且不更新上次发送的delta基线。客户端取消无法杀死已运行的Python线程，因此槽保持到实际工作完成，避免取消后隐性并发增加。
+
+`GET /api/query-work`是轻量诊断：显示当前active/queued、容量/超时，以及固定内部route的method/path、完成/失败/拒绝/取消计数。`last_execution`提供`queue_ms/build_ms/render_ms/wall_ms`、响应字节、`worker_cpu_ms`和`process_cpu_ms_during_job`；后者包含同进程其它线程，不能当成该查询独占CPU。`last_rejection`独立标记排队超时/队满/WS跳帧。诊断不保留查询参数、响应payload、异常文本、URL或凭证，仅错误类名。
+app lifespan启动每0.5秒的本地timer采样，提供最近/最大调度迟到及采样时刻；关闭时取消采样、等待已接纳worker并关闭executor。timer迟到不是网络延迟或数据源年龄。
+该控制限制并发和排队放大，不保证单次大查询耗时、交易所连接或全市场fresh覆盖；不缓存结果、不修改数据源时间/`as_of`含义，也不据此断言已解决实网PongTimeout或资金费过期原因。
+
 ## 配置及存量设置
 
 | 设置 | 新默认 | 含义 |
@@ -191,3 +200,7 @@ DEX资金费若来自同一公开payload，状态mode为 `via_public_price_bulk`
 父线程补充的133秒轻查询实网对照达到HL347/347后仍在约84秒TimeoutError，最低152，最大patch间隔约20秒；OKX轻查询50秒后样本均540。该证据支持重响应会加重问题，却不能将其认定为唯一原因。本批没有成功实网或24小时验收，身份覆盖和Lighter地区限制继续开放。
 
 独立响应验收（`tests/test_response_worker_acceptance.py`）用非空行情验证三路新旧JSON完全一致、源/接收时间不变；在构建线程被阻塞时取消WS，取消后不补发帧或启动下一轮；并发替换目录与快照不会改变已捕获成员。取消无法硬终止已经运行的只读线程，该轮计算会收尾，但不会再发送或继续排队。
+
+总览价格状态现在与显示字段对应：`price_fields`选择bid/ask或last/mark/index，`price_valid`描述这些价格和时序是否有效，`price_source_known`说明是否有其自身源时间，`price_fresh`还要求未过期。既有`valid`保留结构层意义，不应单独用于绿点/新鲜计数；无价格、单侧且无参考价格、未知源时间或异常时间不计新鲜。无关资金费字段的stale标记保留，不给价格字段续期，也不替代资金费门槛。
+
+本批合成10000市场样本：markets0.481秒、scanner0.730秒、并行二查询1.215秒，10ms诊断timer最大延迟约113ms；实际query-work的0.5秒采样只测到最大6.253ms，采样间隔不同不可相互替代。此次与完整pytest/浏览器工作共享机器，不把数字当吞吐保证。证据query-admission-diagnostic.json中的每路队列/CPU/阶段计时用于定位，诊断端点包含最后完成与进程启动以来总耗时最慢的任务（slowest_execution，样本采集后新增并单独回归）；不记录请求参数或返回行情。此前父线程markets27.16秒和HL应用pong超时仍需同时间实网轨迹解释，未放宽任何阈值。

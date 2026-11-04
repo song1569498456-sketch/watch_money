@@ -8,7 +8,6 @@ from itertools import product
 from typing import Literal
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import JSONResponse
 
 from .identity import identity_candidates
 from .models import Instrument, MarketSnapshot, now_ms
@@ -432,19 +431,22 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
 
 
 @router.get("")
-def scan_api(request: Request, limit: int = Query(100, ge=1, le=1000),
+async def scan_api(request: Request, limit: int = Query(100, ge=1, le=1000),
              sort: Sort = "spread", max_candidates: int = Query(10000, ge=1, le=MAX_CANDIDATES),
              q: str = Query("", max_length=300), platforms: str = Query("", max_length=2000),
              market_type: MarketType = "all"):
-    collector = request.app.state.collector
-    settings = request.app.state.store.settings()
-    catalog = list(collector.instruments.values())
-    enabled = settings.computation_enabled and not settings.demo_mode
-    instruments = [item for item in catalog if item.venue in settings.enabled_venues] if enabled else []
-    result = scan_markets(instruments, dict(collector.snapshots), now_ms(), settings.stale_seconds,
-                          limit, sort=sort, max_candidates=max_candidates, q=q, platforms=platforms.split(","),
-                          market_type=market_type)
-    result.update(enabled=enabled, mode="indicative_public_market_scan")
-    result["stats"].update(collector_catalog_markets=len(catalog),
-                           excluded_by_settings=len(catalog) - len(instruments))
-    return JSONResponse(result)
+    def build():
+        collector = request.app.state.collector
+        settings = request.app.state.store.settings()
+        catalog = list(collector.instruments.values())
+        enabled = settings.computation_enabled and not settings.demo_mode
+        instruments = [item for item in catalog if item.venue in settings.enabled_venues] if enabled else []
+        result = scan_markets(instruments, dict(collector.snapshots), now_ms(), settings.stale_seconds,
+                              limit, sort=sort, max_candidates=max_candidates, q=q, platforms=platforms.split(","),
+                              market_type=market_type)
+        result.update(enabled=enabled, mode="indicative_public_market_scan")
+        result["stats"].update(collector_catalog_markets=len(catalog),
+                               excluded_by_settings=len(catalog) - len(instruments))
+        return result
+
+    return await request.app.state.query_work.json_response('scanner', build)

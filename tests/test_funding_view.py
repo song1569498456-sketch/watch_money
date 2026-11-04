@@ -179,7 +179,10 @@ def test_snapshot_selection_is_asof_and_function_is_pure():
 
 
 def test_api_respects_platform_and_active_filters_and_ignores_watchlist(monkeypatch):
+    from watch_money.query_work import QueryWork
     app = FastAPI()
+    app.state.query_work = QueryWork()
+    app.router.add_event_handler('shutdown', app.state.query_work.close)
     app.include_router(router)
     markets = [market("a", "alpha"), market("b", "beta"), market("c", "gamma"),
                market("d", "alpha", active=False), market("e", "alpha", kind="spot")]
