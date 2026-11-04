@@ -8,12 +8,23 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
+from weakref import WeakValueDictionary
 
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .models import Instrument, MarketSnapshot, Settings, now_ms
+
+
+class _SettingsState:
+    def __init__(self, value):
+        self.value = value
+        self.writer = RLock()
+
+
+_SETTINGS_STATES = WeakValueDictionary()
+_SETTINGS_REGISTRY_LOCK = RLock()
 
 
 class Storage:
@@ -38,6 +49,16 @@ class Storage:
                     id INTEGER PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL, payload TEXT NOT NULL);
             ''')
 
+        # One committed immutable-by-convention snapshot per database in this process.
+        # Readers never wait for a SQLite writer; publication happens after commit.
+        with _SETTINGS_REGISTRY_LOCK:
+            key = str(self.db_path.resolve())
+            state = _SETTINGS_STATES.get(key)
+            if state is None:
+                state = _SettingsState(Settings.model_validate(self.get('settings', {})))
+                _SETTINGS_STATES[key] = state
+            self._settings_state = state
+
     def connect(self):
         return sqlite3.connect(self.db_path, timeout=10)
 
@@ -47,12 +68,22 @@ class Storage:
         return json.loads(row[0]) if row else default
 
     def set(self, key: str, value):
+        if key == 'settings':
+            validated = Settings.model_validate(value).model_copy(deep=True)
+            with self._settings_state.writer:
+                self._write_value(key, validated.model_dump())
+                self._settings_state.value = validated
+        else:
+            self._write_value(key, value)
+
+    def _write_value(self, key, value):
         with self.connect() as db:
             db.execute('INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                        (key, json.dumps(value, allow_nan=False)))
 
     def settings(self) -> Settings:
-        return Settings.model_validate(self.get('settings', {}))
+        # Deep copy protects nested venue/RPC settings against accidental mutation.
+        return self._settings_state.value.model_copy(deep=True)
 
     def save_instruments(self, instruments: list[Instrument]):
         instruments = [i if i.native_asset_id else i.model_copy(update={'native_asset_id': i.asset_id})

@@ -134,6 +134,9 @@ class Collector:
         self.server_instance = str(uuid4())
         self._view_seq = 0
         self._view_lock = Lock()
+        self._coverage_lock = Lock()
+        self._coverage_async_lock = asyncio.Lock()
+        self._coverage_cache = {}
         self.store = store
         self.adapters = adapters
         self.notifications = notifications
@@ -146,6 +149,10 @@ class Collector:
         self.discovered = set()
         from .recording import RawMarketRecorder
         self.recorder = RawMarketRecorder(store.directory)
+        self._record_jobs = set()
+        self._record_lock = asyncio.Lock()
+        self._record_config = None
+        self.recording_queue_dropped = 0
         for adapter in self.adapters.values():
             adapter.on_payload = self.record_payload
 
@@ -167,18 +174,40 @@ class Collector:
 
     async def record_payload(self, venue, transport, payload):
         settings = self.store.settings()
-        if not settings.recording_enabled or settings.demo_mode:
+        if not settings.recording_enabled or settings.demo_mode or self.stopping.is_set():
             return
         if settings.recording_venues and venue not in settings.recording_venues:
             return
-        try:
-            await asyncio.to_thread(self.recorder.configure, enabled=True,
-                                    max_total_bytes=settings.recording_max_mb * 1024 * 1024,
-                                    retention_days=settings.recording_retention_days)
-            await asyncio.to_thread(self.recorder.record, venue, transport, payload)
-        except Exception:
-            # Diagnostic disk failures must not stop market collection.
-            pass
+        # Bounded across all observers, including cancelled callers whose worker
+        # still owns an in-flight disk write. Queued jobs recheck committed config.
+        if len(self._record_jobs) >= 16:
+            self.recording_queue_dropped += 1
+            return
+
+        def write():
+            current = self.store.settings()
+            if (not current.recording_enabled or current.demo_mode or self.stopping.is_set()
+                    or (current.recording_venues and venue not in current.recording_venues)):
+                return
+            config = (current.recording_max_mb, current.recording_retention_days)
+            if config != self._record_config:
+                self.recorder.configure(enabled=True, max_total_bytes=config[0] * 1024 * 1024,
+                                        retention_days=config[1])
+                self._record_config = config
+            self.recorder.record(venue, transport, payload)
+
+        async def job():
+            async with self._record_lock:
+                try:
+                    await asyncio.to_thread(write)
+                except Exception:
+                    # Diagnostic disk failures must not stop market collection.
+                    pass
+
+        task = asyncio.create_task(job(), name='raw-payload-write')
+        self._record_jobs.add(task)
+        task.add_done_callback(self._record_jobs.discard)
+        await asyncio.shield(task)
 
     def merge_patch(self, snapshot):
         from .protocol_metrics import merge_protocol_metrics
@@ -348,62 +377,113 @@ class Collector:
             if failures:
                 await self.pause(min(300, 5 * 2 ** min(failures - 1, 6)))
 
-    def refresh_status_coverage(self):
-        """Evaluate current cached fields, not the age of the last successful poll."""
+    @staticmethod
+    def _coverage_counts(item, snapshot, as_of, stale_seconds):
         from .scanner import funding_field_state
 
-        settings = self.store.settings()
-        as_of = now_ms()
-        by_venue = {}
-        for item in tuple(self.instruments.values()):
-            if item.active:
-                by_venue.setdefault(item.venue, []).append(item)
-        snapshots = dict(self.snapshots)
-        for name, status in tuple(self.statuses.items()):
-            catalog = by_venue.get(name, [])
-            for funding in (False, True):
-                selected = [item for item in catalog if not funding or item.kind == 'perpetual']
-                observed = fresh = 0
-                source_stale = source_missing = source_future = 0
-                for item in selected:
-                    snapshot = snapshots.get(item.id)
-                    if snapshot is None or snapshot.is_demo:
-                        continue
-                    fields = ('funding_rate',) if funding else ('bid', 'ask', 'last', 'mark', 'index')
-                    if not any(getattr(snapshot, field) is not None for field in fields):
-                        continue
-                    observed += 1
-                    if funding:
-                        fields = {field: funding_field_state(snapshot, item, field, as_of, settings.stale_seconds)
-                                  for field in ('funding_rate', 'funding_kind', 'funding_interval_hours')}
-                        fresh += all(state['rankable'] for state in fields.values())
-                        rate = fields['funding_rate']
-                        source_stale += rate['trusted'] and rate['issue'] == 'funding_rate_stale'
-                        source_missing += not rate['trusted']
-                        # quality() may flag the whole snapshot invalid before
-                        # the field gate reaches its future-time check. Keep the
-                        # provenance diagnosis without treating it as rankable.
-                        source_future += any(stamp is not None and stamp > as_of
-                                             for stamp in (rate['source_at'], rate['received_at']))
-                    else:
-                        # Independent field source times survive later funding/OI
-                        # envelopes; an absent price source time is not fresh.
-                        fresh += all(funding_field_state(snapshot, item, field, as_of, settings.stale_seconds)['rankable']
-                                     for field in ('bid', 'ask'))
-                prefix = 'funding' if funding else 'light'
-                setattr(status, f'{prefix}_subscriptions', len(selected))
-                setattr(status, f'{prefix}_observed_markets', observed)
-                setattr(status, f'{prefix}_fresh_markets', fresh)
-                setattr(status, f'{prefix}_coverage_ratio', fresh / len(selected) if selected else 0)
-                if funding:
-                    status.funding_source_stale_markets = source_stale
-                    status.funding_source_missing_markets = source_missing
-                    status.funding_source_future_markets = source_future
-            adapter = self.adapters.get(name)
-            if not hasattr(adapter, 'plan_light') or not getattr(adapter, 'layered_light', True):
-                status.light_mode = 'legacy_bounded_public_fetch'
-                batches = (len(catalog) + settings.broad_batch_size - 1) // settings.broad_batch_size
-                status.light_estimated_cycle_seconds = batches * settings.broad_poll_seconds if batches else None
+        counts = dict(light_observed_markets=0, light_fresh_markets=0,
+                      funding_observed_markets=0, funding_fresh_markets=0,
+                      funding_source_stale_markets=0, funding_source_missing_markets=0,
+                      funding_source_future_markets=0)
+        if snapshot is None or snapshot.is_demo:
+            return counts
+        if any(getattr(snapshot, field) is not None for field in ('bid', 'ask', 'last', 'mark', 'index')):
+            counts['light_observed_markets'] = 1
+            counts['light_fresh_markets'] = int(all(
+                funding_field_state(snapshot, item, field, as_of, stale_seconds)['rankable']
+                for field in ('bid', 'ask')))
+        if item.kind == 'perpetual' and snapshot.funding_rate is not None:
+            counts['funding_observed_markets'] = 1
+            fields = {field: funding_field_state(snapshot, item, field, as_of, stale_seconds)
+                      for field in ('funding_rate', 'funding_kind', 'funding_interval_hours')}
+            counts['funding_fresh_markets'] = int(all(state['rankable'] for state in fields.values()))
+            rate = fields['funding_rate']
+            counts['funding_source_stale_markets'] = int(rate['trusted'] and rate['issue'] == 'funding_rate_stale')
+            counts['funding_source_missing_markets'] = int(not rate['trusted'])
+            counts['funding_source_future_markets'] = int(any(stamp is not None and stamp > as_of
+                for stamp in (rate['source_at'], rate['received_at'])))
+        return counts
+
+    @staticmethod
+    def _coverage_deadline(snapshot, as_of, stale_seconds):
+        """Next exact time gate transition, never a new freshness allowance."""
+        if snapshot is None:
+            return math.inf
+        boundaries = [snapshot.received_at]
+        for field in ('bid', 'ask', 'funding_rate', 'funding_kind', 'funding_interval_hours'):
+            source = snapshot.field_timestamps.get(field, snapshot.source_at)
+            received = snapshot.field_received_at.get(field, snapshot.received_at)
+            boundaries.append(received)
+            if source is not None:
+                boundaries.append(source)
+            metadata = (field == 'funding_interval_hours' and source is None and
+                        snapshot.field_sources.get(field, '').endswith(
+                            (':catalog_metadata_observed_at', ':public_metadata_observed_at')))
+            ttl = 6 * 3600000 if metadata else stale_seconds * 1000
+            effective = min(source, received) if source is not None else received
+            boundaries.append(math.floor(effective + ttl) + 1)
+        return min((boundary for boundary in boundaries if boundary > as_of), default=math.inf)
+
+    def refresh_status_coverage(self, venue=None):
+        """Read-time counts reuse unchanged fields only until their exact next time gate.
+
+        Collection replaces snapshots/instruments; the cache holds at most one
+        reference per active catalog item and is pruned on every refresh.
+        """
+        with self._coverage_lock:
+            settings = self.store.settings()
+            as_of = now_ms()
+            catalog = tuple(self.instruments.values())
+            snapshots = dict(self.snapshots)
+            totals = {name: dict(light_subscriptions=0, funding_subscriptions=0,
+                light_observed_markets=0, light_fresh_markets=0, funding_observed_markets=0,
+                funding_fresh_markets=0, funding_source_stale_markets=0,
+                funding_source_missing_markets=0, funding_source_future_markets=0)
+                for name in self.statuses if venue is None or name == venue}
+            next_cache = ({key: value for key, value in self._coverage_cache.items()
+                           if value[0].venue != venue and key in self.instruments} if venue is not None else {})
+            for item in catalog:
+                if not item.active or item.venue not in totals:
+                    continue
+                snapshot = snapshots.get(item.id)
+                cached = self._coverage_cache.get(item.id)
+                if not (cached and cached[0] is item and cached[1] is snapshot
+                        and cached[2] == settings.stale_seconds and cached[3] <= as_of < cached[4]):
+                    cached = (item, snapshot, settings.stale_seconds, as_of,
+                              self._coverage_deadline(snapshot, as_of, settings.stale_seconds),
+                              self._coverage_counts(item, snapshot, as_of, settings.stale_seconds))
+                next_cache[item.id] = cached
+                values = totals[item.venue]
+                values['light_subscriptions'] += 1
+                values['funding_subscriptions'] += int(item.kind == 'perpetual')
+                for field, count in cached[5].items():
+                    values[field] += count
+            self._coverage_cache = next_cache
+            for name, values in totals.items():
+                status = self.statuses.get(name)
+                if status is None:
+                    continue
+                for field, value in values.items():
+                    setattr(status, field, value)
+                for prefix in ('light', 'funding'):
+                    count = values[f'{prefix}_subscriptions']
+                    setattr(status, f'{prefix}_coverage_ratio', values[f'{prefix}_fresh_markets'] / count if count else 0)
+                adapter = self.adapters.get(name)
+                if not hasattr(adapter, 'plan_light') or not getattr(adapter, 'layered_light', True):
+                    status.light_mode = 'legacy_bounded_public_fetch'
+                    batches = (values['light_subscriptions'] + settings.broad_batch_size - 1) // settings.broad_batch_size
+                    status.light_estimated_cycle_seconds = batches * settings.broad_poll_seconds if batches else None
+
+    async def _refresh_status_coverage_async(self, venue=None):
+        # Only one background coverage job exists; cancellation drains its worker
+        # before releasing the admission lock or completing collector shutdown.
+        async with self._coverage_async_lock:
+            job = asyncio.create_task(asyncio.to_thread(self.refresh_status_coverage, venue))
+            try:
+                await asyncio.shield(job)
+            except asyncio.CancelledError:
+                await job
+                raise
 
     async def run_planned_light(self, name, adapter, funding=False):
         """Product-wide bulk sweeps and bounded fallbacks have independent clocks."""
@@ -422,7 +502,7 @@ class Collector:
             for key, value in values.items():
                 setattr(status, f'{prefix}_{key}', value)
 
-        def summarize():
+        async def summarize():
             errors = {**layer_errors[True], **layer_errors[False]}
             active = [states[layer] for layer in present]
             state = ('partial' if errors else 'polling' if 'polling' in active else
@@ -439,7 +519,7 @@ class Collector:
                 status.funding_estimated_cycle_seconds = status.light_estimated_cycle_seconds
                 status.funding_last_cycle_at = status.light_last_cycle_at
                 status.funding_last_attempt_at = status.light_last_attempt_at
-            self.refresh_status_coverage()
+            await self._refresh_status_coverage_async(name)
 
         async def worker(full_product):
             failures = 0
@@ -449,7 +529,6 @@ class Collector:
                 if (not settings.collection_enabled or not settings.broad_collection_enabled or settings.demo_mode
                         or name not in settings.enabled_venues or name not in self.discovered):
                     update(state='disabled')
-                    self.refresh_status_coverage()
                     await self.pause(1)
                     continue
                 catalog = sorted((item for item in self.instruments.values() if item.venue == name and item.active
@@ -483,7 +562,7 @@ class Collector:
                     status.funding_bulk_markets = sum(item.kind == 'perpetual' for batch in bulk for item in batch.instruments)
                     status.funding_fallback_markets = sum(item.kind == 'perpetual' for batch in fallback for item in batch.instruments)
                     status.funding_bulk_groups = sum(any(item.kind == 'perpetual' for item in batch.instruments) for batch in bulk)
-                summarize()
+                await summarize()
                 jobs = bulk if full_product else fallback
                 sweep_signature = signatures[full_product]
                 minimum = (adapter.minimum_light_cycle_seconds(jobs, funding=funding)
@@ -494,7 +573,7 @@ class Collector:
                 layer_errors[full_product] = {key: value for key, value in layer_errors[full_product].items() if key in layer_ids}
                 if not jobs:
                     states[full_product] = 'not_applicable'
-                    summarize()
+                    await summarize()
                     await self.pause(min(period, 5))
                     continue
                 started = monotonic()
@@ -562,7 +641,7 @@ class Collector:
                     elapsed = max(.001, monotonic() - started)
                     if signatures[full_product] == sweep_signature:
                         estimates[full_product] = max(sweep_period, minimum, elapsed * len(jobs) / finished)
-                    summarize()
+                    await summarize()
                     gap = max(current.broad_inter_batch_seconds,
                               getattr(adapter, 'light_min_bulk_interval', 0) if full_product else 0)
                     if failures and not full_product:
@@ -576,7 +655,7 @@ class Collector:
                     completed_clock[full_product] = ended
                     completed[full_product] = now_ms()
                     estimates[full_product] = max(sweep_period, minimum, ended - started)
-                    summarize()
+                    await summarize()
                 # Cadence is start-to-start for a whole sweep, not a sleep per
                 # 20/100 markets. A long fallback sweep never delays native bulk.
                 elapsed = monotonic() - started
@@ -660,6 +739,8 @@ class Collector:
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
+        if self._record_jobs:
+            await asyncio.gather(*tuple(self._record_jobs), return_exceptions=True)
         await asyncio.gather(*(a.close() for a in self.adapters.values()), return_exceptions=True)
 
     async def pause(self, seconds):
@@ -672,17 +753,35 @@ class Collector:
 
     async def watch_health(self):
         while not self.stopping.is_set():
-            self.refresh_status_coverage()
+            await self._refresh_status_coverage_async()
             settings = self.store.settings()
-            if settings.collection_enabled and not settings.demo_mode:
-                for snapshot in list(self.snapshots.values()):
+            if (self.notifications and settings.notifications_enabled and
+                    settings.collection_enabled and not settings.demo_mode):
+                for index, snapshot in enumerate(tuple(self.snapshots.values())):
+                    if index % 128 == 0:
+                        await asyncio.sleep(0)
+                        current = self.store.settings()
+                        if (not current.notifications_enabled or not current.collection_enabled or current.demo_mode
+                                or current.enabled_venues != settings.enabled_venues
+                                or current.stale_seconds != settings.stale_seconds):
+                            break
                     if snapshot.venue not in settings.enabled_venues or snapshot.is_demo:
                         continue
-                    if enrich(snapshot, settings.stale_seconds)['stale']:
+                    primary = ('bid', 'ask') if snapshot.bid and snapshot.ask else tuple(
+                        field for field in ('last', 'mark', 'index') if getattr(snapshot, field) is not None)[:1]
+                    if not primary or any(field_stale(snapshot, field, settings.stale_seconds) for field in primary):
+                        current = self.store.settings()
+                        if (not current.notifications_enabled or not current.collection_enabled or current.demo_mode
+                                or snapshot.venue not in current.enabled_venues
+                                or current.stale_seconds != settings.stale_seconds):
+                            break
                         await self.event({'id': f'stale:{snapshot.instrument_id}', 'category': 'system',
                                           'type': 'data_stale', 'platforms': [snapshot.venue],
                                           'source_at': now_ms(), 'message': f'Stale market data: {snapshot.instrument_id}'})
                 for status in list(self.statuses.values()):
+                    settings = self.store.settings()
+                    if not settings.notifications_enabled or not settings.collection_enabled or settings.demo_mode:
+                        break
                     if status.venue in settings.enabled_venues and status.last_received_at and status.state in {'error', 'rate_limited'}:
                         await self.event({'id': f'disconnected:{status.venue}', 'category': 'system',
                                           'type': 'disconnected', 'platforms': [status.venue],

@@ -138,7 +138,8 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
 
     @app.get('/api/recording')
     def recording_status():
-        return {**collector.recorder.status(), 'requested_enabled': store.settings().recording_enabled}
+        return {**collector.recorder.status(), 'requested_enabled': store.settings().recording_enabled,
+                'queue_dropped': collector.recording_queue_dropped, 'pending_writes': len(collector._record_jobs)}
 
     @app.get('/api/favorites')
     def favorites():

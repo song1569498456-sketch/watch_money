@@ -219,3 +219,11 @@ app lifespan启动每0.5秒的本地timer采样，提供最近/最大调度迟�
 `loop_heartbeat_stall` 表示观察线程仍调度而循环心跳停止，查看 event_loop 栈是否持续停在同一同步调用；其他线程可提供锁/工作线程线索。`shared_scheduling_gap` 表示观察线程自身也晚醒，可能是环境暂停、CPU 限流、GIL 或调度问题，不能据此唯一归因。恢复后抓到的栈不代表停顿期间的栈。Python 无法保证在进程被冻结或 GIL 被长期持有时抓栈，需结合宿主或执行服务证据。该探针不测网络 RTT，也不能独自证明网络故障；不要把时间相关性当成因果。
 
 不探测或绕过 Lighter 的 restricted jurisdiction。此环境公开交易所网络受限，本地可控阻塞只验证取证功能，不替代持续实网和 24 小时验收。
+
+### R25 热路径优化后的对照边界
+
+设置读取使用进程内、按数据库路径共享的已提交快照，返回独立副本；同进程多个 Storage 实例在写入提交后立即可见，写失败不发布，重启重新从 SQLite 加载。SQLite 写入仍持久化。此应用按单个采集进程部署；设置应通过应用 API 或同进程 Storage.set 修改，不支持跨进程直接改 SQLite 后自动失效。开发外部迁移/恢复后需重启应用，不能把旧进程缓存当作数据库实时视图。
+
+关闭录制时 observer 不连接 SQLite、不扫描录制目录；开启时配置未变不再重复 configure/status 目录扫描。跨 observer 最多 16 个录制作业，超出在 `/api/recording`状态中记录 queue_dropped，pending_writes 包括取消调用后尚未完成的写入。排队作业执行前复核最新设置；关闭后尚未开始的作业不落盘，已经开始的单次写入允许完成，停机等待其完成。录制本身保留原有大小/保留天数/脱敏约束。
+
+保持相同公开平台与采样频率复跑 status-only 和固定重查询两组，关注探针事件、进程 CPU 增量、coverage 计算以及录制 pending/dropped；对照时始终明确录制/通知开关。本地 settings 5000 次相同读取对照见 `evidence/settings-hotpath-synthetic.json`，只证明此环境消除反复 SQLite 读取，不能直接推断真实 HL/OKX 时效改善。

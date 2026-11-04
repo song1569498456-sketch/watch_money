@@ -18,6 +18,6 @@
   "page_errors": [],
   "external_requests": [],
   "browser_writes": [
-    "http://127.0.0.1:34753/api/settings"
+    "http://127.0.0.1:35827/api/settings"
   ]
 }
