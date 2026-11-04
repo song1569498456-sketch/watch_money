@@ -173,3 +173,7 @@ dYdX/Hyperliquid历史保留观察者前HTTP响应receipt，来源字段变化�
 ## R48 Coinbase产品状态边界
 
 父线程b960509的5次公开GET验证BTC L1/L2、PEPE L1原生时间，属于短时报告而非24小时证据。online受限产品仅合成复现；现在分开目录在线与即时成交资格，disabled/cancel_only/post_only报价保留但不可靠排行或计算可成交净收益；maker订单许可不代表post-only下撮合，limit-only可跨价限价撮合。目录刷新解除可恢复，时间与来源字段保留；未新增实网请求或身份批准。见COLLECTION R48。
+
+## R49 关注ticker流与全目录盘口区别
+
+通用CEX流按watch_assets选择关注币种，并非catalog_stream或全目录book流。Coinbase Exchange原生L1/L2仍是有界REST轮转/按需深度。本批修复CCXT返回后的观察者延迟污染receipt及未来水位，仅离线回归；没有新增实网、身份批准或已拒绝连接重试。见COLLECTION R49。

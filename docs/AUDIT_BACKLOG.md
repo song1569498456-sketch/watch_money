@@ -403,3 +403,14 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 无账户/交易、无受阻连接重试或独立环境变更；24小时及受限模式实网仍未验收。下一项先由独立环境复核产品状态到排行/测算的一致性，再推进目录时效与其它未完成数据源。
 
 - 最终验证：1211项完整后端（51.30秒，1条上游弃用警告）、158项Exchange/scanner/strategies专项、CI范围Ruff/diff通过。无前端/浏览器修改、未新增实网或修改受阻连接，远端CI未确认。
+
+### R49 通用CEX流接收时间（2026-11-04）
+
+- 父线程b960509离线复现：watch_tickers方法返回时源时间超前10ms，诊断观察者等待40ms后才取receipt，使未来帧误判可排行。不是实网Coinbase时钟异常证据。
+- watch_tickers与watch_ticker每次返回后立即捕获receipt，观察者、逐市场解析、队列等待不改时钟；ticker_patch显式接收该值，并写入每个已提供字段的field_received_at，来源/原生源时间保持独立。直接调用解析器时仍可使用本地当前时间作为缺省。
+- 未来帧不推进last_source_times，也不污染正常帧去重指纹；仍输出带真实receipt的可诊断patch，由共同有效性检查拒绝排行。随后正常帧可恢复，已确认的旧帧继续丢弃。移除原先允许超前30秒推进水位的逻辑。
+- 新7项离线回归：OKX/Bybit/Coinbase Exchange分别覆盖single/multiple的10ms未来+40ms观察者、随后正常与乱序恢复；取消观察者无patch返回，关闭后重新订阅重新取时。18项流专项通过，无新交易所网络请求。
+- 覆盖边界：CexStreamAdapter没有catalog_stream标记，collector按watch_assets选关注币种，分client/产品组和小批订阅ticker；它不是全目录book流，也不是原生逐盘口字段更新时间保证。Coinbase Exchange全目录发现后的L1/L2是R47有界REST轮转/按需深度；此次不把关注ticker流宣称全目录盘口覆盖。CCXT方法返回时刻不是socket首字节时间，不替代原生事件时间。
+- 没有重试已拒绝的OKX WS、没有修改独立环境/账户；长期实网覆盖与24小时仍开放。
+
+- 最终验证：1218项完整后端（51.67秒，1条上游TestClient弃用警告）、18项流专项、CI范围Ruff/diff通过；无浏览器/实网验证或账户变更，远端CI未确认。

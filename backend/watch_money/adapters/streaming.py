@@ -43,12 +43,14 @@ def _stream_client_factory(client_id: str) -> Any:
     return client
 
 
-def ticker_patch(instrument: Instrument, client_id: str, ticker: dict, method: str) -> MarketSnapshot | None:
+def ticker_patch(instrument: Instrument, client_id: str, ticker: dict, method: str,
+                 *, received_at: int | None = None) -> MarketSnapshot | None:
     """Emit supplied numeric fields only; absence is not a null replacement.
 
     A CCXT ticker timestamp describes its unified ticker event, not an independent
     exchange timestamp for every constituent price. Keep this uncertainty visible.
     """
+    received = now_ms() if received_at is None else received_at
     event_time = _timestamp(ticker.get("timestamp"))
     source = f"ccxt.pro:{client_id}:{method}:{instrument.native_symbol}"
     values: dict[str, Any] = {}
@@ -77,7 +79,8 @@ def ticker_patch(instrument: Instrument, client_id: str, ticker: dict, method: s
         issues.append("crossed orderbook: bid exceeds ask")
     return MarketSnapshot(
         instrument_id=instrument.id, venue=instrument.venue, source=source,
-        source_at=event_time, received_at=now_ms(), field_sources=sources,
+        source_at=event_time, received_at=received, field_sources=sources,
+        field_received_at={field: received for field in timestamps},
         field_timestamps=timestamps, valid=not crossed, issues=issues, is_demo=False, **values,
     )
 
@@ -167,6 +170,7 @@ class CexStreamAdapter:
                     payloads = await client.watch_tickers(symbols)
                 else:
                     payloads = {symbols[0]: await client.watch_ticker(symbols[0])}
+                received = now_ms()  # CCXT method return, before observers or queue backpressure.
                 if self.on_payload is not None:
                     with suppress(Exception):
                         await self.on_payload(self.venue, f'websocket:ccxt:{method}', payloads)
@@ -174,7 +178,7 @@ class CexStreamAdapter:
                     instrument = by_symbol.get(symbol)
                     if instrument is None or not isinstance(ticker, dict):
                         continue
-                    patch = ticker_patch(instrument, client_id, ticker, method)
+                    patch = ticker_patch(instrument, client_id, ticker, method, received_at=received)
                     if patch is None:
                         continue
                     # Some implementations return cached entries together with
@@ -186,9 +190,12 @@ class CexStreamAdapter:
                         continue
                     if patch.source_at is not None and patch.source_at < last_source_times.get(symbol, 0):
                         continue
-                    if patch.source_at is not None and patch.source_at <= now_ms() + 30_000:
-                        last_source_times[symbol] = patch.source_at
-                    previous[symbol] = fingerprint
+                    # Future events remain visible as untrusted, but cannot
+                    # poison the ordering watermark or suppress a later valid copy.
+                    if patch.source_at is None or patch.source_at <= received:
+                        if patch.source_at is not None:
+                            last_source_times[symbol] = patch.source_at
+                        previous[symbol] = fingerprint
                     await events.put(patch)
         except asyncio.CancelledError:
             raise

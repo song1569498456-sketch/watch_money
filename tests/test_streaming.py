@@ -238,3 +238,67 @@ async def test_installed_pro_clients_use_verified_tls_inherited_proxy_and_no_acc
             assert not client.apiKey and not client.secret
             assert client.has.get("watchTicker") or client.has.get("watchTickers")
             await client.close()
+
+
+@pytest.mark.parametrize('client_id', ['okx', 'bybit', 'coinbaseexchange'])
+@pytest.mark.parametrize('multiple', [False, True])
+async def test_observer_delay_cannot_validate_future_or_poison_ordering(monkeypatch, client_id, multiple):
+    from watch_money.scanner import funding_field_state
+    clock = [EVENT]
+    monkeypatch.setattr('watch_money.adapters.streaming.now_ms', lambda: clock[0])
+    item = instrument(client=client_id)
+    client = MockStreamClient(multiple=multiple)
+    stream = CexStreamAdapter(rest_adapter([(item, client_id)]), client_factory=lambda _: client)
+    async def observer(*args):
+        clock[0] += 40
+    stream.on_payload = observer
+    generator = stream.stream([item])
+    try:
+        await client.events.put({item.native_symbol: {'bid': 100, 'ask': 101, 'timestamp': EVENT + 10}})
+        future = await anext(generator)
+        assert future.received_at == EVENT and future.field_received_at == {'bid': EVENT, 'ask': EVENT}
+        assert not funding_field_state(future, item, 'bid', clock[0], 60)['rankable']
+        await client.events.put({item.native_symbol: {'bid': 99, 'ask': 100, 'timestamp': EVENT}})
+        normal = await asyncio.wait_for(anext(generator), 1)
+        assert normal.bid == 99 and normal.received_at == EVENT + 40
+        assert funding_field_state(normal, item, 'bid', clock[0], 60)['rankable']
+        # An old event is ignored; the next update retains its own return time.
+        await client.events.put({item.native_symbol: {'bid': 98, 'timestamp': EVENT - 1}})
+        await client.events.put({item.native_symbol: {'bid': 101, 'timestamp': EVENT + 1}})
+        newer = await asyncio.wait_for(anext(generator), 1)
+        assert newer.bid == 101 and newer.source_at == EVENT + 1
+        assert newer.field_received_at['bid'] == EVENT + 120
+    finally:
+        await generator.aclose()
+
+
+async def test_cancel_during_observer_emits_nothing_and_restart_gets_new_receipt(monkeypatch):
+    clock = [EVENT]
+    monkeypatch.setattr('watch_money.adapters.streaming.now_ms', lambda: clock[0])
+    item = instrument()
+    clients = []
+    def factory(_):
+        client = MockStreamClient()
+        client.events.put_nowait({item.native_symbol: {'bid': 100, 'timestamp': EVENT}})
+        clients.append(client)
+        return client
+    stream = CexStreamAdapter(rest_adapter([(item, 'okx')]), client_factory=factory)
+    entered = asyncio.Event()
+    async def observer(*args):
+        entered.set()
+        await asyncio.Event().wait()
+    stream.on_payload = observer
+    generator = stream.stream([item])
+    task = asyncio.create_task(anext(generator))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert clients[0].closed
+    clock[0] += 100
+    stream.on_payload = None
+    generator = stream.stream([item])
+    try:
+        assert (await anext(generator)).received_at == EVENT + 100
+    finally:
+        await generator.aclose()

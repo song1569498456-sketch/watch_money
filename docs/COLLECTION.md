@@ -310,3 +310,12 @@ python scripts/probe_okx_funding_timing.py --live --samples 18 --interval 10 --s
 - Scanner仍保留报价与具体原因，双方向price_rankable=false，不能进入可靠价差排行；测算分类检查阻止净收益及threshold_met，包含具体产品原因。快照issues也保留限制说明，现有详情可查看。资金费本身的观测值不是成交承诺，未改变费率数据门槛。
 - 新12项离线回归：四种模式、限制解除、盘口保留、两种费用下三种受限状态均不产净收益、limit_only可匹配、双方向排行与恢复；158项Exchange/scanner/strategies专项通过。范围是输入目录已知的产品状态，不承诺在两次目录刷新间获知所有变更，product_status_at保留实际观测时间。
 - 无账户/交易、无受阻连接重试或独立环境变更；24小时及受限模式实网仍未验收。下一项先由独立环境复核产品状态到排行/测算的一致性，再推进目录时效与其它未完成数据源。
+
+### R49 通用CEX流接收时间（2026-11-04）
+
+- 父线程b960509离线复现：watch_tickers方法返回时源时间超前10ms，诊断观察者等待40ms后才取receipt，使未来帧误判可排行。不是实网Coinbase时钟异常证据。
+- watch_tickers与watch_ticker每次返回后立即捕获receipt，观察者、逐市场解析、队列等待不改时钟；ticker_patch显式接收该值，并写入每个已提供字段的field_received_at，来源/原生源时间保持独立。直接调用解析器时仍可使用本地当前时间作为缺省。
+- 未来帧不推进last_source_times，也不污染正常帧去重指纹；仍输出带真实receipt的可诊断patch，由共同有效性检查拒绝排行。随后正常帧可恢复，已确认的旧帧继续丢弃。移除原先允许超前30秒推进水位的逻辑。
+- 新7项离线回归：OKX/Bybit/Coinbase Exchange分别覆盖single/multiple的10ms未来+40ms观察者、随后正常与乱序恢复；取消观察者无patch返回，关闭后重新订阅重新取时。18项流专项通过，无新交易所网络请求。
+- 覆盖边界：CexStreamAdapter没有catalog_stream标记，collector按watch_assets选关注币种，分client/产品组和小批订阅ticker；它不是全目录book流，也不是原生逐盘口字段更新时间保证。Coinbase Exchange全目录发现后的L1/L2是R47有界REST轮转/按需深度；此次不把关注ticker流宣称全目录盘口覆盖。CCXT方法返回时刻不是socket首字节时间，不替代原生事件时间。
+- 没有重试已拒绝的OKX WS、没有修改独立环境/账户；长期实网覆盖与24小时仍开放。

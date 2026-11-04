@@ -1,5 +1,7 @@
 # 当前开发状态
 
+2026-11-04 R49：修复通用CEX watch_tickers/watch_ticker在诊断观察者后取receipt的边界；方法返回即捕获并传播到每字段，未来帧不推进乱序水位或污染去重。**1218项完整后端（51.67秒）、18项流专项、CI范围Ruff/diff通过**，新增7项覆盖三client/single与multiple、10ms未来+40ms延迟、正常/乱序恢复、取消与重订阅。仅合成回归，不声称实网Coinbase时钟异常；没有交易所请求或受阻连接重试。COLLECTION/COVERAGE明确关注币种ticker流不等于全目录book流。24小时与新修复实网验收仍开放，远端CI未确认。
+
 2026-11-04 R48：修复Coinbase Exchange online受限产品仍可测算达标的合成边界。保留在线行情，独立记录产品限制、订单类型、来源和观测时间；disabled/cancel_only/post_only不进可靠价差排行且无即时净收益，maker费率不代表post-only撮合，limit-only保留跨价限价能力。**1211项全量后端（51.30秒）、158项相关专项、CI范围Ruff/diff通过**；新增12项限制/恢复/费用/排行回归。父线程5次公开GET正确保留book.time仅记作短时实测，未发现真实online受限样本。本批未访问外网行情、无前端或账户变更，24小时未完成。详见COLLECTION/AUDIT_BACKLOG R48。
 
 2026-11-04 R47：新增Coinbase Exchange独立现货目录及book L1/L2原生盘口；与Advanced Trade身份隔离，目录原生币种冲突显式诊断，已有Exchange currencies证据仅同client可用。避免CCXT批量spark-line及ticker成交时间冒充BBO；保留book.time、聚合size、竞价/空侧清除与receipt。**1199项全量后端（49.32秒）、17项新Exchange专项、已有111项CEX/身份回归、CI范围Ruff/diff通过**；最终目录冲突诊断后重跑17项专项。仅离线，无行情主机请求、身份批准或前端变更；全目录时效、实网和24小时未验收。来源/复测/下一项见COLLECTION与AUDIT_BACKLOG R47。
