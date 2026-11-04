@@ -68,6 +68,7 @@ def adapter_for(count=1000, *, venue="okx", kind="perpetual", bulk_funding=True)
 @pytest.fixture(autouse=True)
 def clock(monkeypatch):
     monkeypatch.setattr("watch_money.adapters.cex.now_ms", lambda: NOW)
+    monkeypatch.setattr("watch_money.adapters.bulk_tickers.now_ms", lambda: NOW)
     monkeypatch.setattr("watch_money.collector.now_ms", lambda: NOW)
 
 

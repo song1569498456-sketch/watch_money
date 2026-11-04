@@ -61,12 +61,19 @@ class BulkTickerParser:
         return values, {'parse_wall_ms': round((perf_counter()-started)*1000, 3),
                         'parse_cpu_ms': round((thread_time()-cpu)*1000, 3), 'rows': len(rows)}
 
+    async def _fallback(self, client, symbols, params):
+        values = await client.fetch_tickers(symbols, params)
+        # Earliest boundary exposed by generic CCXT: method return (its own
+        # decoding/parsing is internal). Never timestamp after observers.
+        received = now_ms()
+        return ReceivedTickers(values, received) if isinstance(values, dict) else values
+
     async def fetch(self, client, symbols, params):
         if self.closed:
             raise BulkParseBusy('bulk parser closed')
         if not self.supported(client, params):
             self.metrics['fallbacks'] += 1
-            return await client.fetch_tickers(symbols, params)
+            return await self._fallback(client, symbols, params)
         if self.closed or self.pending >= 2:
             raise BulkParseBusy('bulk parser closed or at capacity')
         self.pending += 1
@@ -98,7 +105,7 @@ class BulkTickerParser:
                     if stock or uta:
                         self.metrics['fallbacks'] += 1
                         # Upstream rules changed or the selected market has special routing.
-                        return await client.fetch_tickers(symbols, params)
+                        return await self._fallback(client, symbols, params)
                     if market_type == 'spot' and passed_subtype is None:
                         response = await client.publicSpotGetV2SpotMarketTickers(remaining)
                     else:

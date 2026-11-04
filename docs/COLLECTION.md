@@ -281,3 +281,13 @@ python scripts/probe_okx_funding_timing.py --live --samples 18 --interval 10 --s
 ### R39 Deribit结算币摘要
 
 永续轻量采集按settle分组走官方get_book_summary_by_currency(kind=future)，不再用base分片；已审查整组模式通过CCXT fetch_tickers(None, code=settle)避免其symbol路径的基础币限制。保持原限流、批量并发、逐市场缺失/错误及NotSupported回退标记，现货未升级整组能力。只接受目录nativeID/base/quote一致且swap/settle匹配的返回项；原始时间和显式null盘口遵守字段合并清除屏障。源时间未知/过期不参加可靠排行，摘要资金费字段不自动进入结算或预估比较。官方来源与限制见COVERAGE R39。
+
+### R42 CEX接收时间与观察者边界
+
+通用bulk及已审查Bitget特殊路由回退现在都在CCXT fetch_tickers返回后立即封装ReceivedTickers，再调用任何诊断观察者；cex消费者也在观察者前确定缺省接收时间。单ticker轻量回退与详细查询同样在fetch_ticker返回后立即取时。详细查询的bid/ask/last/mark/index/volume字段独立保存当时receipt，后续funding/OI完成不能把先前价格到达时间改晚。
+
+这是最早暴露边界：通用CCXT方法内部的HTTP解码/同步解析耗时尚不能分离，所记为CCXT方法返回，不宣称socket原始字节到达；优化OKX/Bitget仍在原始公开HTTP解码返回、后台parse之前记时。未注入全局transport hook或修改共享client。未知源时钟不补，未来源帧不会因观察者变慢变有效。
+
+新增确定性时钟回归：返回时源超前10ms、观察者推进40ms仍不排行；正常过去帧仍通过；bulk/single/detailed在观察者中取消无patch且下一次调用独立取时，详细funding后到不移动旧盘口receipt。这个偏移是模拟扰动，不是实网已观察到错误。
+
+独立父线程4d89f2e验证144个Deribit永续价格/源时间/base量一致、64个交割合约排除、51项专项通过。其24小时尝试830秒因本地代理403被守卫停止，原因未知，未完成；不自动重试或替代路由。摘要见evidence/deribit-replay-and-guard-stop.json，新修复需要另一批独立验证。

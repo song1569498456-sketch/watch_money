@@ -333,3 +333,11 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 12项新MockTransport测试覆盖普通/HIP-3、坏时间/币种/率、单页游标、403/451/500、超大响应、目录变化、超时取消；58项联合历史专项通过。未执行本环境实网。FUNDING_VIEW给出独立检出+临时库公开实测步骤，不读用户data、不触碰固定提交24小时环境。完整历史/实网覆盖和生产身份批准仍开放。
 
 - 最终验证：1131项完整后端（42.08秒）、58项联合历史专项、CI范围Ruff/diff通过；上游TestClient弃用警告一条。未改前端/重跑浏览器，实网与远端CI未确认。
+
+### R42 接收时间提前固定与独立停止证据（2026-11-04）
+
+- 独立实测4d89f2e：144永续price/time/base volume一致、排除64交割、51项专项通过。报告的+10ms源时间/40ms录制延迟是合成复现，不写为实网故障。独立24h尝试13分50秒后本地代理403触发守卫停止，根因未定、未完成；不重试/绕过，不改运行环境。摘要见evidence/deribit-replay-and-guard-stop.json。
+- BulkTickerParser两种通用回退统一在CCXT方法返回后封装receipt；消费者在观察者前提取receipt。single轻量与详细fetch_ticker也提前取时，详细put保留字段receipt防止后续funding/OI延后价格时钟。优化原生OKX/Bitget后台解析前时刻保持不变。资金费bulk/single及interval元数据检查已有观察者前时间，无需重写。
+- 通用CCXT内部解码/解析未暴露原始网络到达时刻，明确方法返回边界，不夸大为所有协议wire捕获；未更改DEX网络层或全局client。新10项确定性测试覆盖未来/过去、三路径观察者取消/下一轮及详细多字段交错；独立实网回验仍待完成。
+
+- 最终验证：1141项全量后端（46.43秒）、50项首次专项及49项最终调度/时间/解析专项、CI范围Ruff/diff通过。新增模块提前取时时，调度fixture补同一冻结时钟；保持原新鲜计数断言。上游TestClient弃用警告一条，无前端变更/浏览器重跑；新修复实网和远端CI未确认。

@@ -500,6 +500,9 @@ class CexAdapter:
                             payloads = await self._ticker_parser.fetch(
                                 client, None if (_full_product or client_id == "deribit" and items[0].kind == "perpetual")
                                 else [item.native_symbol for item in batch], params)
+                        observed = getattr(payloads, "received_at", None)
+                        if observed is None:
+                            observed = now_ms()
                         await self._record_payload("fetch_tickers", payloads)
                         if not isinstance(payloads, dict):
                             raise ValueError("Public fetch_tickers returned a non-mapping payload")
@@ -514,7 +517,6 @@ class CexAdapter:
                         multiple = False
                     else:
                         successful_requests += 1
-                        observed = getattr(payloads, "received_at", now_ms())
                         for index, item in enumerate(batch):
                             if index and index % 128 == 0:
                                 await asyncio.sleep(0)
@@ -546,6 +548,7 @@ class CexAdapter:
                     async with self._symbol_semaphore, self._semaphore:
                         try:
                             ticker = await client.fetch_ticker(item.native_symbol)
+                            observed = now_ms()
                         except Exception as exc:
                             if type(exc).__name__ != "NotSupported":
                                 raise
@@ -557,7 +560,8 @@ class CexAdapter:
                         raise ValueError("Public fetch_ticker returned a non-mapping payload")
                     if ticker.get("symbol") not in (None, item.native_symbol):
                         return None
-                    return _light_ticker_patch(item, client_id, ticker, "fetch_ticker", self._resolve(item)[1])
+                    return _light_ticker_patch(item, client_id, ticker, "fetch_ticker", self._resolve(item)[1],
+                                               received_at=observed)
 
                 tasks = [asyncio.create_task(fetch_single(item)) for item in batch]
                 try:
@@ -803,8 +807,8 @@ class CexAdapter:
         client = self._client(client_id)
         symbol = instrument.native_symbol
         ticker = await client.fetch_ticker(symbol)
-        await self._record_payload("fetch_ticker", ticker)
         received = now_ms()
+        await self._record_payload("fetch_ticker", ticker)
         ticker_time = _timestamp(ticker.get("timestamp"))
         source = f"ccxt:{client_id}:fetch_ticker:{symbol}"
         fields: dict[str, Any] = {}
@@ -820,6 +824,7 @@ class CexAdapter:
                 fields[field] = numeric
                 sources[field] = endpoint
                 times[field] = timestamp
+                receipts[field] = received
 
         for field in ("bid", "ask", "last"):
             put(field, ticker.get(field), f"{source}.{field}", ticker_time, positive=True)
