@@ -165,3 +165,66 @@ async def test_clear_barrier_old_same_time_and_recovery(env, tmp_path):
     for at in [base, base + 10]:
         assert put(collector, patch(at)).bid is None
     assert put(collector, patch(base + 20)).bid == 100
+
+
+@pytest.mark.parametrize('flag,modes', [('trading_disabled', []), ('cancel_only', []),
+    ('post_only', ['maker']), ('limit_only', ['maker_limit', 'taker_marketable_limit'])])
+async def test_online_product_limits_and_recovery_preserve_observation(env, flag, modes):
+    adapter, item, _, _, _ = env
+    client = adapter._client('coinbaseexchange')
+    original = client.publicGetProducts
+    async def restricted(params):
+        rows = await original(params)
+        for row in rows:
+            row[flag] = True
+        return rows
+    client.publicGetProducts = restricted
+    items = await adapter.discover()
+    limited = next(i for i in items if i.id == item.id)
+    assert limited.active and limited.order_entry_modes == modes
+    expected = [] if flag == 'limit_only' else [f'coinbaseexchange:{flag}']
+    assert limited.execution_restrictions == expected
+    patch = (await adapter.fetch_light([limited]))[0]
+    assert patch.bid == 100 and patch.ask == 101
+    if expected:
+        assert expected[0] in ' '.join(patch.issues)
+    client.publicGetProducts = original
+    recovered = next(i for i in await adapter.discover() if i.id == item.id)
+    assert recovered.execution_restrictions == [] and recovered.order_entry_modes == ['maker', 'taker']
+
+
+@pytest.mark.parametrize('flag', ['trading_disabled', 'cancel_only', 'post_only'])
+@pytest.mark.parametrize('fee', [0, .001])
+def test_restricted_product_blocks_net_profit_even_with_maker_fee(flag, fee):
+    from watch_money.adapters.cex import _coinbase_product_status
+    from test_strategies import request_data, result
+    data = request_data()
+    data['instruments'][0].update(_coinbase_product_status(product(**{flag: True}), NOW))
+    data['costs'][0]['open_fee_rate'] = fee
+    report = result(data)
+    assert report['status'] != 'threshold_met' and report['net_profit'] is None
+    assert flag in ' '.join(report['invalid_reasons'])
+    data['instruments'][0].update(_coinbase_product_status(product(), NOW))
+    assert result(data)['net_profit'] is not None
+
+
+def test_limit_only_and_post_only_have_distinct_matching_rules():
+    from watch_money.adapters.cex import _coinbase_product_status
+    from test_strategies import request_data, result
+    data = request_data()
+    status = _coinbase_product_status(product(limit_only=True), NOW)
+    data['instruments'][0].update(status)
+    assert 'taker_marketable_limit' in status['order_entry_modes']
+    assert not status['execution_restrictions'] and result(data)['net_profit'] is not None
+
+
+def test_restricted_quote_visible_but_both_directions_not_rankable():
+    from test_scanner import market, run, direction
+    a = market('a', 'coinbase', execution_restrictions=['coinbaseexchange:post_only'], order_entry_modes=['maker'])
+    b = market('b', 'other')
+    candidate = direction(run([a, b]), 'a', 'b')
+    assert candidate['buy_ask'] is not None
+    assert not candidate['price_rankable'] and not candidate['reverse_price_rankable']
+    assert candidate['buy_market']['execution_restrictions'] == a.execution_restrictions
+    recovered = a.model_copy(update={'execution_restrictions': []})
+    assert direction(run([recovered, b]), 'a', 'b')['price_rankable']

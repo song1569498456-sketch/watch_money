@@ -169,3 +169,7 @@ dYdX/Hyperliquid历史保留观察者前HTTP响应receipt，来源字段变化�
 ## R47 Coinbase Exchange已接入的边界
 
 新增独立coinbaseexchange现货目录和原生book L1/L2，衔接已有Exchange currencies证据，不套用到Advanced Trade或永续。原生目录币种冲突显式记录且目录不标完整；时间使用book.time、数量不乘num-orders、竞价/空侧不保留旧盘口。17项新离线回归及已有111项相关回归通过；无实网和身份批准。R38中“尚未接Exchange client”为当时状态，现已实现但全目录实时覆盖、公共端点可达性和长期运行仍待独立验收。详见COLLECTION R47官方来源及步骤。
+
+## R48 Coinbase产品状态边界
+
+父线程b960509的5次公开GET验证BTC L1/L2、PEPE L1原生时间，属于短时报告而非24小时证据。online受限产品仅合成复现；现在分开目录在线与即时成交资格，disabled/cancel_only/post_only报价保留但不可靠排行或计算可成交净收益；maker订单许可不代表post-only下撮合，limit-only可跨价限价撮合。目录刷新解除可恢复，时间与来源字段保留；未新增实网请求或身份批准。见COLLECTION R48。

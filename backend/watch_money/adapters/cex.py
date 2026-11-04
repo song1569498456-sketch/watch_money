@@ -278,6 +278,8 @@ class CexAdapter:
                                          nonnegative=True)
                 instrument = Instrument(
                     id=identity, venue=self.venue, native_symbol=market["symbol"], asset_id=asset_id,
+                    **(_coinbase_product_status(market.get("info") or {}, self._catalog_observed_at[client_id])
+                       if client_id == "coinbaseexchange" else {}),
                     native_currency_id=base_id or None,
                     base=base, quote=market["quote"], settle=market.get("settle"), kind=kind,
                     contract_size=size, linear=not bool(market.get("inverse")), mapping_verified=verified,
@@ -1055,6 +1057,28 @@ def _deribit_summary_patch(instrument: Instrument, ticker: dict, market: dict,
                                     "field_timestamps": times})
 
 
+def _coinbase_product_status(raw, observed):
+    flags = ("trading_disabled", "cancel_only", "post_only", "limit_only", "auction_mode")
+    unknown = [key for key in flags if key in raw and not isinstance(raw[key], bool)]
+    restrictions = [f"coinbaseexchange:{key}" for key in ("trading_disabled", "cancel_only", "post_only", "auction_mode")
+                    if raw.get(key) is True]
+    if unknown:
+        restrictions.append("coinbaseexchange:invalid_product_flags")
+    if raw.get("status") != "online":
+        restrictions.append("coinbaseexchange:product_not_online")
+    if raw.get("trading_disabled") or raw.get("cancel_only") or unknown:
+        modes = []
+    elif raw.get("post_only"):
+        modes = ["maker"]  # Placement allowed; official mode explicitly suspends matching.
+    elif raw.get("limit_only"):
+        modes = ["maker_limit", "taker_marketable_limit"]
+    else:
+        modes = ["maker", "taker"]
+    return {"execution_restrictions": restrictions, "order_entry_modes": modes,
+            "product_status_source": "https://api.exchange.coinbase.com/products",
+            "product_status_at": observed}
+
+
 def _coinbase_book_values(payload):
     if not isinstance(payload, dict) or not all(isinstance(payload.get(side), list) for side in ("bids", "asks")):
         raise ValueError("Malformed Coinbase Exchange book")
@@ -1090,6 +1114,7 @@ def _coinbase_book_patch(instrument, payload, received):
     source = f"coinbaseexchange:public:book:{instrument.native_symbol}:level1"
     clears = [field for field, value in (("bid", bid), ("ask", ask)) if value is None]
     issues = ["Coinbase Exchange auction indicative quotes excluded"] if auction else []
+    issues.extend(f"Immediate execution unavailable: {reason}" for reason in instrument.execution_restrictions)
     if stamp is None:
         issues.append("Coinbase Exchange book source time unavailable; receipt is not source time")
     crossed = bid is not None and ask is not None and bid > ask

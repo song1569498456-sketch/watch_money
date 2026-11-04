@@ -43,6 +43,11 @@ class Instrument(Model):
     linear: bool = True
     chain: str | None = None
     active: bool = True
+    # Observable/listed is independent of immediate matching eligibility.
+    execution_restrictions: list[str] = Field(default_factory=list)
+    order_entry_modes: list[str] | None = None
+    product_status_source: str | None = None
+    product_status_at: int | None = None
     price_precision: float | None = None
     amount_precision: float | None = None
     # Exchange order amount: contracts for perpetuals, base units for spot.

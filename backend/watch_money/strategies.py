@@ -340,7 +340,9 @@ def _classification(req: CalculateRequest, buy: Instrument, sell: Instrument) ->
         return [f"Asset identity conflict: {reason}" for reason in shared_identity["blockers"]]
     if not buy.active or not sell.active:
         return ["A selected instrument is inactive"]
-    return []
+    restrictions = [f"{item.id}: immediate execution unavailable ({reason}); maker fee selection does not establish a fill"
+                    for item in (buy, sell) for reason in item.execution_restrictions]
+    return restrictions
 
 
 def _snapshot(req: CalculateRequest, instrument: Instrument) -> MarketSnapshot | None:

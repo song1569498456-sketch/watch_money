@@ -392,3 +392,14 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 独立复测：在临时数据目录discover Coinbase adapter，分别统计coinbase与coinbaseexchange ID，检查discovery_errors；选一个coinbaseexchange现货运行fetch_light/orderbook核对原始book.time/size/auction_mode。身份证据须显式刷新coinbase源并检查仅Exchange匹配，不能自动批准。拒绝即停、不换连接。下一项优先做Exchange短时公开实样与全目录时效评估；只有授权环境可达时执行。
 
 - 最终验证：1199项完整后端（49.32秒，1条上游TestClient弃用警告）、17项Exchange专项、111项既有CEX/身份回归、CI范围Ruff/diff通过。最终增加目录冲突可见诊断后再跑17项专项；无实网/浏览器复测，远端CI未确认。
+
+### R48 Coinbase产品限制与即时成交边界（2026-11-04）
+
+- 父线程独立b960509实测报告：5次公开GET成功，BTC L1/L2及PEPE L1保留原生book.time正确；本环境未重跑、无原始响应附件。online但trading_disabled/cancel_only/post_only仍可测算达标是合成复现，当前实网目录未观察到该受限样本，不能描述成真实机会。
+- [官方products语义](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-all-known-trading-pairs)：trading_disabled限制交易；cancel_only只接受撤单；post_only只允许maker下单但不撮合；limit_only允许跨盘口限价单匹配。新增Instrument.execution_restrictions/order_entry_modes/product_status_source/product_status_at，active仍表达目录在线可观察，独立表达匹配限制与来源观测时间。
+- discovery每轮重建限制：disabled/cancel_only/post_only/auction与非法flag阻止即时成交；post_only仍保留maker订单许可，limit_only显示maker_limit/taker_marketable_limit而不误当全面禁交易。没有下单实现。限制解除重建为空；不从maker手续费推断未来可成交。
+- Scanner仍保留报价与具体原因，双方向price_rankable=false，不能进入可靠价差排行；测算分类检查阻止净收益及threshold_met，包含具体产品原因。快照issues也保留限制说明，现有详情可查看。资金费本身的观测值不是成交承诺，未改变费率数据门槛。
+- 新12项离线回归：四种模式、限制解除、盘口保留、两种费用下三种受限状态均不产净收益、limit_only可匹配、双方向排行与恢复；158项Exchange/scanner/strategies专项通过。范围是输入目录已知的产品状态，不承诺在两次目录刷新间获知所有变更，product_status_at保留实际观测时间。
+- 无账户/交易、无受阻连接重试或独立环境变更；24小时及受限模式实网仍未验收。下一项先由独立环境复核产品状态到排行/测算的一致性，再推进目录时效与其它未完成数据源。
+
+- 最终验证：1211项完整后端（51.30秒，1条上游弃用警告）、158项Exchange/scanner/strategies专项、CI范围Ruff/diff通过。无前端/浏览器修改、未新增实网或修改受阻连接，远端CI未确认。

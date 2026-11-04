@@ -126,6 +126,8 @@ def _market_detail(instrument, snapshot, as_of, stale_seconds):
             "native_asset_id": instrument.native_asset_id or instrument.asset_id, "asset_id": instrument.asset_id,
             "base": instrument.base, "quote": instrument.quote, "kind": instrument.kind,
             "contract_size": instrument.contract_size, "linear": instrument.linear,
+            "execution_restrictions": instrument.execution_restrictions,
+            "order_entry_modes": instrument.order_entry_modes,
             **values, "fields": fields}
 
 
@@ -158,7 +160,10 @@ def _candidate(buy: Instrument, sell: Instrument, snapshots: dict[str, MarketSna
         if not quote_problems and quote_assets[buy.id] != quote_assets[sell.id]:
             quote_problems.append("quote_asset_fx_not_provided")
         missing.extend(quote_problems)
-    quote_rankable = not quote_problems
+    execution_problems = [f"{role}:{reason}" for role, item in (("buy", buy), ("sell", sell))
+                          for reason in item.execution_restrictions]
+    missing.extend(execution_problems)
+    quote_rankable = not quote_problems and not execution_problems
     spread = bid - ask if same_quote and ask is not None and bid is not None else None
     spread_rate = spread / ask if spread is not None else None
     if spread_rate is not None and not math.isfinite(spread_rate * 100):
