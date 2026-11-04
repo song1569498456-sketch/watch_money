@@ -72,7 +72,8 @@ def _connection_factory(endpoint: str):
 
 def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
            *, source_at: int | None = None, funding_kind: str = "current",
-           protocol_metrics: dict | None = None, cleared_fields: tuple = ()) -> MarketSnapshot | None:
+           protocol_metrics: dict | None = None, cleared_fields: tuple = (),
+           cleared_protocol_metrics: tuple = ()) -> MarketSnapshot | None:
     values, sources, times = {}, {}, {}
     source = f"{ENDPOINTS[instrument.venue]}#{channel}:{instrument.native_symbol}"
     for field, native, mode in mappings:
@@ -86,7 +87,7 @@ def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
         values[field] = None
         sources[field] = f"{source}.{field}:explicit_unavailable"
         times[field] = source_at
-    if not values and not protocol_metrics:
+    if not values and not protocol_metrics and not cleared_protocol_metrics:
         return None
     if "volume" in values:
         values["volume_unit"] = instrument.quote
@@ -106,6 +107,7 @@ def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
                           source_at=source_at, received_at=received, field_sources=sources,
                           field_timestamps=times, field_received_at={field: received for field in times},
                           valid=not crossed, issues=issues, is_demo=False, cleared_fields=list(cleared_fields),
+                          cleared_protocol_metrics=list(cleared_protocol_metrics),
                           **({"protocol_metrics": protocol_metrics} if protocol_metrics else {}), **values)
 
 
@@ -169,26 +171,32 @@ def lighter_patches(instruments: dict[str, Instrument], message: dict) -> list[M
         if not isinstance(row, dict) or str(row.get("market_id", market_id)) != item.native_symbol:
             raise ValueError("lighter: market_stats identity mismatch")
         metrics = {}
+        metric_clears = []
         for key, label in (("current_funding_rate", "raw_upcoming_funding_rate"),
                            ("funding_rate", "raw_last_settled_funding_rate"),
                            ("funding_timestamp", "raw_last_settled_funding_timestamp"),
                            ("open_interest", "raw_open_interest")):
             if number(row.get(key)) is not None:
                 metrics[label] = str(row[key])
+            elif key in row:
+                metric_clears.append(label)
         if any(key.startswith("raw_") and "funding" in key for key in metrics):
             metrics.update(funding_unit="unverified", funding_rate_basis="unverified_not_normalized",
                            funding_observed_at_ms=str(received),
                            funding_source_publication_at_ms=str(source_at) if source_at is not None else None)
+        if "funding_timestamp" in row:
             settled = number(row.get("funding_timestamp"), positive=True)
             if settled is not None and 100_000_000_000 <= settled < 10_000_000_000_000:
                 metrics["last_settled_funding_at_ms"] = str(int(settled))
+            else:
+                metric_clears.append("last_settled_funding_at_ms")
         if "raw_open_interest" in metrics:
             metrics["open_interest_unit"] = "unverified"
         patch = _patch(item, "market_stats", row, (
             ("bid", "best_bid_price", "positive"), ("ask", "best_ask_price", "positive"),
             ("mark", "mark_price", "positive"), ("index", "index_price", "positive"),
             ("last", "last_trade_price", "positive"), ("volume", "daily_quote_token_volume", "nonnegative"),
-        ), source_at=source_at, protocol_metrics=metrics,
+        ), source_at=source_at, protocol_metrics=metrics, cleared_protocol_metrics=tuple(metric_clears),
             cleared_fields=tuple(field for field, native in (("bid", "best_bid_price"), ("ask", "best_ask_price"))
                                  if native in row and number(row[native], positive=True) is None))
         if patch is not None:
@@ -417,12 +425,14 @@ class DexStreamAdapter:
                             metrics = {name: value for name, value in patch.protocol_metrics.items()
                                        if not name.endswith("observed_at_ms")}
                             fingerprint += (("protocol_metrics", patch.source_at, json.dumps(metrics, sort_keys=True)),)
+                        if patch.cleared_protocol_metrics:
+                            fingerprint += (("cleared_protocol_metrics", tuple(sorted(patch.cleared_protocol_metrics)), patch.source_at),)
                         if previous.get(key) == fingerprint:
                             continue
                         previous[key] = fingerprint
                         # The collector rejects future timestamps. They must not
                         # poison the session watermark and suppress later valid data.
-                        if patch.source_at is not None and patch.source_at <= now_ms() + 30_000:
+                        if patch.source_at is not None and patch.source_at <= min(now_ms(), patch.received_at):
                             last_times[key] = patch.source_at
                         yield patch
         finally:

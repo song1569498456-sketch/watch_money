@@ -60,6 +60,8 @@ CCXT限流、既有并发槽和失败退避仍生效；实际周期可能更长�
 
 这缩短了发现下一次上游更新的等待，**不保证消除缺口**。上游自身时间超过TTL、推送间隔过长、缺记录、请求延迟或错误时，可靠覆盖必须下降。
 本次没有增大`stale_seconds`、重写原`ts`、以本地接收时间冒充源时间，或把“当前可比较”改为“最近HTTP成功”。
+父线程后续反馈启用自适应后仍有一次540市场同时过期；本任务没有该时段完整的原始响应、到达年龄和轮询完成间隔序列，不能判定是上游发布节奏、请求/处理延迟还是其它因素。
+需对齐`funding_arrival_checked_at`、到达年龄、`funding_cycle_seconds`和脱敏请求错误再分析；单次fresh=0既不能证明请求失败，也不能证明调度已修复所有缺口。
 
 ## DEX范围
 
@@ -73,6 +75,37 @@ CCXT限流、既有并发槽和失败退避仍生效；实际周期可能更长�
 其它搜索/逐pool/RFQ或“1+N资金费”路径保留原有有界调度，mode=`legacy_bounded_public_fetch`，不擅自加速。
 generic批次默认继续100，避免把这些路径从100改20后重复全payload更多次；未核验能力不算原生bulk。
 DEX资金费若来自同一公开payload，状态mode为 `via_public_price_bulk`，但fresh计数仍逐资金费字段过共享可信门槛，不继承价格时效。
+
+## 流采集的目录检查开销
+
+父线程外部反馈Hyperliquid独立采集曾维持347/347新鲜约105秒，而集成进程出现127→187→断线→0的过程；其旧版每patch计算347条JSON签名的测量是性能线索，**并非已确认的断流根因**。
+本次仅优化collector流处理热路径，不修改`merge_patch`，也未对受限的Lighter服务发起探测。
+
+`run_stream`将SQLite设置读取、目录筛选/排序和完整metadata JSON签名统一限制为每秒至多一次；没有消息时也按同一单调时钟deadline检查。
+接收完成后先处理已到期的检查，停用或订阅签名改变时取消旧的pending receive并关闭旧订阅，随后按新目录重订阅。签名仍包含完整metadata，所以同ID合约乘数修改和退市不会被仅比较ID漏掉。
+每条patch的身份检查使用集合，平均O(1)；保存周期使用最近一次已检查的设置，不再为每条消息另查SQLite。
+目录/设置变化通常在下一次一秒检查时生效；事件循环阻塞、耗时保存/清理仍可延迟处理，这不是实时线程的绝对延迟保证。停止任务仍可直接取消pending receive。
+
+可复现的本地合成负载：
+
+```sh
+.venv/bin/python scripts/stream_selection_load.py --markets 347 --patches 3000 --rate 300 --output docs/evidence/stream-selection-load.json
+```
+
+脚本仅从本地Git `eaeb822`提取旧`run_stream`函数，与当前实现对比；固定347市场、3000条patch、目标300条/秒，每版约10秒。
+两个版本都包含真实本地SQLite设置读取和模型验证，排除网络、WebSocket解码、`merge_patch`以及快照磁盘写入，以隔离目录检查开销。该CPU测量不代表完整生产采集成本。
+
+| 此次本地样本 | 旧循环 | 新循环 |
+| --- | ---: | ---: |
+| 完整目录签名检查 | 3001 | 10 |
+| JSON市场序列化行数 | 1041347 | 3470 |
+| 设置读取次数 | 6001 | 10 |
+| 进程CPU秒 | 4.859568 | 0.543388 |
+| 10ms定时器延迟p90（ms） | 1.238 | 0.882 |
+| 定时器最大延迟（ms） | 14.311 | 67.963 |
+
+[完整合成测量](evidence/stream-selection-load.json)保留样本数、Python版本及排除项。新循环CPU减少约89%，但最大定时器延迟反而有一次更大的抖动；不据此声称所有事件循环延迟都改善，也不把单进程样本当实网断流因果证据。
+`tests/test_stream_collector_performance.py`用独立模拟时钟验证10000条patch/347市场在两个模拟秒内仅两次设置与签名检查，以及高消息率下metadata/退市重订阅、闲置时五类停用设置取消和错误脱敏。
 
 ## 配置及存量设置
 
@@ -111,6 +144,10 @@ DEX资金费若来自同一公开payload，状态mode为 `via_public_price_bulk`
 `funding_errors`继续描述请求/能力/缺记录错误。比如HTTP成功但源`ts`已老61秒时，`funding_errors`可为空而`funding_source_stale_markets`大于0；不能把这种情况当作网络在线就声称资金费可靠。
 
 `Collector.refresh_status_coverage()`先对目录和缓存取稳定快照，再按venue复用；状态接口每次调用，健康任务也定期调用。停机、禁用、长退避期间fresh会随真实字段年龄下降，observed与历史轮转信息可保留。
+
+流采集诊断独立于源字段时效：`stream_received_patches`累计成功处理的patch数；`stream_last_patch_at`是最近一次本地处理时刻；`stream_last_gap_seconds`和`stream_max_gap_seconds`是相邻成功处理的单调时钟间隔，包含重连、上游沉默、排队和本地处理等待。
+这些不是交易所事件时间，也不保证每个symbol或每种字段都更新；不得用它们续期price/funding。
+`stream_last_error_type`和`stream_last_error_at`只保留最近一次错误类名及本地记录时刻，不保存异常文本、URL或凭证。恢复后保留历史错误以便对齐gap，当前状态仍看`stream_state`。
 
 ## 验证与剩余限制
 

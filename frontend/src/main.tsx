@@ -1379,6 +1379,8 @@ function Detail({
                         <dt className="mono break">{key}</dt>
                         <dd className="mono break">
                           {value == null ? "未提供" : String(value)}
+                          <small>来源 {snapshot.protocol_metric_sources?.[key] ?? "旧记录未提供字段来源"}</small>
+                          <small>源时刻 {time(snapshot.protocol_metric_timestamps?.[key])} · 接收 {time(snapshot.protocol_metric_received_at?.[key])}</small>
                         </dd>
                       </React.Fragment>
                     ),
@@ -1691,6 +1693,9 @@ function Status({
                       {stateName[s.stream_state] ?? s.stream_state ?? "未提供"}
                     </small>
                     <small className={s.stream_truncated ? "warning" : "muted"}>源流选取 {s.stream_selected_markets ?? 0}/{s.stream_requested_markets ?? 0} 市场{s.stream_truncated ? " · 订阅预算截断，其余等待REST" : ""} · 不等于已收到有效盘口</small>
+                    <small>源流累计处理 {s.stream_received_patches ?? 0} 帧 · 最近处理 {age(s.stream_last_patch_at, now)}</small>
+                    <small>相邻帧处理间隔 / 最大 {num(s.stream_last_gap_seconds, 3)} / {num(s.stream_max_gap_seconds, 3)} 秒（非网络延迟）</small>
+                    {s.stream_last_error_type && <small className="warning">最近源流错误 {s.stream_last_error_type} · {time(s.stream_last_error_at)}</small>}
                     <small>全目录：{s.light_state ?? "未提供"} · {s.light_subscriptions ?? 0} 市场 · 最近 {age(s.light_last_received_at, now)}</small>
                     <CollectionCoverage status={s} prefix="light" />
                     <small>轻量重试：{num(s.light_retries, 0)} · 目录发现：{s.discovery_complete ? "已完成" : "尚未完成"}

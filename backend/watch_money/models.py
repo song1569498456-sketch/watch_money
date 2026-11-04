@@ -95,6 +95,10 @@ class MarketSnapshot(Model):
     field_timestamps: dict[str, int | None] = Field(default_factory=dict)
     field_received_at: dict[str, int] = Field(default_factory=dict)
     protocol_metrics: dict[str, float | str | None] = Field(default_factory=dict)
+    protocol_metric_sources: dict[str, str] = Field(default_factory=dict)
+    protocol_metric_timestamps: dict[str, int | None] = Field(default_factory=dict)
+    protocol_metric_received_at: dict[str, int] = Field(default_factory=dict)
+    cleared_protocol_metrics: list[str] = Field(default_factory=list)
     valid: bool = True
     issues: list[str] = Field(default_factory=list)
     is_demo: bool = False
@@ -103,6 +107,8 @@ class MarketSnapshot(Model):
     def clear_only_missing_quotes(self):
         if any(getattr(self, field) is not None for field in self.cleared_fields):
             raise ValueError('Cleared quote fields must have no value')
+        if any(self.protocol_metrics.get(key) is not None for key in self.cleared_protocol_metrics):
+            raise ValueError('Cleared protocol metrics must have no value')
         return self
 
 class OrderBook(Model):
@@ -143,6 +149,12 @@ class VenueStatus(Model):
     stream_requested_markets: int = 0
     stream_selected_markets: int = 0
     stream_truncated: bool = False
+    stream_received_patches: int = 0
+    stream_last_patch_at: int | None = None
+    stream_last_gap_seconds: float | None = None
+    stream_max_gap_seconds: float | None = None
+    stream_last_error_type: str | None = None
+    stream_last_error_at: int | None = None
     funding_state: str = 'idle'
     funding_subscriptions: int = 0
     funding_last_received_at: int | None = None

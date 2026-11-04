@@ -3,6 +3,7 @@
   "data_mode": "isolated synthetic browser fixtures and mocked native response; no live data",
   "checks": [
     "synthetic PEPE identity candidates remain distinct, searchable and unconfirmed",
+    "raw comparative and upcoming metrics coexist with independent visible provenance and times",
     "funding chart deduplicates carried funding events and separates current/predicted/settled/local snapshot series",
     "explicit two-leg exit prices and zero exit basis reach mutually exclusive payload fields; missing fees keep net profit unknown",
     "notional calculation posts base size from multi-level asks only; insufficient, future or missing buy depth blocks calculation without price fallback",

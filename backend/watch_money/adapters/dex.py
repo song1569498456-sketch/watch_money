@@ -337,6 +337,10 @@ class LighterAdapter(PublicREST):
                     volume_unit="USDC",
                     oi_unit=instrument.base,
                     protocol_metrics=metrics,
+                    protocol_metric_sources={key: f"{self.endpoint}/funding-rates#exchange=lighter"
+                                             for key in set(metrics) | {"raw_comparative_funding_rate"}},
+                    cleared_protocol_metrics=["raw_comparative_funding_rate"]
+                        if "rate" in rate and number(rate["rate"]) is None else [],
                     source=detail_source,
                     field_sources=sources,
                     issues=[

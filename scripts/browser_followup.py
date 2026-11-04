@@ -48,6 +48,13 @@ def seed(directory):
                                                                            "funding_kind", "funding_interval_hours", "next_funding_at")},
                                field_received_at={field: stamp for field in ("bid", "ask", "funding_rate",
                                                                             "funding_kind", "funding_interval_hours", "next_funding_at")},
+                               protocol_metrics={"raw_comparative_funding_rate": "0.12", "raw_upcoming_funding_rate": "0.03"},
+                               protocol_metric_sources={"raw_comparative_funding_rate": "synthetic:rest-metric",
+                                                        "raw_upcoming_funding_rate": "synthetic:ws-metric"},
+                               protocol_metric_timestamps={"raw_comparative_funding_rate": None,
+                                                           "raw_upcoming_funding_rate": stamp - 5000},
+                               protocol_metric_received_at={"raw_comparative_funding_rate": stamp - 120000,
+                                                            "raw_upcoming_funding_rate": stamp - 4999},
                                source_at=stamp, received_at=stamp, source="browser-fixture:synthetic-not-live")
                  for item in (items[0], items[1], items[3])]
     store.save_snapshots(snapshots, archive=False)
@@ -134,6 +141,12 @@ def main():
                         page.route("**/api/history?**", lambda route: route.fulfill(
                             status=200, content_type="application/json", body=json.dumps({"snapshots": chart_records})))
                         page.get_by_role("button", name="查看 PEPE 详情", exact=True).first.click()
+                        metrics = page.locator(".protocol-metrics")
+                        expect(metrics.get_by_text("raw_comparative_funding_rate", exact=True)).to_be_visible()
+                        expect(metrics.get_by_text("raw_upcoming_funding_rate", exact=True)).to_be_visible()
+                        expect(metrics.get_by_text("来源 synthetic:rest-metric", exact=True)).to_be_visible()
+                        expect(metrics.get_by_text("来源 synthetic:ws-metric", exact=True)).to_be_visible()
+                        checks.append("raw comparative and upcoming metrics coexist with independent visible provenance and times")
                         chart = page.get_by_role("img", name="资金费率历史，共 4 条记录", exact=False)
                         expect(chart).to_be_visible()
                         expect(chart.locator("circle")).to_have_count(4)

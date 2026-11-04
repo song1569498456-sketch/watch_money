@@ -44,6 +44,9 @@ export interface Snapshot {
   field_ages_seconds?: Record<string, number>;
   field_stale?: Record<string, boolean>;
   protocol_metrics?: Record<string, number | string | null>;
+  protocol_metric_sources?: Record<string, string>;
+  protocol_metric_timestamps?: Record<string, number | null>;
+  protocol_metric_received_at?: Record<string, number>;
   valid: boolean;
   issues: string[];
   is_demo: boolean;
@@ -109,6 +112,12 @@ export interface VenueStatus {
   stream_requested_markets?: number;
   stream_selected_markets?: number;
   stream_truncated?: boolean;
+  stream_received_patches?: number;
+  stream_last_patch_at?: number | null;
+  stream_last_gap_seconds?: number | null;
+  stream_max_gap_seconds?: number | null;
+  stream_last_error_type?: string | null;
+  stream_last_error_at?: number | null;
   last_received_at?: number;
   last_attempt_at?: number;
   retries: number;

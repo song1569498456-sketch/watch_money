@@ -152,10 +152,12 @@ class Collector:
             pass
 
     def merge_patch(self, snapshot):
+        from .protocol_metrics import merge_protocol_metrics
         snapshot = quality(snapshot)
         old = self.snapshots.get(snapshot.instrument_id)
+        metric_fields = merge_protocol_metrics(old, snapshot, now_ms())
         if old is None:
-            return quality(snapshot)
+            return quality(snapshot.model_copy(update=metric_fields))
         patch = snapshot.model_dump(exclude_unset=True)
         clears = set(snapshot.cleared_fields)
         for field in clears:
@@ -170,7 +172,7 @@ class Collector:
                 continue
             stamp = snapshot.field_timestamps.get(field, snapshot.source_at)
             previous = timestamps.get(field)
-            older = (stamp is not None and previous is not None and previous <= now_ms() + 30_000
+            older = (stamp is not None and previous is not None and previous <= min(now_ms(), received.get(field, old.received_at))
                      and stamp < previous)
             if stamp is None or previous is None:
                 older = snapshot.field_received_at.get(field, snapshot.received_at) < received.get(field, old.received_at)
@@ -179,7 +181,7 @@ class Collector:
                 # A contradictory equal-time or delayed quote cannot resurrect
                 # a removed side, even after persistence or stream restart.
                 barrier = previous if previous is not None else received.get(field)
-                older = older or (barrier is not None and stamp <= barrier)
+                older = older or (barrier is not None and barrier <= min(now_ms(), received.get(field, old.received_at)) and stamp <= barrier)
             if (patch[field] is None and field not in clears) or older:
                 patch.pop(field, None)
                 if field == 'volume':
@@ -196,6 +198,7 @@ class Collector:
             for field in ('source', 'source_at', 'received_at'):
                 patch.pop(field, None)
         data.update(patch)
+        data.update(metric_fields)
         issues = set(old.issues + snapshot.issues)
         issues = {issue for issue in issues if 'crossed' not in issue.lower()}
         if patch.get('volume') is not None:
@@ -208,6 +211,11 @@ class Collector:
         status = self.statuses[name]
         failures = 0
         last_saved = 0
+        last_patch_clock = None
+        next_selection_check = 0
+        settings = None
+        instruments = []
+        signature = ()
 
         def selection():
             settings = self.store.settings()
@@ -215,10 +223,10 @@ class Collector:
                     or name not in settings.enabled_venues or name not in self.discovered):
                 status.stream_requested_markets = status.stream_selected_markets = 0
                 status.stream_truncated = False
-                return []
+                return settings, []
             broad = settings.broad_collection_enabled and getattr(streamer, 'catalog_stream', False)
             watched = {a.upper() for a in settings.watch_assets}
-            selected = sorted((i for i in self.instruments.values() if i.venue == name and i.active
+            selected = sorted((i for i in tuple(self.instruments.values()) if i.venue == name and i.active
                                and (broad or i.base.upper() in watched)), key=lambda i: i.id)
             status.stream_requested_markets = len(selected)
             cap = getattr(streamer, 'max_catalog_markets', None)
@@ -226,38 +234,60 @@ class Collector:
                 selected = selected[:cap]
             status.stream_selected_markets = len(selected)
             status.stream_truncated = len(selected) < status.stream_requested_markets
-            return selected
+            return settings, selected
+
+        def check_selection():
+            nonlocal settings, instruments, signature, next_selection_check
+            # A busy feed must not turn catalogue/settings work into O(markets)
+            # work per patch. Idle feeds use the same one-second deadline.
+            next_selection_check = monotonic() + 1
+            settings, instruments = selection()
+            signature = tuple(item.model_dump_json() for item in instruments)
 
         while not self.stopping.is_set():
-            instruments = selection()
+            if monotonic() >= next_selection_check:
+                check_selection()
             if not instruments:
                 status.stream_state = 'disabled'
                 await self.pause(1)
                 continue
-            identity = [i.id for i in instruments]
-            signature = [i.model_dump_json() for i in instruments]
+            identity = {i.id for i in instruments}
+            active_signature = signature
             iterator = streamer.stream(instruments).__aiter__()
             pending = None
             try:
                 status.stream_state = 'connecting'
                 while not self.stopping.is_set():
-                    if [i.model_dump_json() for i in selection()] != signature:
-                        break
+                    if monotonic() >= next_selection_check:
+                        check_selection()
+                        if signature != active_signature:
+                            break
                     if pending is None:
                         pending = asyncio.create_task(anext(iterator))
-                    done, _ = await asyncio.wait([pending], timeout=1)
+                    done, _ = await asyncio.wait([pending], timeout=max(.001, next_selection_check - monotonic()))
                     if not done:
                         continue
+                    if monotonic() >= next_selection_check:
+                        check_selection()
+                        if signature != active_signature:
+                            break
                     incoming = pending.result()
                     pending = None
                     if incoming.instrument_id not in identity or incoming.venue != name:
                         raise ValueError('Stream returned unexpected market identity')
                     self.snapshots[incoming.instrument_id] = self.merge_patch(incoming)
+                    clock = monotonic()
+                    if last_patch_clock is not None:
+                        gap = max(0, clock - last_patch_clock)
+                        status.stream_last_gap_seconds = round(gap, 3)
+                        status.stream_max_gap_seconds = max(status.stream_max_gap_seconds or 0, round(gap, 3))
+                    last_patch_clock = clock
+                    status.stream_last_patch_at = now_ms()
+                    status.stream_received_patches += 1
                     status.last_received_at = incoming.received_at
                     status.stream_state = 'online'
                     status.transport = 'WebSocket + REST metadata/funding'
                     failures = 0
-                    settings = self.store.settings()
                     if now_ms() - last_saved >= settings.poll_seconds * 1000:
                         snapshots = [self.snapshots[i] for i in identity if i in self.snapshots]
                         await asyncio.to_thread(self.store.save_snapshots, snapshots, settings.history_enabled)
@@ -267,6 +297,8 @@ class Collector:
             except Exception as exc:
                 failures += 1
                 status.stream_reconnects += 1
+                status.stream_last_error_type = type(exc).__name__
+                status.stream_last_error_at = now_ms()
                 status.stream_state = f'{type(exc).__name__}; REST fallback'
                 status.transport = 'REST'
             finally:
