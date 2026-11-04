@@ -50,6 +50,9 @@ def setup_history(tmp_path, monkeypatch):
         adapter = CexAdapter(venue, client_factory=lambda _: client)
         adapter._markets[item.id] = (client_id, {"symbol": item.native_symbol,
                                                "info": {"fundingIntervalHours": 8}})
+        if client_id in {'okx', 'bybit'}:
+            adapter._markets[item.id][1].update(id='PEPE-USDT-SWAP' if client_id == 'okx' else 'PEPEUSDT',
+                                                swap=True, settle='USDT')
         collector = SimpleNamespace(instruments={item.id: item}, adapters={venue: adapter})
         service = FundingHistoryService(tmp_path, collector, timeout_seconds=timeout)
         return service, item, client, adapter
@@ -135,7 +138,7 @@ async def test_rejects_missing_timestamp_predictions_future_wrong_market_and_non
 @pytest.mark.asyncio
 async def test_okx_only_actual_realized_rate_is_accepted(setup_history):
     service, item, client, _ = setup_history("okx", venue="okx")
-    client.response = [entry(EVENT, "0.009", info={"fundingRate": "0.009", "realizedRate": "0.0002"}),
+    client.response = [entry(EVENT, "0.009", info={"instId": "PEPE-USDT-SWAP", "fundingTime": str(EVENT), "fundingRate": "0.009", "realizedRate": "0.0002"}),
                        entry(EVENT + 1000, "0.009", info={"fundingRate": "0.009"})]
     result = await service.get(item.id, refresh=True)
     assert len(result["records"]) == 1
@@ -158,7 +161,7 @@ async def test_mexc_only_history_specific_period_can_fill_period(setup_history):
 @pytest.mark.asyncio
 async def test_one_page_endpoint_cap_and_cursor_no_endless_loop(setup_history):
     service, item, client, _ = setup_history("bybit", venue="bybit")
-    client.response = [entry(EVENT)] * 200
+    client.response = [entry(EVENT, info={"symbol": "PEPEUSDT", "fundingRateTimestamp": str(EVENT), "fundingRate": "0.0001"})] * 200
     first = await service.get(item.id, refresh=True, since=EVENT, limit=1000)
     assert len(client.calls) == 1 and client.calls[0][2] == 200
     assert first["summary"]["truncated"] and first["summary"]["has_more"] is None
@@ -314,6 +317,13 @@ async def test_installed_ccxt_history_uses_public_endpoint_and_actual_settlement
         assert result["records"][0]["funding_interval_hours"] is None
         assert "paginate" not in requests[0]
         assert not client.apiKey and not client.secret
+        await service.get(item.id, refresh=True, since=EVENT)
+        if client_id == 'okx':
+            assert requests[-1]['before'] == EVENT - 1 and requests[-1]['instId'] == market['id']
+        else:
+            assert requests[-1]['startTime'] == EVENT and requests[-1]['endTime'] == NOW
+            assert requests[-1]['symbol'] == market['id'] and requests[-1]['category'] == 'linear'
+        assert len(requests) == 2
     finally:
         await client.close()
 
@@ -667,3 +677,66 @@ async def test_htx_linear_catalog_change_during_response_never_saved(setup_histo
         await service.get(item.id, refresh=True)
     assert exc.value.status_code == 409
     assert service._read(item.id, None, 100) == ([], 0)
+
+
+def reviewed_native_history(client_id, **changes):
+    raw = ({'instId': 'PEPE-USDT-SWAP', 'instType': 'SWAP', 'fundingTime': str(EVENT),
+            'realizedRate': '.0002', 'fundingRate': '.009'} if client_id == 'okx' else
+           {'symbol': 'PEPEUSDT', 'fundingRateTimestamp': str(EVENT), 'fundingRate': '.0002'})
+    return raw | changes
+
+
+@pytest.mark.parametrize('client_id', ['okx', 'bybit'])
+@pytest.mark.parametrize('case', ['wrong_id', 'missing_id', 'missing_time', 'seconds', 'shift', 'fraction', 'missing_rate'])
+async def test_reviewed_history_native_contract_time_and_rate_cannot_be_inferred(setup_history, client_id, case):
+    service, item, client, _ = setup_history(client_id, venue=client_id)
+    raw = reviewed_native_history(client_id)
+    id_key, time_key, rate_key = (('instId', 'fundingTime', 'realizedRate') if client_id == 'okx'
+                                 else ('symbol', 'fundingRateTimestamp', 'fundingRate'))
+    if case == 'wrong_id':
+        raw[id_key] = 'OTHER'
+    elif case == 'missing_id':
+        del raw[id_key]
+    elif case == 'missing_time':
+        del raw[time_key]
+    elif case == 'seconds':
+        raw[time_key] = str(EVENT // 1000)
+    elif case == 'shift':
+        raw[time_key] = str(EVENT + 1)
+    elif case == 'fraction':
+        raw[time_key] = str(EVENT) + '.5'
+    else:
+        del raw[rate_key]
+    client.response = [entry(info=reviewed_native_history(client_id)), entry(info=raw)]
+    report = await service.get(item.id, refresh=True)
+    assert report['summary']['accepted_count'] == report['summary']['rejected_count'] == 1
+    assert report['summary']['next_since'] is None
+    assert report['records'][0]['native_market_id'] == reviewed_native_history(client_id)[id_key]
+    assert report['records'][0]['native_settlement_time'] == str(EVENT)
+    assert report['records'][0]['funding_interval_hours'] is None
+    assert report['records'][0]['funding_rate'] == .0002
+
+
+async def test_okx_xperps_not_silently_treated_as_perpetual_swap(setup_history):
+    service, item, client, _ = setup_history('okx', venue='okx')
+    client.response = [entry(info=reviewed_native_history('okx', instType='FUTURES'))]
+    report = await service.get(item.id, refresh=True)
+    assert not report['records'] and report['summary']['rejected_count'] == 1
+
+
+@pytest.mark.parametrize('client_id,limit', [('okx', 100), ('bybit', 200)])
+async def test_reviewed_history_oversized_page_never_partially_saved(setup_history, client_id, limit):
+    service, item, client, _ = setup_history(client_id, venue=client_id)
+    client.response = [entry(info=reviewed_native_history(client_id))] * (limit + 1)
+    with pytest.raises(HTTPException) as exc:
+        await service.get(item.id, refresh=True, limit=1000)
+    assert exc.value.status_code == 502 and service._read(item.id, None, 1000) == ([], 0)
+
+
+@pytest.mark.parametrize('client_id', ['okx', 'bybit'])
+async def test_reviewed_history_unresolved_native_scope_never_requests(setup_history, client_id):
+    service, item, client, adapter = setup_history(client_id, venue=client_id)
+    adapter._markets[item.id][1]['swap'] = False
+    with pytest.raises(HTTPException) as exc:
+        await service.get(item.id, refresh=True)
+    assert exc.value.status_code == 409 and not client.calls

@@ -336,6 +336,11 @@ class FundingHistoryService:
             raise HTTPException(409, "Discover this market before refreshing funding history") from None
         if client_id not in SETTLED_ENDPOINTS:
             raise HTTPException(501, "Historical settled-rate endpoint semantics not yet reviewed for this service")
+        if client_id in {"okx", "bybit"}:
+            if (not _market.get("id") or _market.get("swap") is not True
+                    or _market.get("symbol") != instrument.native_symbol
+                    or _market.get("settle") != instrument.settle):
+                raise HTTPException(409, "Historical native perpetual scope is unresolved")
         if client_id in {"gate", "bitget"}:
             allowed = {"USDT", "BTC", "USD1"} if client_id == "gate" else {"USDT", "USDC", instrument.base}
             if (not _market.get("id") or _market.get("swap") is not True
@@ -435,6 +440,8 @@ class FundingHistoryService:
         check_scope()
         if not isinstance(payloads, list):
             raise HTTPException(502, "Malformed public funding history response")
+        if client_id in {"okx", "bybit"} and len(payloads) > page_limit:
+            raise HTTPException(502, "Oversized public history page; no partial cursor inferred")
         records = []
         rejected = 0
         reasons: dict[str, int] = {}
@@ -449,6 +456,17 @@ class FundingHistoryService:
             # OKX fundingRate is predicted even in history; only realizedRate
             # proves the actual charged rate. Guard against parser regressions.
             value = raw.get("realizedRate") if client_id == "okx" else raw.get("fundingRate", payload.get("fundingRate"))
+            if client_id in {"okx", "bybit"}:
+                native_time = raw.get("fundingTime" if client_id == "okx" else "fundingRateTimestamp")
+                native_id = raw.get("instId" if client_id == "okx" else "symbol")
+                if native_id != _market["id"]:
+                    reason = reason or "wrong_native_market"
+                numeric_time = _number(native_time, positive=True)
+                if numeric_time is None or numeric_time != timestamp:
+                    reason = reason or "native_settlement_timestamp_mismatch"
+                if client_id == "okx" and raw.get("instType") not in (None, "SWAP"):
+                    reason = reason or "wrong_native_product"
+                value = raw.get("realizedRate" if client_id == "okx" else "fundingRate")
             if client_id in {"gate", "bitget"}:
                 # Independently validate the native settlement clock against
                 # CCXT. Never use response time or today's period as history.
@@ -499,6 +517,11 @@ class FundingHistoryService:
                             "received_at": received, "first_received_at": received, "last_seen_at": received,
                             "revision": 1, "is_demo": False,
                             **({"native_market_id": _market["id"], "settle": instrument.settle,
+                                "rate_unit": "decimal_ratio_per_settlement", "native_time_unit": "milliseconds",
+                                "native_settlement_time": raw.get("fundingTime" if client_id == "okx" else "fundingRateTimestamp"),
+                                "rate_field": "realizedRate" if client_id == "okx" else "fundingRate"}
+                               if client_id in {"okx", "bybit"} else {}),
+                            **({"native_market_id": _market["id"], "settle": instrument.settle,
                                 "rate_unit": "decimal_ratio_per_settlement",
                                 "native_settlement_time": raw.get("t" if client_id == "gate" else "fundingTime"),
                                 "native_time_unit": "seconds" if client_id == "gate" else "milliseconds"}
@@ -514,6 +537,9 @@ class FundingHistoryService:
         latest = max((row["settlement_at"] for row in records), default=None)
         next_since = latest + 1 if latest is not None and latest < received else None
         issues = [f"rejected_{reason}:{count}" for reason, count in sorted(reasons.items())]
+        if client_id in {"okx", "bybit"} and rejected:
+            next_since = None
+            issues.append("Rejected native records prevent a safe continuation hint")
         if since is not None and next_since is None:
             issues.append("no_forward_cursor_progress")
         if client_id in {"bitget", "htx"}:

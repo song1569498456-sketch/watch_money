@@ -797,11 +797,11 @@ async def test_settled_history_one_page_is_separate_persistent_and_correctable(t
     assert empty["records"] == [] and client.calls == 0
     client.rows = [
         {"symbol": native["symbol"], "timestamp": at - 3_600_000, "fundingRate": .8,
-         "info": {"fundingRate": ".8", "realizedRate": "-.0002"}},
+         "info": {"instId": native["id"], "fundingTime": str(at - 3_600_000), "fundingRate": ".8", "realizedRate": "-.0002"}},
         {"symbol": native["symbol"], "timestamp": at + 3_600_000, "fundingRate": .1,
-         "info": {"realizedRate": ".1"}},
+         "info": {"instId": native["id"], "fundingTime": str(at + 3_600_000), "realizedRate": ".1"}},
         {"symbol": native["symbol"], "timestamp": at - 2 * 3_600_000, "fundingRate": .1,
-         "info": {"fundingRate": ".1"}},
+         "info": {"instId": native["id"], "fundingTime": str(at - 2 * 3_600_000), "fundingRate": ".1"}},
     ]
     first = await service.get(instrument.id, refresh=True)
     row, = first["records"]
@@ -810,11 +810,11 @@ async def test_settled_history_one_page_is_separate_persistent_and_correctable(t
     assert row["funding_rate"] == -.0002 and row["funding_kind"] == "settled"
     assert row["funding_interval_hours"] is None and row["revision"] == 1
     assert first["coverage"]["all_history"] is False
-    assert first["summary"]["next_since"] == at - 3_600_000 + 1
+    assert first["summary"]["next_since"] is None  # rejected rows cannot justify skipping ahead
     restored = funding_history.FundingHistoryService(tmp_path, collector)
     assert (await restored.get(instrument.id))["records"] == [row]
     assert client.calls == 1
-    client.rows = [dict(client.rows[0], info={"realizedRate": "-.0003"})]
+    client.rows = [dict(client.rows[0], info={**client.rows[0]["info"], "realizedRate": "-.0003"})]
     monkeypatch.setattr(funding_history, "now_ms", lambda: at + 2000)
     corrected = await restored.get(instrument.id, refresh=True)
     revised, = corrected["records"]
@@ -846,7 +846,7 @@ async def test_public_funding_history_api_cache_survives_restart_without_snapsho
         async def fetch_funding_rate_history(self, symbol, since, limit, params):
             self.calls += 1
             return [{"symbol": symbol, "timestamp": at - 3_600_000, "fundingRate": .0001,
-                     "info": {"fundingRate": ".0001"}}]
+                     "info": {"symbol": native["id"], "fundingRateTimestamp": str(at - 3_600_000), "fundingRate": ".0001"}}]
 
     source = HistoryClient([native])
     source.has["fetchFundingRateHistory"] = True

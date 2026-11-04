@@ -426,3 +426,16 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 下一项：继续检查其它平台历史的原生合约/时间与分页证据，优先补可验证的记录边界；Kraken/Deribit连续资金费仍不套入离散已结算模型。
 
 - 最终验证：1229项完整后端（51.85秒，1条上游TestClient弃用警告）、110项历史专项、CI范围Ruff/diff通过；未改前端/重跑浏览器，实网与远端CI未确认。
+
+### R51 Bybit/OKX原生历史边界（2026-11-04）
+
+- 核查官方[Bybit历史](https://bybit-exchange.github.io/docs/v5/market/history-fund-rate)和[OKX历史](https://www.okx.com/docs-v5/en/#public-data-rest-api-get-funding-rate-history)。Bybit原生symbol/fundingRateTimestamp/fundingRate与OKX instId/fundingTime/realizedRate分别校验，不能依赖统一symbol/time或拿统一率补原始字段。时间必须与统一毫秒值精确一致，秒/错时/小数偏移拒收；OKX显式FUTURES/X-Perps记录不纳入当前SWAP范围，缺instType兼容旧响应。
+- 请求前要求已发现准确原生id、swap、symbol/settle范围；记录新增native_market_id/native_settlement_time/native_time_unit/rate_field/settle/rate_unit，原始值保留以支持修订追踪。历史周期仍未知，不套今日目录周期。
+- 保留最小单页范围：本服务OKX上限100（官方当前最大400，但不为扩大数量改策略）、Bybit200。CCXT返回数组超本页界限整页拒绝，不截断后假造cursor；逐记录拒收时不返回next_since。统一方法之前的库内部过滤不等于本服务看到了全部原始行，实网完整性仍未知。
+- 安装版解析器离线核实since路由：OKX使用before=since-1（官方before表示更晚记录），Bybit显式startTime=since/endTime=本次当前时间，不让库按今日fundingInterval估历史窗口。paginate=false且每次仅一页，next_since仍只是提示，不证明最新窗口没有跳过旧页，不是完整回填。
+- 新19项离线测试覆盖两平台缺原始ID/时间/率、错ID/秒/错时/小数、超页、目录错产品、OKX X-Perps混入及拒收停止提示；已有安装版路由测试增加since/endTime断言。129项联合历史专项通过，尚无新实网证据。
+- 只读取官方文档，没有请求OKX受阻WS或任何行情主机、没有账户/地域替代。其它平台原生历史核查、生产身份及24小时仍开放。下一项按同一最小原则审查Binance两个合约client的原始symbol/fundingTime与特殊资金费事件，不擅自引入新结算语义。
+
+- 全量初跑中两项既有followup验收fixture缺少原生ID/时间而失败；补齐官方字段后，缓存重启与修订断言保留。部分拒收时游标断言按新语义改为null；两项复测通过，最终完整结果另记。未因失败放宽原生校验。
+
+- 最终验证：1248项完整后端（52.56秒，1条上游TestClient弃用警告）、129项历史专项、2项旧验收复测、CI范围Ruff/diff通过；无前端/浏览器变更，实网和远端CI未确认。
