@@ -139,3 +139,10 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - R16 外部限制：父线程Lighter WS restricted jurisdiction code20558；不绕过，本轮未重复探测，不宣称可用。
 
 本批最终774后端、31前端、37组浏览器（baseline6/followup13/navigation12/funding6）及构建/Ruff/diff通过；独立指标回归14项，根任务另补墙钟追上未来帧后仍不得污染排序的回归。全部成功数据为合成/本地验证。
+
+## Bitget 周期回归与查询负载复审
+
+- R17 已修复并本地验证：缺失字段不再借用价格快照接收时间作为乱序屏障。`collector.merge_patch` 只对已有值或显式清除比较先后；目录周期可填补缺失值，保留其真实观测时间、空事件时间和来源，不能覆盖较新的周期。`tests/test_field_merge_ordering.py` 覆盖两种冷启动顺序、旧元数据、独立字段事件时间、持久化重载、明确清除屏障，以及 Bitget 适配器→合并→资金费可比较性。
+- R18 继续诊断：父线程 df55e83 三平台约187秒实测 /markets 最慢10.6秒、/scanner多秒，Hyperliquid峰值219/347、两次TimeoutError、结束160/347。代码审查确认同步HTTP端点返回dict后框架仍在事件循环编码JSON，/ws每轮同步构造全目录/快照及delta；采集覆盖汇总也有同步全量扫描。它们是本地待量化阻塞路径，尚不能归因实网断线。
+- R14 追加外部证据：父线程OKX有效费率540→0→6→540→540→0。未改60秒阈值或源时间；仍缺同时记录源时间、响应到达、调度延迟、写入耗时的同步实网轨迹。
+- R16 保持：Lighter地区限制未绕过、未重试。本批无交易所实网访问，成功用例均为合成数据。

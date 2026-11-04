@@ -1,0 +1,232 @@
+{
+  "kind": "synthetic_local_api_blocking_diagnostic",
+  "at": 1793818723114,
+  "production_edits": false,
+  "network_requests": false,
+  "included": [
+    "actual in-process ASGI routing/serialization",
+    "synthetic confirmed four-venue identity groups",
+    "actual SQLite and Parquet writes",
+    "10ms event-loop timer"
+  ],
+  "excluded": [
+    "exchange and TCP/browser traffic",
+    "active collectors",
+    "other process isolation"
+  ],
+  "limitations": "Synthetic shape/sizes, one sample per stage, shared machine. Cannot establish live outage cause. Direct on-loop stages intentionally measure synchronous work paths; worker stages still contend for GIL.",
+  "results": [
+    {
+      "markets": 1000,
+      "venues": 4,
+      "stages": {
+        "markets_direct_build": {
+          "wall_seconds": 0.022286,
+          "process_cpu_seconds": 0.022289,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 17.476
+        },
+        "markets_jsonable_encoder_on_loop": {
+          "wall_seconds": 0.108387,
+          "process_cpu_seconds": 0.108396,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 103.561
+        },
+        "markets_json_render_on_loop": {
+          "wall_seconds": 0.014894,
+          "process_cpu_seconds": 0.014898,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 10.273,
+          "response_bytes": 1730904
+        },
+        "ws_unchanged_delta_on_loop": {
+          "wall_seconds": 0.003724,
+          "process_cpu_seconds": 0.003729,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 0.954,
+          "delta_bytes": 118
+        },
+        "coverage_all_venues_on_loop": {
+          "wall_seconds": 0.010336,
+          "process_cpu_seconds": 0.010342,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 5.479
+        },
+        "scanner_worker_build": {
+          "wall_seconds": 0.114447,
+          "process_cpu_seconds": 0.114686,
+          "timer_samples": 12,
+          "timer_lag_max_ms": 17.454,
+          "scanned_candidates": 3000,
+          "groups_total": 250
+        },
+        "scanner_jsonable_encoder_on_loop": {
+          "wall_seconds": 0.12936,
+          "process_cpu_seconds": 0.129362,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 124.624
+        },
+        "scanner_json_render_on_loop": {
+          "wall_seconds": 0.020465,
+          "process_cpu_seconds": 0.020436,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 15.602,
+          "response_bytes": 3249615
+        },
+        "markets_actual_asgi_http": {
+          "wall_seconds": 0.130589,
+          "process_cpu_seconds": 0.130498,
+          "timer_samples": 8,
+          "timer_lag_max_ms": 83.583,
+          "response_bytes": 1731260
+        },
+        "scanner_actual_asgi_http": {
+          "wall_seconds": 0.269355,
+          "process_cpu_seconds": 0.269694,
+          "timer_samples": 12,
+          "timer_lag_max_ms": 155.742,
+          "response_bytes": 3264529
+        },
+        "parallel_markets_scanner_asgi_http": {
+          "wall_seconds": 0.366757,
+          "process_cpu_seconds": 0.368039,
+          "timer_samples": 9,
+          "timer_lag_max_ms": 175.746
+        },
+        "single_snapshot_history_write_worker": {
+          "wall_seconds": 0.021266,
+          "process_cpu_seconds": 0.017688,
+          "timer_samples": 7,
+          "timer_lag_max_ms": 0.767
+        },
+        "three_concurrent_snapshot_history_writes_workers": {
+          "wall_seconds": 0.053408,
+          "process_cpu_seconds": 0.054049,
+          "timer_samples": 10,
+          "timer_lag_max_ms": 5.89,
+          "rows_per_write": 1000,
+          "lock_acquisition_waits": [
+            {
+              "thread": 139665868846784,
+              "wait_seconds": 2e-06
+            },
+            {
+              "thread": 139665479698112,
+              "wait_seconds": 0.017086
+            },
+            {
+              "thread": 139665471305408,
+              "wait_seconds": 0.031808
+            }
+          ]
+        }
+      }
+    },
+    {
+      "markets": 10000,
+      "venues": 4,
+      "stages": {
+        "markets_direct_build": {
+          "wall_seconds": 0.214968,
+          "process_cpu_seconds": 0.214956,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 210.11
+        },
+        "markets_jsonable_encoder_on_loop": {
+          "wall_seconds": 0.870005,
+          "process_cpu_seconds": 0.870007,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 865.192
+        },
+        "markets_json_render_on_loop": {
+          "wall_seconds": 0.102088,
+          "process_cpu_seconds": 0.10209,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 97.258,
+          "response_bytes": 17359345
+        },
+        "ws_unchanged_delta_on_loop": {
+          "wall_seconds": 0.043913,
+          "process_cpu_seconds": 0.043922,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 39.07,
+          "delta_bytes": 118
+        },
+        "coverage_all_venues_on_loop": {
+          "wall_seconds": 0.110879,
+          "process_cpu_seconds": 0.11089,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 106.018
+        },
+        "scanner_worker_build": {
+          "wall_seconds": 0.629492,
+          "process_cpu_seconds": 0.631488,
+          "timer_samples": 36,
+          "timer_lag_max_ms": 81.683,
+          "scanned_candidates": 10000,
+          "groups_total": 2500
+        },
+        "scanner_jsonable_encoder_on_loop": {
+          "wall_seconds": 0.150296,
+          "process_cpu_seconds": 0.150246,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 145.482
+        },
+        "scanner_json_render_on_loop": {
+          "wall_seconds": 0.01852,
+          "process_cpu_seconds": 0.018526,
+          "timer_samples": 6,
+          "timer_lag_max_ms": 13.805,
+          "response_bytes": 3261347
+        },
+        "markets_actual_asgi_http": {
+          "wall_seconds": 1.386539,
+          "process_cpu_seconds": 1.381047,
+          "timer_samples": 18,
+          "timer_lag_max_ms": 1179.353,
+          "response_bytes": 17360506
+        },
+        "scanner_actual_asgi_http": {
+          "wall_seconds": 0.8358,
+          "process_cpu_seconds": 0.837786,
+          "timer_samples": 38,
+          "timer_lag_max_ms": 137.064,
+          "response_bytes": 3276262
+        },
+        "parallel_markets_scanner_asgi_http": {
+          "wall_seconds": 2.103587,
+          "process_cpu_seconds": 2.108005,
+          "timer_samples": 49,
+          "timer_lag_max_ms": 1306.825
+        },
+        "single_snapshot_history_write_worker": {
+          "wall_seconds": 0.024543,
+          "process_cpu_seconds": 0.023184,
+          "timer_samples": 8,
+          "timer_lag_max_ms": 0.847
+        },
+        "three_concurrent_snapshot_history_writes_workers": {
+          "wall_seconds": 0.074868,
+          "process_cpu_seconds": 0.074511,
+          "timer_samples": 12,
+          "timer_lag_max_ms": 5.23,
+          "rows_per_write": 1000,
+          "lock_acquisition_waits": [
+            {
+              "thread": 139665868846784,
+              "wait_seconds": 1e-06
+            },
+            {
+              "thread": 139665479698112,
+              "wait_seconds": 0.021464
+            },
+            {
+              "thread": 139665471305408,
+              "wait_seconds": 0.047165
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

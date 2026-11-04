@@ -107,6 +107,31 @@ DEX资金费若来自同一公开payload，状态mode为 `via_public_price_bulk`
 [完整合成测量](evidence/stream-selection-load.json)保留样本数、Python版本及排除项。新循环CPU减少约89%，但最大定时器延迟反而有一次更大的抖动；不据此声称所有事件循环延迟都改善，也不把单进程样本当实网断流因果证据。
 `tests/test_stream_collector_performance.py`用独立模拟时钟验证10000条patch/347市场在两个模拟秒内仅两次设置与签名检查，以及高消息率下metadata/退市重订阅、闲置时五类停用设置取消和错误脱敏。
 
+## HTTP、推送与写入的阻塞诊断
+
+父线程`df55e83`实网集成反馈包含`/markets`最长约10.6秒、scanner多秒以及HL重连/OKX过期，但尚无能建立因果关系的统一trace。本批只做只读分析和本地诊断，未修改生产性能路径或时效门槛。
+
+代码检查发现：`/api/markets`与scanner主体虽为sync endpoint、在线程池执行，当前安装FastAPI对无response model的dict仍在事件循环内执行`jsonable_encoder`，随后Starlette同步`json.dumps`完整响应。`/ws`也直接在async循环里重建全部`collector.markets()`、计算delta并编码；即使最终delta很小，前面的全目录工作仍发生。
+此外`run_planned_light.summarize()`会同步重算全部venue覆盖；无批次的worker每轮也在计划后及`not_applicable`分支各调用一次。健康任务另定期全扫。它们是需单独profile/限频的候选热点，不能把单次耗时直接当成真实运行调用率。
+
+复现命令：`.venv/bin/python scripts/api_blocking_diagnostic.py --sizes 1000 10000`。
+[原始结果](evidence/api-blocking-diagnostic.json)使用临时库和合成四平台同身份市场，无交易所、TCP、浏览器或后台collector；每阶段一个样本，机器未隔离。
+10000市场时：
+
+| 本地诊断阶段 | wall耗时 | 10ms timer最大迟到 |
+| --- | ---: | ---: |
+| 真实ASGI `/api/markets`，约17.36MB | 1.387s | 1179ms |
+| 真实ASGI scanner，默认扫描上限10000方向 | 0.836s | 137ms |
+| 两个请求并行 | 2.104s | 1307ms |
+| markets构建，直接在loop执行 | 0.215s | 210ms |
+| markets `jsonable_encoder`，直接在loop执行 | 0.870s | 865ms |
+| markets JSON编码 | 0.102s | 97ms |
+| 全venue覆盖重算一次 | 0.111s | 106ms |
+| 三个并行1000行SQLite+Parquet写入，在线程执行 | 0.075s | 5.23ms |
+
+三个真实写入调用因`Storage.lock`串行，最长锁等待约47ms。该锁覆盖latest序列化、SQLite及Parquet写入；历史查询也持有同一锁，理论上能使等待中的collector保存延后，但此样本**没有复现多秒写争用**，不据此认定数据库为根因。
+测量证实大响应序列化可阻塞本地事件循环，也显示线程中的CPU工作仍可能争用GIL；它没有复现父报告10.6秒，也不能解释具体TimeoutError或OKX源数据更新缺口。下一批性能改动应分别测量序列化、覆盖重算调用频率、推送和真实写入等待，保持现有正确性门槛。
+
 ## 配置及存量设置
 
 | 设置 | 新默认 | 含义 |

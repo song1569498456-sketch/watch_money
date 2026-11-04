@@ -1,5 +1,7 @@
 # 验证记录
 
+2026-11-04 Bitget周期合并回归：缺失字段不再使用其他字段的快照时间作排序屏障，保留周期观测时间和来源，已存在值/显式清除继续拒绝旧更新。**完整782后端测试通过（27.89s）**，含8项新增字段时钟及适配器到可比较性回归；本批未改前端，未重跑浏览器。查询负载的本地合成测量见 [api-blocking-diagnostic.json](evidence/api-blocking-diagnostic.json)：10000市场的真实ASGI /markets约1.387秒、事件循环最大延迟1.179秒；与/scanner并行约2.104秒、最大延迟1.307秒。存在可量化编码阻塞，但不等于已复现实网10.6秒或证明断流根因。OKX空窗仍未定因，60秒阈值不变；Lighter限制不绕过。
+
 2026-11-04 指标合并与集成流复审：协议原始指标按字段保留独立来源/时间，支持明确清除和持久化删除屏障；未来帧不推进源流或缓存排序水位；目录签名检查降为每秒一次并增加处理/错误诊断。**完整774后端（27.78s）、31前端、37组本地浏览器、构建/Ruff/diff通过**。隔离CPU和真实merge/SQLite模拟断线的测量不等于实网断流根因已确定。OKX短窗原因未知，Gate/Bitget 199组/440现货仅预览未应用，父线程Lighter地区限制code20558本轮未重复探测。见 [METRIC_MERGE.md](METRIC_MERGE.md) 与 [metric-merge-validation.json](evidence/metric-merge-validation.json)。以下保留前批记录。
 
 2026-11-04 完整盘口空侧修复：Hyperliquid完整快照为空的一侧显式清除，双空也发patch；删除时刻随持久化保留，旧/同时间报价不能复活，新快照可恢复。Lighter market_stats保留缺省字段，仅明确无报价时清除。8项新增回归及**完整750后端测试（21.91s）、Ruff/diff通过**；本批未改前端，未重跑本地浏览器。详见 [DEX_STREAMING.md](DEX_STREAMING.md) 和 [审计清单](AUDIT_BACKLOG.md)。全部合成验证，实网限制不变。

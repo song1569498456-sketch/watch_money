@@ -172,11 +172,16 @@ class Collector:
                 continue
             stamp = snapshot.field_timestamps.get(field, snapshot.source_at)
             previous = timestamps.get(field)
+            tombstone = getattr(old, field) is None and sources.get(field, '').endswith(':explicit_unavailable')
+            has_previous = getattr(old, field) is not None or tombstone
             older = (stamp is not None and previous is not None and previous <= min(now_ms(), received.get(field, old.received_at))
                      and stamp < previous)
             if stamp is None or previous is None:
                 older = snapshot.field_received_at.get(field, snapshot.received_at) < received.get(field, old.received_at)
-            tombstone = getattr(old, field) is None and sources.get(field, '').endswith(':explicit_unavailable')
+            # An unrelated price envelope is not an observation of a missing
+            # funding/metadata field. Only values or explicit clears establish
+            # an ordering barrier; retain the incoming field's original clock.
+            older = has_previous and older
             if tombstone and field not in clears and stamp is not None:
                 # A contradictory equal-time or delayed quote cannot resurrect
                 # a removed side, even after persistence or stream restart.
