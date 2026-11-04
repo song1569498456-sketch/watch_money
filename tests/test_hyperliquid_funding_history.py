@@ -17,6 +17,7 @@ EVENT = NOW - 3600000
 @pytest.fixture
 def environment(tmp_path, monkeypatch):
     monkeypatch.setattr('watch_money.funding_history.now_ms', lambda: NOW)
+    monkeypatch.setattr('watch_money.adapters.dex.now_ms', lambda: NOW)
     def make(coin='PEPE', handler=None, timeout=15):
         requests = []
         def response(request):
@@ -139,3 +140,16 @@ async def test_timeout_cancels_public_call(environment):
         with pytest.raises(HTTPException) as error:
             await service.get(item.id, refresh=True)
     assert error.value.status_code == 504 and ended.is_set()
+
+
+async def test_observer_delay_keeps_native_receipt(environment, monkeypatch):
+    clock = [NOW]
+    monkeypatch.setattr('watch_money.funding_history.now_ms', lambda: clock[0])
+    monkeypatch.setattr('watch_money.adapters.dex.now_ms', lambda: clock[0])
+    service, item, client, adapter, _ = environment()
+    async def observer(*args):
+        clock[0] += 40
+    adapter.on_payload = observer
+    async with client:
+        result = await service.get(item.id, refresh=True)
+    assert result['records'][0]['received_at'] == NOW

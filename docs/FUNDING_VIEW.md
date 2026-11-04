@@ -113,3 +113,11 @@ PYTEST
 - 新8项离线回归覆盖目录/原生字段/client/adapter替换与删除、两个排队边界和无关元数据变更。未改变资金费来源、单位、未知周期或新鲜度门槛；不把历史记录解释为账户支付。
 - 身份复核：Gate/Bitget/KuCoin/Coinbase Exchange公开证据、平台覆盖统计和可撤销批量审核已有实现；证据的客户端与现货范围必须精确匹配，不向永续或Coinbase Advanced Trade隐式扩展。现有199组演练候选不是生产批准，本批没有新增身份批准或声称覆盖扩大。缺少可靠官方合同证据的来源继续未知。
 - 复现命令：`.venv/bin/pytest -q tests/test_funding_history.py tests/test_hyperliquid_funding_history.py tests/test_dydx_funding_history.py`。本批仅合成测试、无实网调用；未重试受阻OKX WS或修改独立环境。24小时未完成与来源归因不明仍开放。
+
+### R45 原生历史接收边界与来源修订（2026-11-04）
+
+- 父线程对715d1f3的离线扰动：结算时间比网络返回超前10ms、观察者等待40ms，可被误收；相同费率高度1234→1235静默沿用旧高度。这是合成复现，不是链上真实异常证据。
+- PublicREST在HTTP客户端返回后、JSON解码及诊断观察者之前捕获receipt，通过dict/list兼容容器属性随响应传递，不污染原生JSON字段、不使用共享last_received。dYdX及Hyperliquid历史读取该receipt；取消观察者不保存，后续请求独立取时。边界是HTTP客户端完成响应，不宣称socket首字节时间；自定义普通dict/list测试替身仍以方法返回为后备。
+- 历史修订比较全部持久化内容（排除received_at/first_received_at/last_seen_at/revision四项观察字段），包括区块高度、原生时间表示及来源。来源变化会追加旧完整记录到funding_revisions，当前记录revision递增并保留first_received；真正相同记录仅更新last_seen。不把原生高度当作链上最终性证明。
+- 新5项合成回归：未来10ms/过去10ms+观察者40ms、取消后无写入且下一请求新receipt、同费率区块高度修订并重复去重、Hyperliquid延迟receipt；85项历史专项通过。已有原生fixture统一冻结两个模块的时钟，保持原断言。
+- 未访问受阻OKX WS、未改独立环境或账户，无实网/浏览器验收；24小时、生产广泛身份覆盖仍开放。

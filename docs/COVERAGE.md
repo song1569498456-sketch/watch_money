@@ -155,3 +155,7 @@ dYdX v4公共historicalFunding新增已结算历史，准确ticker、带时区ef
 ### R44 身份及历史边界复核
 
 本批修复历史请求与目录更新的一致性，未新增平台或批准身份。四个官方公开身份来源继续遵守原生client/现货范围，Coinbase Exchange证据不能替代Advanced Trade或永续证据；199组Gate/Bitget候选仅隔离演练。未知合约证据及历史周期保持未知，详见AUDIT_BACKLOG R44。未调用受阻OKX WS，24小时验收仍未完成。
+
+### R45 历史来源真实性
+
+dYdX/Hyperliquid历史保留观察者前HTTP响应receipt，来源字段变化有完整旧记录修订。仅合成回归，无新增平台、身份批准或实网覆盖；未知周期不变，24小时仍未完成。详见FUNDING_VIEW R45。

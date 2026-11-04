@@ -88,8 +88,11 @@ class FundingHistoryService:
                 prior_row = db.execute("SELECT record FROM funding_records WHERE instrument_id=? AND settlement_at=? AND event_type=?", key).fetchone()
                 if prior_row:
                     prior = json.loads(prior_row[0])
+                    # Provenance changes are revisions even when the rate is
+                    # unchanged (e.g. a corrected native block height).
+                    observation_fields = {"received_at", "first_received_at", "last_seen_at", "revision"}
                     changed = any(prior.get(field) != record.get(field) for field in
-                                  ("funding_rate", "raw_funding_rate", "funding_interval_hours"))
+                                  (prior.keys() | record.keys()) - observation_fields)
                     if not changed:
                         prior["last_seen_at"] = record["received_at"]
                         record = prior
@@ -155,7 +158,9 @@ class FundingHistoryService:
             if isinstance(exc, TimeoutError) or type(exc).__name__ in {"ReadTimeout", "ConnectTimeout"}:
                 raise HTTPException(504, "Public funding history request timed out") from None
             raise HTTPException(502, {"error": "Public funding history request failed", "type": type(exc).__name__}) from None
-        received = now_ms()
+        received = getattr(payload, "received_at", None)
+        if received is None:
+            received = now_ms()
         if (self.collector.instruments.get(instrument.id) != instrument
                 or self.collector.adapters.get(instrument.venue) is not adapter):
             raise HTTPException(409, "Market scope changed while retrieving history")
@@ -236,7 +241,9 @@ class FundingHistoryService:
             if isinstance(exc, TimeoutError) or type(exc).__name__ in {"ReadTimeout", "ConnectTimeout"}:
                 raise HTTPException(504, "Public funding history request timed out") from None
             raise HTTPException(502, {"error": "Public funding history request failed", "type": type(exc).__name__}) from None
-        received = now_ms()
+        received = getattr(rows, "received_at", None)
+        if received is None:
+            received = now_ms()
         current = self.collector.instruments.get(instrument.id)
         if (current != instrument or adapter._quotes.get(namespace) != instrument.settle
                 or self.collector.adapters.get(instrument.venue) is not adapter):

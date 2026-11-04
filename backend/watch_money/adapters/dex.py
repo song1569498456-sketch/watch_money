@@ -126,6 +126,14 @@ class BroadPublicData:
         return await self.fetch(instruments) if instruments else []
 
 
+class ReceivedPublicDict(dict):
+    """JSON object carrying a per-response receipt outside its payload keys."""
+
+
+class ReceivedPublicList(list):
+    """JSON array carrying a per-response receipt outside its payload items."""
+
+
 class PublicREST(BroadPublicData):
     def __init__(self, client: httpx.AsyncClient | None = None):
         self._client = client
@@ -135,8 +143,15 @@ class PublicREST(BroadPublicData):
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=20, headers={"User-Agent": "watch-money/0.1"})
         response = await self._client.request(method, url, **kwargs)
+        received_at = now_ms()
         response.raise_for_status()
         body = response.json()
+        if isinstance(body, dict):
+            body = ReceivedPublicDict(body)
+        elif isinstance(body, list):
+            body = ReceivedPublicList(body)
+        if isinstance(body, (ReceivedPublicDict, ReceivedPublicList)):
+            body.received_at = received_at
         await self._record_payload(f"rest:public:{method.upper()}", body)
         if isinstance(body, dict) and body.get("code") not in (None, 0, 200, "SUCCESS"):
             raise RuntimeError(f"{self.venue}: public API error code {body['code']}")
