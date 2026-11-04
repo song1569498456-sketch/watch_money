@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
-    "test": "node --test tests/marketData.test.mjs tests/bookSizing.test.mjs"
+    "test": "node --test tests/marketData.test.mjs tests/bookSizing.test.mjs tests/fundingMatrix.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

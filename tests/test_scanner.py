@@ -54,6 +54,63 @@ def test_all_crossvenue_spot_perpetual_combinations_include_both_directions():
     assert len({row["id"] for row in result["candidates"]}) == 8
 
 
+@pytest.mark.parametrize("market_type,expected_count,expected_markets", [
+    ("all", 8, 4), ("spot", 2, 2), ("perpetual", 2, 2), ("spot_perp", 4, 4),
+])
+def test_market_type_filters_before_enumeration_and_recomputes_exact_coverage(market_type, expected_count,
+                                                                           expected_markets):
+    markets = [market(f"{venue}:{kind}", venue, kind=kind)
+               for venue in ["alpha", "beta"] for kind in ["spot", "perpetual"]]
+    result = run(markets, market_type=market_type)
+    assert result["filters"]["market_type"] == market_type
+    assert result["stats"]["possible_candidates"] == result["stats"]["scanned"] == expected_count
+    group = result["groups"][0]
+    assert group["market_count"] == result["stats"]["active_markets"] == expected_markets
+    assert group["possible_directions"] == group["scanned_directions"] == expected_count
+    for row in result["candidates"]:
+        if market_type == "spot":
+            assert row["buy_kind"] == row["sell_kind"] == "spot"
+        elif market_type == "perpetual":
+            assert row["buy_kind"] == row["sell_kind"] == "perpetual"
+        elif market_type == "spot_perp":
+            assert {row["buy_kind"], row["sell_kind"]} == {"spot", "perpetual"}
+
+
+def test_market_type_does_not_spend_scan_budget_on_filtered_directions_or_keep_old_best():
+    a = market("a-spot", "alpha")
+    b = market("b-spot", "beta")
+    c = market("c-perp", "alpha", kind="perpetual")
+    d = market("d-perp", "beta", kind="perpetual")
+    snapshots = [snap(a, bid=99, ask=100), snap(b, bid=101, ask=102),
+                 snap(c, bid=500, ask=501), snap(d, bid=600, ask=601)]
+    spot = run([a, b, c, d], snapshots, market_type="spot")
+    best = spot["groups"][0]["best_spread_candidate"]
+    assert (best["buy_instrument_id"], best["sell_instrument_id"]) == ("a-spot", "b-spot")
+    limited = run([a, b, c, d], snapshots, market_type="perpetual", max_candidates=1)
+    assert limited["stats"]["scanned"] == 1 and limited["stats"]["possible_candidates"] == 2
+    assert limited["candidates"][0]["buy_kind"] == limited["candidates"][0]["sell_kind"] == "perpetual"
+
+
+def test_spot_filter_includes_pool_and_rfq_but_keeps_route_requirements():
+    a = market("pool", "alpha", kind="pool", mechanism="amm")
+    b = market("rfq", "beta", kind="rfq", mechanism="rfq")
+    c = market("perp", "gamma", kind="perpetual")
+    result = run([a, b, c], market_type="spot")
+    assert result["stats"]["possible_candidates"] == 2 and result["groups"][0]["market_count"] == 2
+    assert all("size_specific_route_quotes_not_provided" in row["requirements"] for row in result["candidates"])
+    assert all(not row["executable"] and row["net_profit"] is None for row in result["candidates"])
+
+
+def test_spot_perp_counter_excludes_same_venue_and_same_product_directions():
+    markets = [market("a-spot", "alpha"), market("a-perp", "alpha", kind="perpetual"),
+               market("b-spot", "beta"), market("b-perp", "beta", kind="perpetual"),
+               market("c-perp", "gamma", kind="perpetual")]
+    result = run(markets, market_type="spot_perp")
+    assert result["stats"]["possible_candidates"] == result["stats"]["scanned"] == 8
+    assert all(row["buy_venue"] != row["sell_venue"] and row["buy_kind"] != row["sell_kind"]
+               for row in result["candidates"])
+
+
 def test_same_ticker_unverified_assets_do_not_become_opportunities():
     markets = [market("a", "alpha", mapping_verified=False, asset_id="alpha:BRETT"),
                market("b", "beta", mapping_verified=False, asset_id="beta:BRETT")]
@@ -408,17 +465,21 @@ def test_api_filters_disabled_venues_active_markets_and_honors_settings(monkeypa
         assert result["candidates"][0]["asset_symbols"] == ["BRETT"]
         filtered = client.get("/api/scanner", params={"q": "brett/usdt", "platforms": "alpha"}).json()
         assert filtered["groups"][0]["market_count"] == 1 and not filtered["candidates"]
-        assert filtered["filters"] == {"q": "brett/usdt", "platforms": ["alpha"]}
+        assert filtered["filters"] == {"q": "brett/usdt", "platforms": ["alpha"], "market_type": "all"}
+        perpetuals = client.get("/api/scanner", params={"market_type": "perpetual"}).json()
+        assert perpetuals["filters"]["market_type"] == "perpetual"
+        assert perpetuals["stats"]["active_markets"] == 0 and perpetuals["candidates"] == []
         settings.computation_enabled = False
         assert client.get("/api/scanner").json()["candidates"] == []
         settings.computation_enabled, settings.demo_mode = True, True
         assert client.get("/api/scanner").json()["enabled"] is False
         assert client.get("/api/scanner", params={"sort": "unknown"}).status_code == 422
+        assert client.get("/api/scanner", params={"market_type": "futures"}).status_code == 422
         assert client.get("/api/scanner", params={"max_candidates": 100001}).status_code == 422
 
 
 @pytest.mark.parametrize("values", [{"limit": 0}, {"limit": 1001}, {"max_candidates": 0},
-                                    {"max_candidates": 100001}, {"sort": "unknown"}])
+                                    {"max_candidates": 100001}, {"sort": "unknown"}, {"market_type": "futures"}])
 def test_explicit_resource_bounds_are_validated(values):
     with pytest.raises(ValueError):
         run([], **values)

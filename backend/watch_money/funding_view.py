@@ -72,14 +72,17 @@ def _market(instrument: Instrument, snapshot: MarketSnapshot | None, identity: d
             "source": snapshot.source if snapshot else None, "source_at": snapshot.source_at if snapshot else None,
             "received_at": snapshot.received_at if snapshot else None,
             "field_validity": {field: validity for field, (_, validity) in fields.items()},
+            "observed": {field: getattr(snapshot, field, None) if snapshot else None for field in _FIELDS},
             "missing": sorted(set(missing)), "warnings": warnings,
             "observation_type": "local_public_snapshot", "is_settled_history": False}
 
 
-def _group(identity: dict, rows: list[dict]) -> dict:
+def _group(identity: dict, rows: list[dict], *, details: bool = False) -> dict:
     valid = [row for row in rows if row["normalized_8h_rate"] is not None]
     kinds = {row["kind"] for row in valid}
     missing, warnings = [], ["normalized_rate_difference_is_not_settlement_cashflow"]
+    if not identity["comparison_ready"]:
+        missing.extend(identity["blockers"] or ["asset_identity_not_verified"])
     if len({row["venue"] for row in valid}) < 2:
         missing.append("two_venues_with_valid_normalized_rates_required")
     if None in kinds or not kinds:
@@ -111,6 +114,9 @@ def _group(identity: dict, rows: list[dict]) -> dict:
                 best = difference, long, short
     columns = ("instrument_id", "venue", "native_symbol", "quote", "raw_rate", "kind", "interval_hours",
                "normalized_8h_rate", "next_funding_at", "countdown_seconds", "missing", "warnings")
+    if details:
+        columns += ("base", "asset_id", "identity_group_id", "identity_status", "identity_blockers",
+                    "field_validity", "observed", "source")
     spread = best[0] if best and math.isfinite(best[0]) else None
     return {"id": identity["id"], "asset_id": rows[0]["asset_id"], "symbols": identity["symbols"],
             "instrument_ids": identity["instrument_ids"], "venues": identity["venues"],
@@ -118,6 +124,7 @@ def _group(identity: dict, rows: list[dict]) -> dict:
             "spread_8h_rate": spread, "funding_kind": next(iter(kinds)) if len(kinds) == 1 else None,
             "long_instrument_id": best[1]["instrument_id"] if best else None,
             "short_instrument_id": best[2]["instrument_id"] if best else None,
+            "identity_status": rows[0]["identity_status"], "identity_blockers": identity["blockers"],
             "comparison_ready": spread is not None, "missing": missing, "warnings": warnings,
             "comparison_type": "normalized_rate_difference_not_cashflow", "net_profit": None}
 
@@ -148,21 +155,27 @@ def build_funding_view(instruments: Iterable[Instrument] | Mapping[str, Instrume
     rows_by_id = {row["instrument_id"]: row for row in rows}
     groups = [_group(identity, [rows_by_id[identity_id] for identity_id in identity["instrument_ids"]])
               for identity in identities if identity["comparison_ready"] and len(identity["venues"]) > 1]
+    matrix_groups = [_group(identity, [rows_by_id[identity_id] for identity_id in identity["instrument_ids"]], details=True)
+                     for identity in identities]
     spread_by_group = {group["id"]: group["spread_8h_rate"] for group in groups}
     metric = "raw_rate" if rate_basis == "raw" else "normalized_8h_rate"
     if sort == "asset":
         rows.sort(key=lambda row: (row["asset_id"], row["venue"], row["instrument_id"]))
         groups.sort(key=lambda group: group["asset_id"])
+        matrix_groups.sort(key=lambda group: (group["asset_id"], group["id"]))
     elif sort == "spread":
         rows.sort(key=lambda row: (spread_by_group.get(row["identity_group_id"]) is None,
                                   -(spread_by_group.get(row["identity_group_id"]) or 0),
                                   row["asset_id"], row["instrument_id"]))
         groups.sort(key=lambda group: (group["spread_8h_rate"] is None, -(group["spread_8h_rate"] or 0), group["id"]))
+        matrix_groups.sort(key=lambda group: (group["spread_8h_rate"] is None, -(group["spread_8h_rate"] or 0), group["id"]))
     else:
         rows.sort(key=lambda row: (row[metric] is None, -(row[metric] or 0), row["instrument_id"]))
         groups.sort(key=lambda group: (group["asset_id"], group["id"]))
+        matrix_groups.sort(key=lambda group: (group["asset_id"], group["id"]))
     return {"as_of": as_of, "observation_type": "local_public_snapshots",
-            "is_settled_history": False, "rows": rows[:limit], "groups": groups[:limit], "stats": {
+            "is_settled_history": False, "rows": rows[:limit], "groups": groups[:limit],
+            "matrix_groups": matrix_groups[:limit], "venues": sorted({row["venue"] for row in rows}), "stats": {
                 "catalog_markets": len(catalog), "perpetual_markets": len(markets),
                 "fresh_rates": sum(row["raw_rate"] is not None for row in rows),
                 "normalized_rates": sum(row["normalized_8h_rate"] is not None for row in rows),
@@ -170,6 +183,8 @@ def build_funding_view(instruments: Iterable[Instrument] | Mapping[str, Instrume
                 "unverified_markets": sum(row["identity_status"] != "verified" for row in rows),
                 "rows_total": len(rows), "rows_returned": min(len(rows), limit),
                 "groups_total": len(groups), "groups_returned": min(len(groups), limit),
+                "matrix_groups_total": len(matrix_groups), "matrix_groups_returned": min(len(matrix_groups), limit),
+                "matrix_groups_truncated": len(matrix_groups) > limit,
                 "comparable_groups": sum(group["comparison_ready"] for group in groups),
                 "rows_truncated": len(rows) > limit, "groups_truncated": len(groups) > limit,
                 "missing_counts": dict(Counter(reason for row in rows for reason in row["missing"])),
@@ -178,14 +193,26 @@ def build_funding_view(instruments: Iterable[Instrument] | Mapping[str, Instrume
 
 @router.get("")
 def funding_api(request: Request, sort: Sort = "rate", limit: int = Query(500, ge=1, le=5000),
-                rate_basis: RateBasis = "normalized8h"):
+                rate_basis: RateBasis = "normalized8h", venue: str | None = Query(default=None, max_length=50),
+                search: str = Query(default="", max_length=200),
+                platforms: str | None = Query(default=None, max_length=2000)):
     collector = request.app.state.collector
     settings = request.app.state.store.settings()
     catalog = list(collector.instruments.values())
     enabled = not settings.demo_mode
     selected = [item for item in catalog if item.venue in settings.enabled_venues] if enabled else []
-    result = build_funding_view(selected, dict(collector.snapshots), now_ms(), settings.stale_seconds,
+    venues = sorted({item.venue for item in selected if item.active and item.kind == "perpetual"})
+    scoped = [item for item in selected if item.venue == venue] if venue is not None else selected
+    platform_filter = None
+    if platforms is not None:
+        platform_filter = sorted({value.strip() for value in platforms.split(",") if value.strip()})
+        scoped = [item for item in scoped if item.venue in platform_filter]
+    if needle := search.strip().casefold():
+        matching_assets = {item.asset_id for item in scoped if needle in
+                           f"{item.base} {item.asset_id} {item.native_asset_id or ''} {item.native_symbol}".casefold()}
+        scoped = [item for item in scoped if item.asset_id in matching_assets]
+    result = build_funding_view(scoped, dict(collector.snapshots), now_ms(), settings.stale_seconds,
                                 sort=sort, limit=limit, rate_basis=rate_basis)
-    result.update(enabled=enabled)
+    result.update(enabled=enabled, venues=venues, venue_filter=venue, platforms_filter=platform_filter, search=search)
     result["stats"].update(collector_catalog_markets=len(catalog), excluded_by_settings=len(catalog) - len(selected))
     return result

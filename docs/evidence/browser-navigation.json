@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "checks": [
+    "default is market monitoring / spread; four primary destinations; manual calculator remains secondary",
+    "funding matrix is directly discoverable under market monitoring",
+    "funding detail hands off the exact low/high pair and returns to funding with its search and detail preserved, without calculating",
+    "candidate calculator returns search/platforms/market type/sort/expanded asset and scroll position (315px -> 315px), without submitting",
+    "leaving before search debounce pauses hidden scans; returning applies deferred query instead of trapping old results",
+    "my monitors has its own primary entry and no calculator form",
+    "identity management and source diagnostics are reachable from settings",
+    "768px tablet primary navigation keeps all four visible text labels",
+    "390px primary destinations and funding matrix have no document overflow; no external/account/trading requests or JS errors"
+  ],
+  "at": 1793811381327,
+  "account_api_used": false,
+  "data_mode": "isolated synthetic navigation fixtures, no live exchange data"
+}

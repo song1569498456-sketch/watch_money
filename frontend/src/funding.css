@@ -1,0 +1,76 @@
+.funding-page { min-width: 0; max-width: 100%; }
+.funding-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 20px 18px; }
+.funding-toolbar > select { width: auto; max-width: 190px; font-size: 11px; }
+.funding-view-tabs { display: flex; gap: 7px; }
+.funding-view-tabs .selected { border-color: var(--mint); color: var(--mint); background: #1a3635; }
+.funding-toolbar .search { min-width: 190px; }
+.funding-caption { margin: 0 20px 18px; font-size: 11px; color: #a1b2c3; line-height: 1.8; }
+.funding-caption > span { display: block; color: #71889d; }
+.funding-platform-picker { position: relative; font-size: 11px; }
+.funding-platform-picker summary { cursor: pointer; border: 1px solid #303d4e; border-radius: 6px; padding: 12px; }
+.funding-platform-options { position: absolute; z-index: 8; top: calc(100% + 5px); right: 0; min-width: 210px; max-height: 340px; overflow: auto; padding: 14px; background: #14212f; border: 1px solid #34485b; border-radius: 8px; box-shadow: 0 10px 25px #0008; }
+.funding-platform-options > div { display: flex; gap: 15px; margin-bottom: 10px; }
+.funding-platform-options label { display: flex; gap: 9px; align-items: center; padding: 7px 0; }
+.funding-platform-options input { width: 15px; min-height: 15px; accent-color: var(--mint); }
+.funding-table-wrap { width: 100%; max-width: 100%; overflow-x: auto; }
+.funding-matrix-table { width: 100%; table-layout: fixed; white-space: normal; }
+.funding-matrix-table td { vertical-align: top; padding: 10px 12px; }
+.funding-matrix-table th { padding: 13px 12px; }
+.funding-matrix-table th:first-child, .funding-matrix-table .funding-asset { position: sticky; left: 0; z-index: 2; background: #13202d; box-shadow: 1px 0 0 #2c3c4d; }
+.funding-matrix-table th:first-child { z-index: 3; }
+.funding-matrix-table th small { display: block; margin-top: 4px; font-size: 9px; color: #6f869b; }
+.funding-asset > strong { font-size: 14px; }
+.funding-identity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 126px; }
+.funding-spread > strong { display: block; color: var(--mint); font-size: 15px; margin-bottom: 7px; }
+.funding-market-cell { display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left; padding: 5px; margin: 0 0 5px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #d3dfeb; }
+.funding-market-cell:last-child { margin-bottom: 0; }
+.funding-market-cell:hover { border-color: #56a79e; background: #163035; }
+.funding-market-cell > strong { font-size: 14px; }
+.funding-market-cell > strong small { display: inline; font-size: 9px; color: #819caf; }
+.funding-market-cell > .muted { font-size: 9px; overflow-wrap: anywhere; }
+.funding-raw { font-size: 10px; line-height: 1.7; }
+.funding-cell-action { display: none; }
+.funding-state { display: inline-flex; width: fit-content; font-size: 9px; border-radius: 4px; padding: 2px 6px; background: #203143; color: #9eb1c4; }
+.funding-state.funding-fresh { background: #20423f; color: #83d9ca; }
+.funding-state.funding-stale { background: #493a24; color: #e6b66b; }
+.funding-state.funding-pending { background: #263448; color: #a1b4cb; }
+.funding-market-cell.funding-stale { background: #232627; }
+.funding-no-market { display: inline-block; padding: 13px 9px; color: #647b91; font-size: 11px; }
+.funding-ranking-table { min-width: 1050px; white-space: normal; }
+.funding-ranking-table td { vertical-align: top; }
+.funding-detail { position: fixed; z-index: 30; right: 16px; top: 70px; width: min(640px, calc(100vw - 32px)); height: calc(100dvh - 90px); display: flex; flex-direction: column; box-shadow: -15px 12px 45px #0009; border-color: #3a5b68; margin: 0; }
+.funding-detail > .panel-heading { flex-shrink: 0; padding: 15px; gap: 10px; }
+.funding-detail h2 { font-size: 15px; }
+.funding-detail .icon-button { flex-shrink: 0; }
+.funding-detail-scroll { overflow: auto; flex: 1; min-height: 0; }
+.funding-detail .form-content { padding: 15px; line-height: 1.9; font-size: 12px; }
+.funding-field-sources { display: grid; gap: 8px; padding: 0 15px 15px; }
+.funding-field-sources > div { background: #0d1824; border: 1px solid #273a4b; border-radius: 6px; padding: 11px; display: flex; gap: 6px; flex-direction: column; font-size: 10px; line-height: 1.8; }
+.funding-field-sources small { color: #8ba2b6; }
+.funding-history-section { border-top: 1px solid #2d4050; padding: 15px; font-size: 11px; line-height: 1.8; }
+.funding-history-section h3 { margin: 0; font-size: 14px; }
+.funding-history-section > p { color: #8ba2b6; }
+.funding-history-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.funding-history-table { min-width: 560px; white-space: normal; table-layout: fixed; }
+.funding-history-table th, .funding-history-table td { padding: 12px 8px; overflow-wrap: anywhere; }
+@media (max-width: 650px) {
+  .funding-toolbar { padding: 0 13px 14px; gap: 8px; }
+  .funding-platform-options { left: 0; right: auto; min-width: 200px; max-width: calc(100vw - 54px); }
+  .funding-toolbar .search { flex-basis: 100%; }
+  .funding-view-tabs { width: 100%; }
+  .funding-view-tabs .button { flex: 1; padding-left: 8px; padding-right: 8px; font-size: 10px; }
+  .funding-caption { margin: 0 13px 14px; font-size: 10px; }
+  .funding-detail { right: 6px; top: 64px; width: calc(100vw - 12px); height: calc(100dvh - 76px); }
+  .funding-detail .panel-heading h2 { font-size: 13px; }
+}
+/* Keep coverage context compact so the matrix remains the main content. */
+.funding-page > .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.funding-page > .stats .stat { flex: 1 1 180px; padding: 9px 12px; display: grid; grid-template-columns: 1fr auto; gap: 5px 8px; }
+.funding-page > .stats .stat-label { font-size: 10px; }
+.funding-page > .stats .stat-label svg { display: none; }
+.funding-page > .stats .stat > strong { grid-column: 2; grid-row: 1; font-size: 17px; margin: 0; }
+.funding-page > .stats .stat > small { grid-column: 1 / -1; font-size: 9px; }
+@media (max-width: 650px) {
+  .funding-page > .stats .stat { flex-basis: calc(50% - 8px); padding: 8px; }
+  .funding-page > .stats .stat > small { font-size: 8px; }
+}

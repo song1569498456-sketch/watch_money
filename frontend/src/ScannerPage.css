@@ -1,0 +1,64 @@
+.scanner-workspace .scanner-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 20px 14px;
+}
+.scanner-workspace .scanner-toolbar .search { min-width: 180px; }
+.scanner-workspace .scanner-toolbar select { width: auto; min-height: 36px; font-size: 11px; padding: 7px; }
+.scanner-workspace .scanner-toolbar .inline-checks { white-space: nowrap; font-size: 11px; }
+.scanner-workspace .scanner-platform-filter { position: relative; font-size: 11px; }
+.scanner-workspace .scanner-platform-filter > summary {
+  cursor: pointer; padding: 10px; border: 1px solid #334153; border-radius: 6px; white-space: nowrap;
+}
+.scanner-workspace .scanner-platform-options {
+  position: absolute; z-index: 12; right: 0; top: calc(100% + 6px); width: 280px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 15px;
+  background: #14202d; border: 1px solid #334153; border-radius: 7px; box-shadow: 0 8px 25px #0006;
+}
+.scanner-workspace .scanner-summary {
+  display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 10px 20px;
+  border-top: 1px solid #24303e; border-bottom: 1px solid #24303e;
+  color: #879aae; font-size: 11px; background: #101a27;
+}
+.scanner-workspace .scanner-summary strong { color: #cad8e5; margin-left: 5px; font-weight: 500; }
+.scanner-workspace .scanner-check-time { margin-left: auto; }
+.scanner-workspace .scanner-caption { padding: 10px 20px 2px; color: #8096ab; font-size: 11px; line-height: 1.7; }
+.scanner-workspace .scanner-view-switch { display: flex; gap: 16px; padding: 8px 20px 10px; }
+.scanner-workspace .scanner-view-switch button {
+  background: transparent; border: 0; color: #8096ab; padding: 5px 0; font-size: 11px; cursor: pointer;
+}
+.scanner-workspace .scanner-view-switch button.selected { color: #85d9c2; border-bottom: 2px solid #66d8bd; }
+.scanner-workspace .scanner-asset-table > tbody > .scanner-asset-row > td { padding: 10px 14px; height: 62px; }
+.scanner-workspace .scanner-asset-row.is-expanded { background: #162330; }
+.scanner-workspace .scanner-asset-label { display: flex; align-items: center; gap: 5px; }
+.scanner-workspace .scanner-expand-button {
+  display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent;
+  color: #d7e3ed; padding: 4px 0; font-size: 13px; cursor: pointer;
+}
+.scanner-workspace .scanner-expand-button:focus-visible { outline: 2px solid #66d8bd; outline-offset: 3px; }
+.scanner-workspace .scanner-primary-rate > strong { font-size: 14px; font-weight: 500; color: #d8e6ed; }
+.scanner-workspace .scanner-market-type { font-size: 11px; color: #a5b6c8; }
+.scanner-workspace .scanner-expanded-row > td { padding: 0; background: #0e1824; }
+.scanner-workspace .scanner-group-note { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 14px 20px; color: #8fa5b9; font-size: 11px; white-space: normal; }
+.scanner-workspace .scanner-group-note > strong { color: #c2d3e2; }
+.scanner-workspace .scanner-directions td { padding: 12px 14px; vertical-align: top; }
+.scanner-workspace .scanner-directions table { font-size: 11px; }
+.scanner-workspace .scanner-quote-times { min-width: 150px; }
+.scanner-workspace .scanner-quote-times > small { display: block; font-variant-numeric: tabular-nums; }
+.scanner-workspace .scanner-quote-times > small + small { margin-top: 6px; }
+.scanner-workspace .scanner-quote-times > small > small { display: inline; margin-left: 8px; }
+.scanner-workspace .scanner-verified { color: #7fc5b3; }
+.scanner-workspace .scanner-market-details { padding: 10px 20px 16px; font-size: 11px; color: #9ab0c3; }
+.scanner-workspace .scanner-market-details > summary { cursor: pointer; padding: 8px 0; }
+.scanner-workspace .scanner-market-details .table-scroll { margin: 8px -20px -16px; }
+.scanner-workspace .raw-details { max-width: 320px; white-space: normal; }
+.scanner-workspace .raw-details > div { margin: 12px 0; }
+.scanner-workspace .raw-details small { line-height: 1.7; }
+@media (max-width: 720px) {
+  .scanner-workspace .scanner-toolbar { padding: 0 14px 12px; }
+  .scanner-workspace .scanner-toolbar .search { flex-basis: 100%; }
+  .scanner-workspace .scanner-toolbar select { flex: 1; min-width: 130px; }
+  .scanner-workspace .scanner-summary { padding: 10px 14px; gap: 8px 14px; }
+  .scanner-workspace .scanner-check-time { margin-left: 0; flex-basis: 100%; }
+  .scanner-workspace .scanner-asset-table { min-width: 860px; }
+  .scanner-workspace .scanner-directions table { min-width: 980px; }
+  .scanner-workspace .scanner-platform-options { left: 0; right: auto; }
+}

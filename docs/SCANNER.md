@@ -1,7 +1,7 @@
 # 全目录指示性机会扫描
 
 `watch_money.scanner.scan_markets(instruments, snapshots, as_of, stale_seconds, limit=100,
-sort="spread", max_candidates=10000, q="", platforms=None)` 读取已发现的完整市场目录与当前快照，不限定 BTC/ETH，
+sort="spread", max_candidates=10000, q="", platforms=None, market_type="all")` 读取已发现的完整市场目录与当前快照，不限定 BTC/ETH，
 也不依赖关注列表、手动选择两腿或已保存监控计划。`instruments` / `snapshots` 可为对象列表或以 ID 为键的字典。
 时间使用 UTC epoch 毫秒。该函数只计算并返回 JSON 对象，不修改采集器、配置、存储或输入对象。
 
@@ -64,6 +64,9 @@ sort 接受 spread（价差率降序）、funding（有符号八小时费差降�
   匹配任一成员会选中整个身份组，不会因为搜索移除同组冲突身份证据。
 - `platforms=binance,okx` 选择已启用平台中的子集；空字符串为全部平台。
   available_platforms、filters 和 excluded_by_filters 明示范围。
+- `market_type=all|spot|perpetual|spot_perp` 在扫描预算之前过滤市场/组合，默认全部。
+  spot 是现货类间（含明确标识的 pool/RFQ），perpetual 是永续间，spot_perp 仅枚举一条现货类和一条永续的跨平台组合。
+  coverage、possible_candidates、best 与枚举预算均在所选范围内重新计算，未选类型不消耗预算。
 - groups 每组包含覆盖平台/市场数、可能/已扫描/可靠/排除方向数、markets、更新时间和截断情况。
   best_spread_candidate 仅从 price_rankable 方向选择，best_funding_candidate 仅从 funding_rankable 选择。
   `best_within_scan=true` 明确“已扫描范围最佳”；scan_complete=false 不能称全市场最优。
@@ -83,9 +86,15 @@ sort 接受 spread（价差率降序）、funding（有符号八小时费差降�
   （pay/receive/none/unknown）；settlement_alignment 区分 synchronized/different/unknown/
   single_perpetual_leg/not_applicable。未知时间不推断同步。
 
-前端默认资产折叠聚合、按最佳已扫描可靠价差排序，展开才呈现市场明细和全部已返回方向，
-可切换平铺。支持搜索、平台多选、手动刷新和可选每 30 秒刷新。
-每组展示覆盖、更新时间、排除与截断状态。
+前端默认紧凑资产表格，一资产一行：资产、类型、盘口毛价差、最佳路径、覆盖、更新时间、关注。
+按最佳已扫描可靠价差排序，展开优先显示双向组合、买卖报价和每腿源事件/接收时间；
+“组合详情”保留资金费和条件明细，“测算此组合”精确引用两腿。各平台盘口身份明细在组合表后。
+支持搜索、类型/平台筛选、手动刷新、可选每 30 秒刷新及平铺切换。
+切换筛选或刷新时旧结果明确标注，加载/失败期间旧组合不提供测算入口。
+关注沿用现有市场级 favorites：资产行按钮关注稳定代表市场，展开区可分别关注每个市场。
+可选props为 favorites:string[]、toggleFavorite(instrumentId)、onOpenAsset(assetId)。
+active 默认 true；页面保持挂载但隐藏时设置 false，停止自动刷新；重新显示保留搜索、展开和上次检查时间，不额外发起扫描。
+专属样式位于 ScannerPage.css，不修改全局样式。
 可选 `onSelectCandidate({buy_instrument_id,sell_instrument_id,strategy})` 精确引用两腿，
 “按规模计算”只转入现有计算器，不自动计算、补费用或下单。
 

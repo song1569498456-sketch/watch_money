@@ -14,6 +14,7 @@ from .models import Instrument, MarketSnapshot, now_ms
 
 router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 Sort = Literal["spread", "funding", "asset"]
+MarketType = Literal["all", "spot", "perpetual", "spot_perp"]
 MAX_CANDIDATES = 100000
 
 
@@ -225,7 +226,8 @@ def _candidate(buy: Instrument, sell: Instrument, snapshots: dict[str, MarketSna
 def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
                  snapshots: Iterable[MarketSnapshot] | Mapping[str, MarketSnapshot],
                  as_of: int, stale_seconds: float, limit: int = 100, *, sort: Sort = "spread",
-                 max_candidates: int = 10000, q: str = "", platforms: Iterable[str] | None = None) -> dict:
+                 max_candidates: int = 10000, q: str = "", platforms: Iterable[str] | None = None,
+                 market_type: MarketType = "all") -> dict:
     """Scan all confirmed asset groups, with explicit enumeration/output budgets.
 
     Both directions of every cross-venue spot/perpetual/pool/RFQ pair are eligible.
@@ -238,6 +240,8 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
         raise ValueError("max_candidates must be between 1 and 100000")
     if sort not in {"spread", "funding", "asset"}:
         raise ValueError("sort must be spread, funding or asset")
+    if market_type not in {"all", "spot", "perpetual", "spot_perp"}:
+        raise ValueError("market_type must be all, spot, perpetual or spot_perp")
     if not isinstance(q, str) or len(q) > 300:
         raise ValueError("q must be a string of at most 300 characters")
     if (not isinstance(as_of, int) or isinstance(as_of, bool) or as_of < 0
@@ -248,6 +252,8 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
     active_catalog = [item for item in catalog if item.active]
     selected_platforms = {name.strip().lower() for name in platforms or [] if name.strip()}
     active = [item for item in active_catalog if not selected_platforms or item.venue.lower() in selected_platforms]
+    if market_type in {"spot", "perpetual"}:
+        active = [item for item in active if (item.kind == "perpetual") == (market_type == "perpetual")]
     by_id = {item.id: item for item in active}
     identity_rows = [row for row in identity_candidates(active) if row["kind"] == "identity"]
     query = q.strip().casefold()
@@ -280,6 +286,11 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
             venues[by_id[instrument_id].venue].append(by_id[instrument_id])
         count = sum(len(members) for members in venues.values())
         directions = count * count - sum(len(members) ** 2 for members in venues.values())
+        if market_type == "spot_perp":
+            perpetual = sum(item.kind == "perpetual" for members in venues.values() for item in members)
+            directions = 2 * (perpetual * (count - perpetual) - sum(
+                sum(item.kind == "perpetual" for item in members)
+                * sum(item.kind != "perpetual" for item in members) for members in venues.values()))
         possible += directions
         possible_by_group[row["id"]] = directions
         groups.append((row, venues))
@@ -288,10 +299,17 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
     for row, venues in groups:
         if len(venues) < 2:
             continue
+        spot_legs = {venue: [item for item in members if item.kind != "perpetual"]
+                     for venue, members in venues.items()}
+        perpetual_legs = {venue: [item for item in members if item.kind == "perpetual"]
+                          for venue, members in venues.items()}
         for buy_venue, sell_venue in product(sorted(venues), repeat=2):
             if buy_venue == sell_venue:
                 continue
-            for buy, sell in product(venues[buy_venue], venues[sell_venue]):
+            pairs = (product(venues[buy_venue], venues[sell_venue]),) if market_type != "spot_perp" else (
+                product(spot_legs[buy_venue], perpetual_legs[sell_venue]),
+                product(perpetual_legs[buy_venue], spot_legs[sell_venue]))
+            for buy, sell in (pair for pair_set in pairs for pair in pair_set):
                 candidate = _candidate(buy, sell, latest, as_of, stale_seconds, row["symbols"], details)
                 candidate["identity_group_id"] = row["id"]
                 candidates.append(candidate)
@@ -357,7 +375,7 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
     returned = min(limit, scanned)
     return {"as_of": as_of, "candidates": candidates[:limit], "groups": summaries[:limit],
             "available_platforms": sorted({item.venue for item in active_catalog}),
-            "filters": {"q": q, "platforms": sorted(selected_platforms)}, "stats": {
+            "filters": {"q": q, "platforms": sorted(selected_platforms), "market_type": market_type}, "stats": {
         "catalog_markets": len(catalog), "active_markets": len(active),
         "excluded_by_filters": len(active_catalog) - len(active),
         "identity_groups": len(identity_rows), "eligible_groups": len(eligible), "blocked_groups": len(blocked),
@@ -378,14 +396,16 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
 @router.get("")
 def scan_api(request: Request, limit: int = Query(100, ge=1, le=1000),
              sort: Sort = "spread", max_candidates: int = Query(10000, ge=1, le=MAX_CANDIDATES),
-             q: str = Query("", max_length=300), platforms: str = Query("", max_length=2000)):
+             q: str = Query("", max_length=300), platforms: str = Query("", max_length=2000),
+             market_type: MarketType = "all"):
     collector = request.app.state.collector
     settings = request.app.state.store.settings()
     catalog = list(collector.instruments.values())
     enabled = settings.computation_enabled and not settings.demo_mode
     instruments = [item for item in catalog if item.venue in settings.enabled_venues] if enabled else []
     result = scan_markets(instruments, dict(collector.snapshots), now_ms(), settings.stale_seconds,
-                          limit, sort=sort, max_candidates=max_candidates, q=q, platforms=platforms.split(","))
+                          limit, sort=sort, max_candidates=max_candidates, q=q, platforms=platforms.split(","),
+                          market_type=market_type)
     result.update(enabled=enabled, mode="indicative_public_market_scan")
     result["stats"].update(collector_catalog_markets=len(catalog),
                            excluded_by_settings=len(catalog) - len(instruments))

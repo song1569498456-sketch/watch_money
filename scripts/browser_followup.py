@@ -93,16 +93,22 @@ def main():
                         errors = []
                         page.on("pageerror", lambda error: errors.append(str(error)))
                         page.goto(base)
+                        expect(page.get_by_role("button", name="价差", exact=True)).to_have_attribute("aria-current", "page")
+                        expect(page.get_by_role("heading", name="全市场资产机会", exact=False)).to_be_visible()
                         page.evaluate("""() => {
                             const label = document.createElement('div');
                             label.textContent = '浏览器合成验收样本 · 非真实行情';
                             label.style.cssText = 'position:fixed;top:6px;right:12px;z-index:9999;background:#503b11;color:#ffe49b;padding:8px;border-radius:5px;font:12px sans-serif';
                             document.body.append(label);
                         }""")
+                        page.get_by_role("button", name="设置", exact=True).click()
+                        page.get_by_text("资产身份与映射管理", exact=True).click()
                         expect(page.get_by_role("heading", name="资产身份候选", exact=False)).to_be_visible()
                         page.get_by_label("搜索身份候选").fill("PEPE")
                         expect(page.get_by_role("cell").filter(has_text="同 ticker 多身份").first).to_be_visible()
                         expect(page.get_by_text("同名市场属于不同资产身份", exact=False).first).to_be_visible()
+                        page.get_by_role("button", name="市场监控", exact=True).click()
+                        page.get_by_role("button", name="全部市场", exact=True).click()
                         page.get_by_label("搜索资产或市场").fill("PEPE")
                         expect(page.get_by_text("映射待核验", exact=True).first).to_be_visible()
                         expect(page.get_by_text("参考范围 · 已纳入", exact=False).first).to_be_visible()
@@ -158,7 +164,8 @@ def main():
 
                         page.on("request", requested)
                         page.route("**/api/orderbook/**", depth)
-                        page.get_by_role("button", name="收益计算", exact=True).click()
+                        page.get_by_role("button", name="返回发现页面", exact=True).click()
+                        page.get_by_role("button", name="手动测算", exact=True).click()
                         page.get_by_label("策略", exact=False).select_option("spot_perp_basis")
                         page.get_by_label("买入 / 做多市场", exact=False).select_option("browser-fixture:okx:PEPE")
                         page.get_by_label("卖出 / 做空市场", exact=False).select_option("browser-fixture:bybit:PEPE")
@@ -168,6 +175,7 @@ def main():
                         assert len(calculation_requests) == 1
                         assert abs(calculation_requests[0]["size_base"] - 200) < 1e-10
                         assert calculation_requests[0]["size_base"] != 300  # best-ask division would overstate size
+                        page.locator("summary").filter(has_text="高级假设").click()
                         page.get_by_label("退出情景", exact=False).select_option("prices")
                         page.get_by_label("多腿退出卖价 /", exact=False).fill("0.00003")
                         page.get_by_label("空腿退出买价 /", exact=False).fill("0.00004")
@@ -202,7 +210,8 @@ def main():
                         assert len(calculation_requests) == 3
                         checks.append("notional calculation posts base size from multi-level asks only; insufficient, future or missing buy depth blocks calculation without price fallback")
 
-                        page.get_by_role("button", name="配置", exact=True).click()
+                        page.get_by_role("button", name="设置", exact=True).click()
+                        page.get_by_text("高级诊断 · 原生池状态", exact=True).click()
                         expect(page.get_by_role("button", name="读取池状态", exact=True)).to_be_disabled()
                         checks.append("native pool state action disabled without saved chain RPC")
                         queries = page.get_by_label("DEX 搜索词 JSON")
@@ -250,13 +259,13 @@ def main():
                         assert requests[0]["block"] == "latest" and requests[0]["chain"] == "bsc"
                         checks.append("browser-mocked native estimate preserves decimal string and shows non-executable JSON; no RPC request")
 
-                        page.get_by_role("button", name="全市场扫描", exact=True).click()
+                        page.get_by_role("button", name="市场监控", exact=True).click()
                         expect(page.get_by_role("heading", name="全市场资产机会", exact=False)).to_be_visible()
-                        expect(page.get_by_text("PEPE", exact=True).first).to_be_visible()
-                        page.locator("details").filter(has=page.locator("summary strong").filter(has_text="PEPE")).first.locator("summary").first.click()
+                        expect(page.get_by_role("button", name="展开 PEPE 跨平台组合", exact=True).first).to_be_visible()
+                        page.get_by_role("button", name="展开 PEPE 跨平台组合", exact=True).first.click()
                         expect(page.get_by_role("cell").filter(has_text="+9.0000%").first).to_be_visible()
                         expect(page.get_by_text("差额 0.0000009 USDT", exact=True).first).to_be_visible()
-                        expect(page.get_by_text("净收益与可成交规模尚未计算", exact=False)).to_be_visible()
+                        expect(page.get_by_text("毛价差未扣费用，不代表可锁定收益", exact=False)).to_be_visible()
                         scan = api.get("/api/scanner").json()
                         assert scan["stats"]["blocked_groups"] == 1
                         assert scan["candidates"] and all(row["net_profit"] is None and not row["executable"]
@@ -264,17 +273,17 @@ def main():
                         with page.expect_response(lambda response: "/api/scanner?sort=funding" in response.url) as sorted_scan:
                             page.get_by_label("扫描排序").select_option("funding")
                         assert sorted_scan.value.ok
-                        page.get_by_role("checkbox", name="每 30 秒刷新", exact=True).check()
-                        page.get_by_role("checkbox", name="每 30 秒刷新", exact=True).uncheck()
-                        direction = page.locator("tr").filter(has_text="browser-fixture:okx:PEPE").filter(
+                        page.get_by_role("checkbox", name="30 秒刷新", exact=True).check()
+                        page.get_by_role("checkbox", name="30 秒刷新", exact=True).uncheck()
+                        direction = page.locator(".scanner-directions tbody tr").filter(has_text="browser-fixture:okx:PEPE").filter(
                             has_text="browser-fixture:bybit:PEPE").filter(has_text="+9.0000%").first
-                        direction.get_by_role("button", name="按规模计算", exact=True).click()
+                        direction.get_by_role("button", name="测算此组合", exact=True).click()
                         expect(page.get_by_label("买入 / 做多市场", exact=False)).to_have_value("browser-fixture:okx:PEPE")
                         expect(page.get_by_label("卖出 / 做空市场", exact=False)).to_have_value("browser-fixture:bybit:PEPE")
                         expect(page.get_by_label("策略", exact=False)).to_have_value("spot_perp_basis")
                         assert len(calculation_requests) == 3
                         checks.append("expanded asset group hands off exact buy/sell instruments and strategy without submitting a calculation")
-                        page.get_by_role("button", name="全市场扫描", exact=True).click()
+                        page.get_by_role("button", name="返回发现页面", exact=True).click()
                         checks.append("whole-catalog synthetic PEPE scan exposes direction/spread, blocked identity count and net=null; sorting/optional refresh controls work")
                         truncated = {**scan, "stats": {**scan["stats"], "possible_candidates": 10001,
                                                        "scanned": 10000, "truncated": True,
@@ -282,23 +291,24 @@ def main():
                         page.route("**/api/scanner?**", lambda route: route.fulfill(
                             status=200, content_type="application/json", body=json.dumps(truncated)))
                         page.get_by_role("button", name="刷新扫描", exact=True).click()
-                        expect(page.get_by_text("最佳仅指已扫描范围，不代表全市场最优", exact=False)).to_be_visible()
+                        expect(page.get_by_text("最佳只限已扫描范围", exact=False)).to_be_visible()
                         page.unroute("**/api/scanner?**")
                         page.get_by_role("button", name="刷新扫描", exact=True).click()
-                        expect(page.get_by_text("最佳仅指已扫描范围，不代表全市场最优", exact=False)).to_have_count(0)
+                        expect(page.get_by_text("最佳只限已扫描范围", exact=False)).to_have_count(0)
                         checks.append("browser-mocked enumeration truncation visibly limits ranking claims, then restores actual fixture scan")
                         page.screenshot(path=str(screenshots / "followup.png"), full_page=True)
-                        page.get_by_role("button", name="资金费率", exact=True).click()
+                        page.get_by_role("button", name="资金费", exact=True).click()
                         expect(page.get_by_role("heading", name="全市场资金费率", exact=False)).to_be_visible()
-                        expect(page.locator("tbody tr").first).to_contain_text("PEPE · bybit")
-                        with page.expect_response(lambda response: "/api/funding?" in response.url and "rate_basis=raw" in response.url):
-                            page.get_by_label("费率排序口径").select_option("raw")
-                        expect(page.locator("tbody tr").first).to_contain_text("PEPE · okx")
                         page.get_by_role("button", name="同资产跨平台矩阵", exact=True).click()
                         expect(page.get_by_role("columnheader", name="bybit", exact=True)).to_be_visible()
                         expect(page.get_by_role("columnheader", name="okx", exact=True)).to_be_visible()
                         expect(page.get_by_text("原始 +0.0020% / 8 小时", exact=True)).to_be_visible()
                         page.get_by_role("button", name="费率排行榜", exact=True).click()
+                        page.get_by_label("排行平台", exact=True).select_option("okx")
+                        with page.expect_response(lambda response: "/api/funding?" in response.url and "rate_basis=raw" in response.url):
+                            page.get_by_label("费率排序口径").select_option("raw")
+                        expect(page.locator("tbody tr:visible").first).to_contain_text("PEPE")
+                        expect(page.locator("tbody tr:visible").first).to_contain_text("okx")
                         settled_requests = []
 
                         def settled_history(route):
@@ -312,15 +322,16 @@ def main():
                             }))
 
                         page.route("**/api/funding/history/**", settled_history)
+                        page.get_by_role("button", name="查看详情", exact=True).first.click()
                         page.get_by_role("button", name="获取已结算历史", exact=True).first.click()
                         expect(page.get_by_role("heading", name="已结算公共历史", exact=False)).to_be_visible()
                         expect(page.get_by_text("常规结算", exact=True)).to_be_visible()
                         expect(page.get_by_text("不使用当前周期回填历史", exact=True)).to_be_visible()
                         assert len(settled_requests) == 1 and "refresh=true" in settled_requests[0]
                         page.screenshot(path=str(screenshots / "funding-followup.png"), full_page=True)
-                        checks.append("real fixture funding ranking switches raw/8h order, verified cross-venue matrix renders, and browser-mocked settled history stays distinct from local snapshots")
+                        checks.append("synthetic cross-venue funding matrix and single-platform raw ranking render; detail-only mocked settled history stays distinct from local snapshots")
                         page.set_viewport_size({"width": 390, "height": 844})
-                        page.get_by_role("button", name="全市场扫描", exact=True).click()
+                        page.get_by_role("button", name="价差", exact=True).click()
                         assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
                         assert not errors, errors
                         checks.append("scanner mobile document has no horizontal overflow; zero browser JavaScript errors")

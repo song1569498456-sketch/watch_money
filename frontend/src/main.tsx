@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -68,33 +68,23 @@ import { FundingPage } from "./FundingPage";
 import { FeeProfiles, FeeCostFields, useTradeFees } from "./FeeProfiles";
 import "./style.css";
 
-type Page =
-  | "markets"
-  | "opportunities"
-  | "scanner"
-  | "funding"
-  | "status"
-  | "notifications"
-  | "settings"
-  | "detail";
+type Page = "markets" | "opportunities" | "monitoring" | "scanner" | "funding" | "status" | "notifications" | "settings" | "detail";
 const titles: Record<Page, [string, string]> = {
-  markets: ["市场总览", "跨平台观察价格、资金费率与市场流动性"],
-  detail: ["资产详情", "核对市场身份、原始费率与数据来源"],
-  opportunities: ["收益计算", "以当前行情计算执行成本与持有情景"],
-  funding: ["资金费率", "全目录原始费率、周期与跨平台比较"],
-  scanner: ["全市场扫描", "从已发现市场筛选指示价差与资金费差候选"],
-  status: ["平台与数据源", "连接诊断、真实覆盖范围和接入条件"],
-  notifications: ["通知中心", "管理机会与系统提醒，追踪每次发送"],
-  settings: ["工作台配置", "控制采集节奏、关注范围与历史保存"],
+  markets: ["市场监控", "全部市场 · 查看已发现交易对与数据状态"],
+  scanner: ["市场监控", "发现价差，核对组合，再决定是否持续关注"],
+  funding: ["市场监控", "比较跨平台资金费率与实际结算周期"],
+  detail: ["资产详情", "核对市场身份、报价与数据来源"],
+  opportunities: ["组合测算", "辅助模拟 · 数据或费用未知时不估作零"],
+  monitoring: ["我的监控", "查看已保存组合的持续监控状态"],
+  status: ["数据源诊断", "连接状态、覆盖范围与接入条件"],
+  notifications: ["通知记录", "查看提醒记录、发送状态与通知规则"],
+  settings: ["设置", "管理采集、手续费、资产身份与高级诊断"],
 };
 const navigation: [Page, typeof Activity, string][] = [
-  ["markets", LayoutDashboard, "市场总览"],
-  ["scanner", Search, "全市场扫描"],
-  ["funding", Activity, "资金费率"],
-  ["opportunities", Calculator, "收益计算"],
-  ["notifications", Bell, "通知中心"],
-  ["status", Radio, "平台状态"],
-  ["settings", SettingsIcon, "配置"],
+  ["scanner", LayoutDashboard, "市场监控"],
+  ["monitoring", Activity, "我的监控"],
+  ["notifications", Bell, "通知记录"],
+  ["settings", SettingsIcon, "设置"],
 ];
 function Badge({
   children,
@@ -200,7 +190,20 @@ function Countdown({ at, now }: { at?: number | null; now: number }) {
   );
 }
 function App() {
-  const [page, setPage] = useState<Page>("markets");
+  const [page, setPage] = useState<Page>("scanner");
+  const [visited, setVisited] = useState<Set<Page>>(new Set(["scanner"]));
+  const positions = useRef<Partial<Record<Page, number>>>({});
+  const returnPage = useRef<Page>("scanner");
+  const navigate = useCallback((next: Page) => {
+    positions.current[page] = window.scrollY;
+    if (next === "detail" || next === "opportunities") returnPage.current = page;
+    setVisited((previous) => previous.has(next) ? previous : new Set([...previous, next]));
+    setPage(next);
+  }, [page]);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => window.scrollTo(0, positions.current[page] ?? 0));
+    return () => cancelAnimationFrame(frame);
+  }, [page]);
   const [markets, setMarkets] = useState<MarketData>({
     instruments: [],
     snapshots: [],
@@ -216,6 +219,9 @@ function App() {
   const [now, setNow] = useState(Date.now());
   const [selectedAsset, setSelectedAsset] = useState("");
   const [scanSelection, setScanSelection] = useState<{buy_instrument_id: string; sell_instrument_id: string; strategy: string} | null>(null);
+  const selectCandidate = useCallback((candidate: {buy_instrument_id: string; sell_instrument_id: string; strategy: string}) => {
+    setScanSelection(candidate); navigate("opportunities");
+  }, [navigate]);
   const [toast, setToast] = useState("");
   const latest = useRef<MarketData | null>(null);
   const refresh = useRef(1000);
@@ -364,7 +370,7 @@ function App() {
   };
   const openAsset = (id: string) => {
     setSelectedAsset(id);
-    setPage("detail");
+    navigate("detail");
   };
   const fresh = markets.snapshots.filter(
     (s) =>
@@ -380,7 +386,7 @@ function App() {
           href="#"
           onClick={(e) => {
             e.preventDefault();
-            setPage("markets");
+            navigate("scanner");
           }}
         >
           <span className="brand-mark">
@@ -398,11 +404,11 @@ function App() {
             <button
               key={id}
               className={
-                page === id || (page === "detail" && id === "markets")
+                page === id || (id === "scanner" && ["markets", "funding", "detail", "opportunities"].includes(page)) || (id === "settings" && page === "status")
                   ? "nav-item active"
                   : "nav-item"
               }
-              onClick={() => setPage(id)}
+              onClick={() => navigate(id)}
             >
               <Icon size={19} />
               <span>{label}</span>
@@ -492,14 +498,21 @@ function App() {
               演示模式已显式开启。标记为「演示」的数据不可用于实际决策。
               <button
                 className="text-button"
-                onClick={() => setPage("settings")}
+                onClick={() => navigate("settings")}
               >
                 管理配置
               </button>
             </Notice>
           )}
-          {page === "markets" && (
-            <>
+          {["scanner", "funding", "markets"].includes(page) && <div className="market-navigation">
+            <nav aria-label="市场监控分类" className="market-tabs">
+              {([["scanner", "价差"], ["funding", "资金费"], ["markets", "全部市场"]] as [Page, string][]).map(([id, label]) =>
+                <button key={id} className={`button secondary ${page === id ? "selected" : ""}`} aria-current={page === id ? "page" : undefined} onClick={() => navigate(id)}>{label}</button>)}
+            </nav>
+            <button className="text-button" onClick={() => {setScanSelection(null); navigate("opportunities");}}><Calculator size={14} />手动测算</button>
+          </div>}
+          {(page === "opportunities" || page === "detail") && <div className="journey-actions"><button className="button secondary" onClick={() => navigate(returnPage.current)}><ArrowLeft size={14} />返回发现页面</button><button className="text-button" onClick={() => navigate("monitoring")}>查看我的监控</button></div>}
+          {visited.has("markets") && <div hidden={page !== "markets"}>
               <div className="stats">
                 <Stat
                   label="观察资产"
@@ -529,7 +542,6 @@ function App() {
                   detail="收藏市场跨会话保留"
                 />
               </div>
-              <IdentityCandidates refreshKey={identityVersion} />
               <Markets
                 instruments={markets.instruments}
                 snapshots={snapshots}
@@ -540,8 +552,7 @@ function App() {
                 now={now}
                 staleSeconds={settings?.stale_seconds ?? 60}
               />
-            </>
-          )}
+          </div>}
           {page === "detail" && (
             <Detail
               assetId={selectedAsset}
@@ -549,18 +560,17 @@ function App() {
               snapshots={snapshots}
               now={now}
               staleSeconds={settings?.stale_seconds ?? 60}
-              back={() => setPage("markets")}
+              back={() => navigate(returnPage.current)}
               favorites={favorites}
               toggleFavorite={toggleFavorite}
             />
           )}
-          {page === "scanner" && <ScannerPage instruments={markets.instruments} onSelectCandidate={(candidate) => {setScanSelection(candidate); setPage("opportunities");}} />}
-          {page === "funding" && <FundingPage />}
-          {page === "status" && (
-            <Status statuses={statuses} coverage={coverage} now={now} />
-          )}
+          <div hidden={page !== "scanner"}><ScannerPage active={page === "scanner"} instruments={markets.instruments} favorites={favorites} toggleFavorite={toggleFavorite} onOpenAsset={openAsset} onSelectCandidate={selectCandidate} /></div>
+          {visited.has("funding") && <div hidden={page !== "funding"}><FundingPage active={page === "funding"} onSelectCandidate={selectCandidate} /></div>}
+          {page === "status" && <><button className="button secondary" onClick={() => navigate("settings")}><ArrowLeft size={14} />返回设置</button><Status statuses={statuses} coverage={coverage} now={now} /></>}
           {page === "settings" && (
             <>
+              <button className="button secondary" onClick={() => navigate("status")}><Radio size={15} />数据源诊断与覆盖</button>
               <SettingsPage
                 settings={settings}
                 coverage={coverage}
@@ -569,7 +579,8 @@ function App() {
                   setToast("配置已保存");
                 }}
               />
-              <NativePoolPanel settings={settings} />
+              <details className="panel settings-advanced"><summary>高级诊断 · 原生池状态</summary><NativePoolPanel settings={settings} /></details>
+              <details className="panel settings-advanced"><summary>资产身份与映射管理</summary>
               <IdentityCandidates refreshKey={identityVersion} />
               <AssetMappings
                 instruments={markets.instruments}
@@ -579,6 +590,7 @@ function App() {
                   setToast("资产映射已更新，审计记录已保存");
                 }}
               />
+              </details>
             </>
           )}
           {page === "opportunities" && (
@@ -589,6 +601,7 @@ function App() {
               toast={setToast}
             />
           )}
+          {page === "monitoring" && <Opportunities mode="monitoring" instruments={markets.instruments} snapshots={snapshots} toast={setToast} />}
           {page === "notifications" && <Notifications toast={setToast} />}
           <footer>
             <span>
@@ -1178,7 +1191,7 @@ function Detail({
     return (
       <>
         <button className="text-button" onClick={back}>
-          <ArrowLeft size={16} /> 返回总览
+          <ArrowLeft size={16} /> 返回市场列表
         </button>
         <Empty
           title="尚未选择资产"
@@ -1189,7 +1202,7 @@ function Detail({
   return (
     <>
       <button className="text-button back" onClick={back}>
-        <ArrowLeft size={16} /> 返回市场总览
+        <ArrowLeft size={16} /> 返回市场列表
       </button>
       <div className="detail-heading">
         <span className="coin large">{items[0].base.slice(0, 2)}</span>
@@ -2114,11 +2127,13 @@ function Opportunities({
   instruments,
   snapshots,
   toast,
+  mode = "calculator",
 }: {
   initial?: {buy_instrument_id: string; sell_instrument_id: string; strategy: string} | null;
   instruments: Instrument[];
   snapshots: Map<string, Snapshot>;
   toast: (t: string) => void;
+  mode?: "calculator" | "monitoring";
 }) {
   const [strategy, setStrategy] = useState(initial?.strategy ?? "spot_spread");
   const [buy, setBuy] = useState(initial?.buy_instrument_id ?? "");
@@ -2152,9 +2167,46 @@ function Opportunities({
   const [sizingNote, setSizingNote] = useState("");
   const [delay, setDelay] = useState("0");
   const [asOf, setAsOf] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const buyI = instruments.find((i) => i.id === buy),
     sellI = instruments.find((i) => i.id === sell);
   const tradeFees = useTradeFees(buyI, sellI);
+  const heldStrategy = !["spot_spread", "cex_dex_spot", "dex_pool_spread"].includes(strategy);
+  const missingInputs: string[] = [];
+  if (!buyI || !sellI) missingInputs.push("选择买卖市场");
+  else if (buy === sell) missingInputs.push("买卖两腿需选择不同市场");
+  if (sizeMode === "base" && (!sizeBase.trim() || !Number.isFinite(Number(sizeBase)) || Number(sizeBase) <= 0))
+    missingInputs.push("填写正数基础数量");
+  if (sizeMode === "notional" && (!notional.trim() || !Number.isFinite(Number(notional)) || Number(notional) <= 0))
+    missingInputs.push("填写正数计算金额");
+  if (heldStrategy && hold === "custom" && (!customHold.trim() || !Number.isFinite(Number(customHold)) || Number(customHold) <= 0 || Number(customHold) > 8760))
+    missingInputs.push("持有时间需大于 0 且不超过 8760 小时");
+  const unknownFees = (heldStrategy ? [0, 1, 2, 3] : [0, 2])
+    .filter((index) => !tradeFees.currentLeg(index).value.trim()).length;
+  if (unknownFees) missingInputs.push(`${unknownFees} 笔成交费率待配置`);
+  if ((heldStrategy ? [0, 1, 2, 3] : [0, 2]).some((index) => {
+    const value = tradeFees.currentLeg(index).value;
+    return value.trim() && (!Number.isFinite(Number(value)) || Number(value) < -10 || Number(value) > 100);
+  })) missingInputs.push("成交费率需在 -10% 至 100% 范围内");
+  if (!extras.trim()) missingInputs.push("附加执行成本待确认（无额外成本可填 0）");
+  else if (!Number.isFinite(Number(extras)) || Number(extras) < 0) missingInputs.push("附加执行成本需为非负数");
+  if (heldStrategy && sellI?.kind === "spot" && !tradeFees.holdingValue(1).trim())
+    missingInputs.push("卖方现货借贷成本待配置");
+  if (heldStrategy && exitMode === "unknown") missingInputs.push("退出情景待设置");
+  if (heldStrategy && exitMode === "prices" && ![longExitPrice, shortExitPrice].every((value) =>
+    value.trim() && Number.isFinite(Number(value)) && Number(value) > 0)) missingInputs.push("填写两腿正数退出价格");
+  if (heldStrategy && exitMode === "basis" && (!exitBasis.trim() || !Number.isFinite(Number(exitBasis))))
+    missingInputs.push("填写有效的退出基差");
+  for (const side of [0, 1]) {
+    const value = tradeFees.holdingValue(side);
+    if (!value.trim()) continue;
+    if (!Number.isFinite(Number(value)) || Number(value) < 0) missingInputs.push(`${side ? "卖方" : "买方"}持仓成本需为非负数`);
+    else if (!heldStrategy && Number(value) > 0) missingInputs.push("非零持仓成本需选择持有策略");
+  }
+  if (buyI && sellI && buyI.quote !== sellI.quote && (!fxRate.trim() || !Number.isFinite(Number(fxRate)) ||
+      Number(fxRate) <= 0 || !fxSource.trim() || !fxAt || !Number.isFinite(new Date(fxAt).getTime())))
+    missingInputs.push("报价币不同，需填写有来源的汇率");
+  if (!bookMode) missingInputs.push("未启用订单簿深度获取");
   const buyS = snapshots.get(buy);
   const estimate = buyS?.ask != null && Number.isFinite(buyS.ask) && buyS.ask > 0 ? buyS.ask : null;
   const indicativeQuantity = estimate ? Number(notional) / estimate : null;
@@ -2166,8 +2218,8 @@ function Opportunities({
       })
       .catch((e) => setSavedError(e.message));
   useEffect(() => {
-    void loadSaved();
-  }, []);
+    if (mode === "calculator") void loadSaved();
+  }, [mode]);
   const calculate = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -2177,15 +2229,17 @@ function Opportunities({
     try {
       if (!buyI || !sellI) throw new Error("请选择买入与卖出市场");
       if (buy === sell) throw new Error("买卖两腿必须选择不同市场");
-      if (exitMode === "prices" && (![longExitPrice, shortExitPrice].every(v => v.trim() && Number.isFinite(Number(v)) && Number(v) > 0)))
+      if (heldStrategy && exitMode === "prices" && (![longExitPrice, shortExitPrice].every(v => v.trim() && Number.isFinite(Number(v)) && Number(v) > 0)))
         throw new Error("请填写两腿正数退出价格；它们是模拟假设，不是已锁定报价");
-      if (exitMode === "basis" && (!exitBasis.trim() || !Number.isFinite(Number(exitBasis))))
+      if (heldStrategy && exitMode === "basis" && (!exitBasis.trim() || !Number.isFinite(Number(exitBasis))))
         throw new Error("请填写有效的退出基差假设");
       let quantity = Number(sizeBase);
       if (sizeMode === "base" && (!Number.isFinite(quantity) || quantity <= 0))
         throw new Error("请输入有效的基础资产数量");
       if (sizeMode === "notional" && (!Number.isFinite(Number(notional)) || Number(notional) <= 0))
         throw new Error("请输入有效的买方报价币名义金额");
+      if (heldStrategy && (!Number.isFinite(Number(hold === "custom" ? customHold : hold)) || Number(hold === "custom" ? customHold : hold) <= 0 || Number(hold === "custom" ? customHold : hold) > 8760))
+        throw new Error("持有时间需大于 0 且不超过 8760 小时");
       if (sizeMode === "notional" && !bookMode)
         throw new Error("按金额核算需要启用订单簿深度获取；也可改用基础资产数量模式");
       const books: Book[] = [];
@@ -2245,7 +2299,7 @@ function Opportunities({
             at: calculationAt,
           },
         ],
-        hold_hours: Number(hold === "custom" ? customHold : hold),
+        hold_hours: heldStrategy ? Number(hold === "custom" ? customHold : hold) : 24,
         assume_exit_at_entry: exitMode === "entry",
         exit_prices: exitMode === "prices" ? {[buy]: Number(longExitPrice), [sell]: Number(shortExitPrice)} : {},
         exit_basis_quote: exitMode === "basis" ? Number(exitBasis) : null,
@@ -2336,18 +2390,19 @@ function Opportunities({
       {i.base} · {i.venue} · {kindName[i.kind]} · {i.quote} · {i.native_symbol}
     </option>
   );
+  if (mode === "monitoring") return <Monitors version={monitorVersion} toast={toast} />;
   return (
     <>
       <Notice>
-        计算使用当前来源快照与明确成本。不同报价币不默认等价；数据、费用或成交深度缺失时会显示计算前置条件。不会执行交易。
+        选择组合与规模，按当前盘口和费用辅助测算。缺失项目会保留为未知。
       </Notice>
       {sizingNote && <Notice>{sizingNote}</Notice>}
       <form onSubmit={(e) => void calculate(e)}>
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>配置收益情景</h2>
-              <p>输入规模可自由调整，不依赖账户余额</p>
+              <h2>辅助测算</h2>
+              <p>组合、金额与持有时间</p>
             </div>
             <Calculator size={19} />
           </div>
@@ -2410,7 +2465,7 @@ function Opportunities({
                 <input
                   required
                   type="number"
-                  min="0.00000001"
+                  min="0"
                   step="any"
                   value={notional}
                   onChange={(e) => setNotional(e.target.value)}
@@ -2421,35 +2476,26 @@ function Opportunities({
                 <input
                   required
                   type="number"
-                  min="0.00000001"
+                  min="0"
                   step="any"
                   value={sizeBase}
                   onChange={(e) => setSizeBase(e.target.value)}
                 />
               </Field>
             )}
-            <Field
-              label="批量比较的基础数量（可选）"
-              hint="以逗号分隔，按同一成本配置分别计算"
-            >
-              <input
-                value={batchSizes}
-                onChange={(e) => setBatchSizes(e.target.value)}
-                placeholder="例如 0.1, 0.5, 1"
-              />
-            </Field>
-            <Field label="持有时间 / 小时">
-              <select value={hold} onChange={(e) => setHold(e.target.value)}>
+            <Field label="持有时间 / 小时" hint={heldStrategy ? "按此期限累计资金费和持有成本" : "即时现货比较无需持有时间"}>
+              <select value={hold} disabled={!heldStrategy} onChange={(e) => setHold(e.target.value)}>
                 <option value="8">8 小时</option>
                 <option value="24">24 小时</option>
                 <option value="72">72 小时</option>
                 <option value="custom">自定义</option>
               </select>
-              {hold === "custom" && (
+              {heldStrategy && hold === "custom" && (
                 <input
                   required
                   type="number"
-                  min="0.01"
+                  min="0"
+                  max="8760"
                   step="any"
                   value={customHold}
                   onChange={(e) => setCustomHold(e.target.value)}
@@ -2457,7 +2503,34 @@ function Opportunities({
               )}
             </Field>
           </div>
-          {buyI && sellI && buyI.quote !== sellI.quote && (
+          <div className="cost-details">
+            <div className="panel-heading">
+              <div><h2>费用与完整性</h2><p>按所选市场加载适用费率；空白为未知，手填值保留为用户假设</p></div>
+            </div>
+            <FeeCostFields fees={tradeFees} />
+            <div className="form-grid">
+              <Field label={`Gas / 转账 / 其他成本 / ${buyI?.quote ?? "报价币"}`} hint="无额外执行成本时，请明确填 0">
+                <input type="number" min="0" step="any" placeholder="待确认" value={extras}
+                  onChange={(e) => setExtras(e.target.value)} />
+              </Field>
+              <div className="field" aria-live="polite">
+                <span>输入完整度</span>
+                {missingInputs.length ? <>
+                  <strong>{missingInputs.length} 项待补充</strong>
+                  <small>{missingInputs.join("；")}</small>
+                  {heldStrategy && exitMode === "unknown" && <button type="button" className="button secondary"
+                    onClick={() => setAdvancedOpen(true)}>设置退出情景</button>}
+                </> : <>
+                  <strong>基本输入已填写</strong>
+                  <small>提交后核对身份、深度、来源时间与成本完整性。</small>
+                </>}
+              </div>
+            </div>
+          </div>
+          <details className="cost-details" open={advancedOpen}
+            onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
+            <summary>高级假设 <span>退出情景、汇率、批量规模与执行口径</span></summary>
+            {buyI && sellI && buyI.quote !== sellI.quote && (
             <div className="form-grid three">
               <Field label={`汇率 / 1 ${sellI.quote} = ? ${buyI.quote}`}>
                 <input
@@ -2484,13 +2557,11 @@ function Opportunities({
                 />
               </Field>
             </div>
-          )}
-          <details className="cost-details" open>
-            <summary>
-              费用与执行假设 <span>空白 = 待配置；输入 0 表示明确假设为零</span>
-            </summary>
-            <FeeCostFields fees={tradeFees} />
-            <div className="form-grid four">
+            )}
+            <div className="form-grid">
+              <Field label="批量比较的基础数量（可选）" hint="以逗号分隔，按同一成本配置分别计算">
+                <input value={batchSizes} onChange={(e) => setBatchSizes(e.target.value)} placeholder="例如 0.1, 0.5, 1" />
+              </Field>
               <Field label="资金费名义价值假设">
                 <select
                   value={fundingBasis}
@@ -2499,18 +2570,6 @@ function Opportunities({
                   <option value="mark">以当前标记价估算</option>
                   <option value="entry_vwap">显式假设使用入场均价</option>
                 </select>
-              </Field>
-              <Field
-                label={`Gas / 转账 / 其他成本 / ${buyI?.quote ?? "报价币"}`}
-              >
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  placeholder="待配置"
-                  value={extras}
-                  onChange={(e) => setExtras(e.target.value)}
-                />
               </Field>
             </div>
             <div className="inline-checks">
@@ -2720,8 +2779,9 @@ function Opportunities({
           )}
         </section>
       )}
-      <Monitors version={monitorVersion} toast={toast} />
-      <section className="panel">
+      <details className="cost-details">
+        <summary>历史样本与回放 <span>{saved.length} 个保存样本</span></summary>
+        <section className="panel">
         <div className="panel-heading">
           <div>
             <h2>历史样本与回放</h2>
@@ -2780,7 +2840,8 @@ function Opportunities({
             text="完成计算后保存输入，可重新计算并检查延迟影响。"
           />
         )}
-      </section>
+        </section>
+      </details>
     </>
   );
 }

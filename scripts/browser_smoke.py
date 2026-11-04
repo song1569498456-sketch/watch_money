@@ -50,18 +50,22 @@ with tempfile.TemporaryDirectory(prefix='watch-money-browser-') as data:
                     errors = []
                     page.on('pageerror', lambda e: errors.append(str(e)))
                     page.goto(base)
-                    expect(page.get_by_text('等待公开行情', exact=True)).to_be_visible()
+                    expect(page.get_by_role('button', name='价差', exact=True)).to_have_attribute('aria-current', 'page')
+                    expect(page.get_by_role('heading', name='全市场资产机会', exact=False)).to_be_visible()
+                    assert api.get('/api/markets').json()['snapshots'] == []
                     page.screenshot(path=str(screenshots / 'live-empty.png'), full_page=True)
                     checks.append('live default has explicit empty state, zero fabricated snapshots')
-                    for label in ('平台状态', '通知中心', '收益计算', '配置'):
+                    for label in ('我的监控', '通知记录', '设置'):
                         page.get_by_role('button', name=label, exact=True).click()
                         assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
-                        if label == '平台状态':
-                            page.screenshot(path=str(screenshots / 'coverage.png'), full_page=True)
+                    page.get_by_role('button', name='数据源诊断与覆盖', exact=True).click()
+                    page.screenshot(path=str(screenshots / 'coverage.png'), full_page=True)
+                    page.get_by_role('button', name='设置', exact=True).click()
                     page.get_by_role('switch', name='演示模式', exact=False).check()
                     page.get_by_role('button', name='保存配置', exact=True).click()
                     expect(page.get_by_text('演示模式已显式开启。', exact=False)).to_be_visible()
-                    page.get_by_role('button', name='市场总览', exact=False).first.click()
+                    page.get_by_role('button', name='市场监控', exact=True).click()
+                    page.get_by_role('button', name='全部市场', exact=True).click()
                     page.get_by_role('button', name='展开 BTC 市场').click()
                     with page.expect_response(lambda response: response.url.endswith('/api/favorites')
                                               and response.request.method == 'PUT') as favorite_saved:
@@ -76,7 +80,8 @@ with tempfile.TemporaryDirectory(prefix='watch-money-browser-') as data:
                     expect(page.get_by_text('原始资金费率', exact=True)).to_be_visible()
                     page.screenshot(path=str(screenshots / 'demo-detail.png'), full_page=True)
                     checks.append('explicit demo toggle, search, favorite persistence, spot/perp detail')
-                    page.get_by_role('button', name='收益计算', exact=True).click()
+                    page.get_by_role('button', name='返回发现页面', exact=True).click()
+                    page.get_by_role('button', name='手动测算', exact=True).click()
                     page.get_by_label('策略', exact=False).select_option('spot_perp_basis')
                     page.get_by_label('买入 / 做多市场', exact=False).select_option('demo-alpha:BTC:USDT:spot')
                     page.get_by_label('卖出 / 做空市场', exact=False).select_option('demo-beta:BTC:USDT:perpetual')
@@ -85,19 +90,27 @@ with tempfile.TemporaryDirectory(prefix='watch-money-browser-') as data:
                     page.get_by_role('button', name='计算收益情景', exact=True).click()
                     expect(page.get_by_role('heading', name='计算结果', exact=True)).to_be_visible()
                     page.get_by_label('保存样本名称').fill('Browser demo evidence')
-                    page.get_by_role('button', name='保存样本', exact=True).click()
-                    expect(page.get_by_text('Browser demo evidence', exact=True).first).to_be_visible()
+                    with page.expect_response(lambda response: response.url.endswith('/api/opportunities/saved')
+                                              and response.request.method == 'POST') as sample_saved:
+                        page.get_by_role('button', name='保存样本', exact=True).click()
+                    assert sample_saved.value.ok
                     saved = api.get('/api/opportunities/saved').json()['samples']
                     assert len(saved) == 1
                     assert saved[0]['result']['opportunities'][0]['net_profit'] is None
-                    page.get_by_role('button', name='持续监控此参数', exact=True).click()
-                    expect(page.get_by_role('button', name='删除持续监控 Browser demo evidence')).to_be_visible()
+                    with page.expect_response(lambda response: response.url.endswith('/api/monitors')
+                                              and response.request.method == 'POST') as monitor_saved:
+                        page.get_by_role('button', name='持续监控此参数', exact=True).click()
+                    assert monitor_saved.value.ok
                     assert len(api.get('/api/monitors').json()['monitors']) == 1
+                    page.locator('summary').filter(has_text='历史样本与回放').click()
                     page.get_by_role('button', name='回放样本', exact=True).click()
                     expect(page.get_by_text('已按保存样本回放', exact=True)).to_be_visible()
                     page.screenshot(path=str(screenshots / 'calculator.png'), full_page=True)
-                    checks.append('calculator missing executable inputs stays net=null; save, replay, monitor creation')
-                    page.get_by_role('button', name='通知中心', exact=True).click()
+                    page.get_by_role('button', name='我的监控', exact=True).click()
+                    expect(page.get_by_role('button', name='删除持续监控 Browser demo evidence')).to_be_visible()
+                    expect(page.get_by_role('heading', name='我的监控', exact=True)).to_be_visible()
+                    checks.append('calculator missing inputs stays net=null; save/replay and real local monitor creation is discoverable in independent My Monitors navigation')
+                    page.get_by_role('button', name='通知记录', exact=True).click()
                     page.get_by_role('button', name='发送测试', exact=True).click()
                     for _ in range(50):
                         history = api.get('/api/notifications/history').json()
@@ -111,7 +124,8 @@ with tempfile.TemporaryDirectory(prefix='watch-money-browser-') as data:
                     page.screenshot(path=str(screenshots / 'notifications.png'), full_page=True)
                     checks.append('local test message queued, persisted and sent; no external channels')
                     page.set_viewport_size({'width': 390, 'height': 844})
-                    page.get_by_role('button', name='市场总览', exact=False).first.click()
+                    page.get_by_role('button', name='市场监控', exact=True).click()
+                    page.get_by_role('button', name='全部市场', exact=True).click()
                     assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
                     page.screenshot(path=str(screenshots / 'mobile-demo.png'), full_page=True)
                     checks.append('390px mobile layout has no document horizontal overflow')

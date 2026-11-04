@@ -12,7 +12,7 @@
     "expanded asset group hands off exact buy/sell instruments and strategy without submitting a calculation",
     "whole-catalog synthetic PEPE scan exposes direction/spread, blocked identity count and net=null; sorting/optional refresh controls work",
     "browser-mocked enumeration truncation visibly limits ranking claims, then restores actual fixture scan",
-    "real fixture funding ranking switches raw/8h order, verified cross-venue matrix renders, and browser-mocked settled history stays distinct from local snapshots",
+    "synthetic cross-venue funding matrix and single-platform raw ranking render; detail-only mocked settled history stays distinct from local snapshots",
     "scanner mobile document has no horizontal overflow; zero browser JavaScript errors"
   ]
 }

@@ -142,7 +142,7 @@ def main():
                     page.route("**/api/opportunities/calculate", calculate_route)
                     page.route("**/api/orderbook/**", orderbook_route)
                     page.goto(base)
-                    page.get_by_role("button", name="收益计算", exact=True).click()
+                    page.get_by_role("button", name="手动测算", exact=True).click()
                     buy = page.get_by_label("买入 / 做多市场", exact=False)
                     sell = page.get_by_label("卖出 / 做空市场", exact=False)
                     buy.select_option("fee-fixture:okx:spot:PEPE")
@@ -204,7 +204,7 @@ def main():
                     assert all(cost["open_fee_rate"] == cost["close_fee_rate"] == 0 for cost in manual["costs"])
                     checks.append("explicit zero and manual fees are user assumptions dated at calculation time")
 
-                    page.get_by_role("button", name="配置", exact=True).click()
+                    page.get_by_role("button", name="设置", exact=True).click()
                     expect(page.get_by_role("heading", name="平台默认手续费", exact=True)).to_be_visible()
                     page.get_by_label("费率平台", exact=True).select_option("okx")
                     rate = page.get_by_label("okx 现货 maker本地默认费率 / %", exact=True)

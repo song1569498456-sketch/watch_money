@@ -64,4 +64,4 @@ python scripts/soak.py --hours 24 --output data/soak.jsonl
 
 短时观测与模拟测试不能证明真实行情连续运行 24 小时。官方域名清单见 [网络配置](docs/NETWORK.md)。在受管云环境中修改项目内文件不能改变宿主平台的网络策略。
 
-详细说明：[架构](docs/ARCHITECTURE.md) · [计算语义](docs/CALCULATIONS.md) · [通知](docs/NOTIFICATIONS.md) · [验证](docs/VALIDATION.md) · [开发计划](docs/PLAN.md)。
+详细说明：[界面与使用流程](docs/INTERFACE.md) · [架构](docs/ARCHITECTURE.md) · [计算语义](docs/CALCULATIONS.md) · [通知](docs/NOTIFICATIONS.md) · [验证](docs/VALIDATION.md) · [开发计划](docs/PLAN.md)。

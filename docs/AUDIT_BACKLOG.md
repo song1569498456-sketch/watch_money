@@ -2,7 +2,7 @@
 
 更新：2026-11-04 UTC。每批修改都要更新本表的状态、代码、测试和证据，再更新 STATUS / COVERAGE / VALIDATION；**收到问题、存在代码或有一个 fixture 不等于完成验收**。用户当前顺序为：数据正确性 → 按资产监控聚合/价差规模闭环 → 资金费 → 其他简洁指标/已有历史。不新增交易账户，不扩大本轮历史/原生范围。
 
-状态含义：“定向mock/离线通过”仅证明所列本地检查，不承诺生产兼容；“实网受阻/未验”与“未开发”继续保持对应缺口，不能用mock或父线程报告勾选完成。最终离线结果已记录于 [followup-validation.json](evidence/followup-validation.json)：Python 563 passed（1条上游Starlette warning）、前端Node 18 passed、TS/Vite build、CI Ruff E4/E7/E9/F和diffcheck通过；最终整合浏览器全部通过：baseline6组、followup12组、费用7组，均见同一聚合证据。完整三阶段仍未通过验收。
+状态含义：“定向mock/离线通过”仅证明所列本地检查，不承诺生产兼容；“实网受阻/未验”与“未开发”继续保持对应缺口，不能用mock或父线程报告勾选完成。上一功能批次离线结果记录于 [followup-validation.json](evidence/followup-validation.json)：Python 563 passed（1条上游Starlette warning）、前端Node 18 passed、TS/Vite build、CI Ruff E4/E7/E9/F和diffcheck通过；最终整合浏览器全部通过：baseline6组、followup12组、费用7组，均见同一聚合证据。完整三阶段仍未通过验收。
 
 父线程曾报告 OKX **1750**、Bitget **4597**、Hyperliquid **347**、Lighter **213** 个市场。这些是**父线程报告，非本执行环境采集样本**；未收到可复核的当前原始响应、请求时间/产品口径和网络来源前，不作本环境已实测数量，也不按这些数字认定发现完整。
 
@@ -53,6 +53,12 @@
 | O03 mock vs real / 24h / Windows / P3 | 实网受阻；24h和Windows未验 | [VALIDATION.md](VALIDATION.md)、[NETWORK.md](NETWORK.md)、[soak.py](../scripts/soak.py) | [test_acceptance.py](../tests/test_acceptance.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py) | [live-probes.json](evidence/live-probes.json) 是ProxyError证据；短soak零真实行情；浏览器mock明确标注 | 官方源码可读不等于行情主机可达；不绕过代理/CA/策略。需真实录制/人工核对及至少24h采集后才可声明对应验收 |
 | O04 通知仅模拟 / P3 | 模拟路径已有；外部发送延期 | [notifications.py](../backend/watch_money/notifications.py)、[NOTIFICATIONS.md](NOTIFICATIONS.md) | [test_notifications.py](../tests/test_notifications.py)、[test_acceptance.py](../tests/test_acceptance.py) | 用户指示“先不配置，模拟测试”；HTTP mock/本地通知不是provider receipt | 没有真实飞书/Telegram发送；D11已修且563离线通过，仍不替代真实运行或外部provider验收 |
 | O05 无账户/交易与隐私 / P3 | 当前公共只读边界；持续审计 | [cex.py](../backend/watch_money/adapters/cex.py)、[onchain.py](../backend/watch_money/adapters/onchain.py)、[funding_history.py](../backend/watch_money/funding_history.py)、[recording.py](../backend/watch_money/recording.py) | [test_recording.py](../tests/test_recording.py)、[test_onchain.py](../tests/test_onchain.py)、[test_funding_history.py](../tests/test_funding_history.py) | 无交易执行/账户导入；credential-free历史客户、RPC错误脱敏、payload键级脱敏/去URL、默认关闭录制有回归 | RPC URL仍是私有配置；键级脱敏不识别任意字符串内秘密，不得投入私有响应。录制只是公共JSON/CCXT对象，非完整wire/frame或审计级不可篡改日志；不提交凭证 |
+
+## 前端信息组织 / 本批
+
+| ID / Priority | Status | Code | Tests | Evidence | Limitations / 下一步 |
+| --- | --- | --- | --- | --- | --- |
+| U01 发现 → 详情 → 测算 → 监控 / P1 | 本地实现与浏览器主流程通过 | [main.tsx](../frontend/src/main.tsx)、[ScannerPage.tsx](../frontend/src/ScannerPage.tsx)、[FundingPage.tsx](../frontend/src/FundingPage.tsx) | 后端575、Node25、构建与静态检查通过；导航9、原浏览器6/12/7、资金费专项6组通过 | [本批汇总](evidence/interface-validation.json)、[导航证据](evidence/browser-navigation.json)、[使用流程](INTERFACE.md) | 四项主导航；价差紧凑资产表与资金费矩阵默认，手动测算次级入口；保留完整性和只读边界，不替代真实行情验收 |
 
 ## 全部28平台的覆盖链接
 

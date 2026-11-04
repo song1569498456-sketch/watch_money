@@ -1,5 +1,9 @@
 # 当前开发状态
 
+2026-11-04 前端信息组织更新：主导航收敛为市场监控（默认价差、资金费、全部市场）、我的监控、通知记录、设置。资产表展开组合可进入测算；资金费默认矩阵，保留单平台排行、原始周期、来源和历史。返回保留本次会话筛选/展开/滚动，身份与诊断放入设置。**本批后端575项、前端25项、40组浏览器检查、构建与静态检查通过**，见 [本批汇总](evidence/interface-validation.json)；浏览器证据及界面说明见 [INTERFACE.md](INTERFACE.md)、[browser-navigation.json](evidence/browser-navigation.json)。原计划未验收边界保持不变。
+
+以下为此前功能批次记录：
+
 2026-11-04。**完整三阶段计划尚未通过验收。** 本轮价差聚合/规模计算、资金费、费用配置及对应修复完成离线验证：**Python 563 passed、Node 18 passed；最终浏览器6/12/7组通过；TS/Vite build、CI Ruff E4/E7/E9/F和diffcheck通过**。证据见 [followup-validation.json](evidence/followup-validation.json)。这些是合成fixture、mock HTTP/RPC、loopback及隔离浏览器证据；不是实网全覆盖或24小时运行。
 
 用户最新优先级：先数据正确性，再**按资产聚合 → best价差排序 → 展开双向组合 → 指定规模calculator**；第二资金费聚合，第三其他简洁指标/已有历史。不新增交易账户。本轮已有历史/原生能力保留范围，后续不抢先扩大原生协议开发。
