@@ -368,7 +368,12 @@ class CexAdapter:
         """Known request-weight lower bound, not a live latency measurement."""
         seconds = 0.0
         if not funding:
-            return seconds
+            for batch in batches:
+                if batch.instruments and self._resolve(batch.instruments[0])[0] == "upbit":
+                    client = self._client("upbit")
+                    seconds += math.ceil(len(batch.instruments) / self.light_batch_size) * max(
+                        .1, getattr(client, "rateLimit", 50) * .002)
+            return seconds  # Book-group budget only; excludes ticker/network latency.
         for batch in batches:
             if batch.full_product or not batch.instruments:
                 continue
@@ -597,6 +602,27 @@ class CexAdapter:
                         successful_requests += 1
                         if result is not None:
                             patches[result.instrument_id] = result
+        # Tickers have trade prices, not BBO. Each field retains its own clock.
+        upbit_items = [item for item in selected.values() if self._resolve(item)[0] == "upbit"]
+        for offset in range(0, len(upbit_items), self.light_batch_size):
+            batch = upbit_items[offset:offset + self.light_batch_size]
+            try:
+                async with self._bulk_semaphore, self._semaphore:
+                    rows, received, native_ids = await self._upbit_books(batch, 1)
+                successful_requests += 1
+            except Exception as exc:
+                record_error(batch, exc)
+                continue
+            for item in batch:
+                matching = [row for row in rows if isinstance(row, dict) and row.get("market") == native_ids[item.id]]
+                if len(matching) != 1:
+                    errors[item.id] = "MissingOrDuplicateNativeBook"
+                    continue
+                try:
+                    bids, asks, stamp = _upbit_book_values(matching[0])
+                    patches[item.id] = _upbit_book_patch(item, bids, asks, stamp, received, patches.get(item.id))
+                except ValueError:
+                    errors[item.id] = "InvalidNativeBook"
         if first_error is not None and not successful_requests:
             raise first_error
         return [patches[item_id] for item_id in selected if item_id in patches]
@@ -909,6 +935,27 @@ class CexAdapter:
                               field_timestamps=times, field_received_at=receipts, issues=issues, valid=valid and
                               "crossed orderbook: bid exceeds ask" not in issues, **fields)
 
+    async def _upbit_books(self, instruments: list[Instrument], count: int):
+        native_ids = {}
+        for item in instruments:
+            client_id, market = self._resolve(item)
+            if (client_id != "upbit" or item.kind != "spot" or market.get("spot") is not True
+                    or market.get("symbol") != item.native_symbol or not market.get("id")):
+                raise ValueError("Discovered Upbit Korea spot market required")
+            native_ids[item.id] = market["id"]
+        payload = await self._client("upbit").publicGetOrderbook(
+            {"markets": ",".join(native_ids.values()), "level": "0", "count": count})
+        received = now_ms()
+        await self._record_payload("publicGetOrderbook", payload)
+        for item in instruments:
+            client_id, market = self._resolve(item)
+            if (client_id != "upbit" or market.get("id") != native_ids[item.id]
+                    or market.get("symbol") != item.native_symbol or market.get("spot") is not True):
+                raise ValueError("Upbit market changed during book request")
+        if not isinstance(payload, list) or len(payload) > len(instruments):
+            raise ValueError("Invalid Upbit public book response")
+        return payload, received, native_ids
+
     async def _coinbase_book(self, instrument: Instrument, level: int):
         client_id, market = self._resolve(instrument)
         native = market["id"]
@@ -923,6 +970,15 @@ class CexAdapter:
 
     async def orderbook(self, instrument: Instrument) -> OrderBook:
         client_id, _market = self._resolve(instrument)
+        if client_id == "upbit":
+            async with self._semaphore:
+                rows, received, ids = await self._upbit_books([instrument], 30)
+            if len(rows) != 1 or not isinstance(rows[0], dict) or rows[0].get("market") != ids[instrument.id]:
+                raise ValueError("Missing Upbit book")
+            bids, asks, stamp = _upbit_book_values(rows[0])
+            return OrderBook(instrument_id=instrument.id, bids=bids, asks=asks, quantity_unit="base",
+                             source_at=stamp, received_at=received,
+                             source=f"upbit:public:orderbook:{ids[instrument.id]}:level0")
         if client_id == "coinbaseexchange":
             async with self._semaphore:
                 payload, received = await self._coinbase_book(instrument, 2)
@@ -1105,6 +1161,52 @@ def _coinbase_book_values(payload):
     if not isinstance(auction, bool):
         raise ValueError("Invalid Coinbase Exchange auction mode")
     return sides[0], sides[1], stamp, auction
+
+
+def _upbit_book_values(payload):
+    if _number(payload.get("level", 0), nonnegative=True) != 0:
+        raise ValueError("Grouped Upbit prices are not exact BBO")
+    units = payload.get("orderbook_units")
+    if not isinstance(units, list) or len(units) > 30:
+        raise ValueError("Invalid Upbit book units")
+    bids, asks = [], []
+    for unit in units:
+        if not isinstance(unit, dict):
+            raise ValueError("Invalid Upbit book level")
+        for side, levels in (("bid", bids), ("ask", asks)):
+            price = _number(unit.get(side + "_price"), nonnegative=True)
+            size = _number(unit.get(side + "_size"), nonnegative=True)
+            if price is None or size is None or (price == 0 and size > 0):
+                raise ValueError("Invalid Upbit price/size")
+            if size > 0:
+                levels.append((price, size))
+    return sorted(bids, reverse=True), sorted(asks), _timestamp(payload.get("timestamp"))
+
+
+def _upbit_book_patch(item, bids, asks, stamp, received, ticker=None):
+    source = f"upbit:public:orderbook:{item.native_symbol}:level0"
+    data = ticker.model_dump(exclude_unset=True) if ticker else {}
+    sources, times, receipts = (dict(data.get(key, {})) for key in
+                               ("field_sources", "field_timestamps", "field_received_at"))
+    if ticker:
+        for field in times:
+            receipts.setdefault(field, ticker.received_at)
+    bid, ask = (bids[0][0] if bids else None), (asks[0][0] if asks else None)
+    clears = [key for key, value in (("bid", bid), ("ask", ask)) if value is None]
+    for field in ("bid", "ask"):
+        sources[field] = source + (":explicit_unavailable" if field in clears else ":native_timestamp")
+        times[field], receipts[field] = stamp, received
+    issues = list(data.get("issues", []))
+    if stamp is None:
+        issues.append("Upbit book source time unavailable; receipt is not source time")
+    crossed = bid is not None and ask is not None and bid > ask
+    if crossed:
+        issues.append("crossed orderbook: bid exceeds ask")
+    data.update(instrument_id=item.id, venue=item.venue, bid=bid, ask=ask, source=source,
+                source_at=stamp, received_at=received, cleared_fields=clears,
+                field_sources=sources, field_timestamps=times, field_received_at=receipts,
+                valid=not crossed, issues=issues, is_demo=False)
+    return MarketSnapshot(**data)
 
 
 def _coinbase_book_patch(instrument, payload, received):

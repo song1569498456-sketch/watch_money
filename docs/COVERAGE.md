@@ -197,3 +197,7 @@ USDⓈ-M/COIN-M历史加强原生symbol/fundingTime/fundingRate校验、单位�
 ## R54 MEXC/KuCoin周期依据
 
 MEXC历史collectCycle经官方核实为小时，仅有效正整数保留，原始周期另存；KuCoin Classic无逐条周期依据，保持未知。两平台原生symbol/结算时钟/率交叉校验，明确MEXC最新page1与KuCoin from/to窗口，不发完整继续提示，不访问私有账单/UTA替代。仅离线，dYdX R52及24小时限制不变。来源与测试见FUNDING_VIEW R54。
+
+### R55 Upbit盘口覆盖
+
+Korea全目录轻量轮转新增原生公共book补充，最多50市场一批、准确native ID、level=0、独立毫秒源时间；按需30档深度保留base数量。旧ticker成交统计保留独立时效。120市场离线样本50/50/20分批通过，不等于真实覆盖；本轮实网采样0、生产身份批准无变化。全目录盘口WS、实际吞吐、跨KRW报价换算与24小时仍未验收。详见CEX_LIGHT/AUDIT_BACKLOG R55。
