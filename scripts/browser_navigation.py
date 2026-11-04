@@ -186,7 +186,9 @@ def main():
                         with page.expect_response(lambda response: "/api/funding?" in response.url):
                             page.get_by_role("button", name="刷新全部数据", exact=True).click()
                         checks.append("global refresh refetches current funding query")
-                        page.get_by_role("button", name="价差", exact=True).click()
+                        with page.expect_response(lambda response: "/api/scanner?" in response.url):
+                            page.get_by_role("button", name="价差", exact=True).click()
+                        # Global refresh also invalidates the hidden scanner's cached generation.
                         with page.expect_response(lambda response: "/api/scanner?" in response.url):
                             page.get_by_role("button", name="刷新全部数据", exact=True).click()
                         expect(page.get_by_role("button", name="刷新扫描", exact=True)).to_be_enabled()

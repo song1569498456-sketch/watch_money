@@ -11,6 +11,7 @@ REST成功、收到一条新消息和全目录数据新鲜分别计量；缺源�
 3. 全轮内部只短暂让出执行，完成整轮后按“本轮开始到下一轮开始”的目标周期等待。一个慢速回退层不阻塞全产品层。
 4. 部分错误保留成功市场；网络错误只记录类型并退避。全产品方法运行时拒绝能力后，下一次计划降为有界回退，不立即启动上千个单symbol请求。
 5. 计划签名包含产品组及全部市场身份；新增/移除市场或批次改变会重置该层完成标记。旧计划的在途请求不能宣称新目录已完成一轮。
+6. OKX原生全产品资金费另按**这次响应的到达源年龄**自适应缩短目标间隔，见下节；逐symbol回退不采用该提速规则，请求错误仍优先退避。
 
 `fetch_light(instruments)` / `fetch_funding_light(instruments)` 的直接调用仍最多100市场、每批最多50 symbol。
 全目录collector使用 `plan_light(...)` 和 `fetch_light_batch(...)`，只有审核通过的单产品组能绕过symbol数量边界。此时传 `symbols=None`，由端点返回整产品；并非扩大URL中的symbol列表。
@@ -36,6 +37,30 @@ CCXT `has=True` 本身不等于全目录一次HTTP：Coinbase产品列表可能�
 OKX若旧SDK没有ANY批量能力或服务拒绝该能力，会降为逐symbol。官方10/2秒意味着1000请求至少200秒；安装CCXT 110ms基础间隔、cost2时下界为220秒。
 默认30秒并不能改变这个限制。状态预估会保留已知权重下界，再结合实际观测；不会将“配置30秒”显示成“实际30秒完成”。
 
+## OKX源数据接近过期时的调度
+
+父线程提供的外部150秒观测显示，OKX可靠资金费市场数曾从约540降到6再恢复，收到响应时部分`ts`已接近60秒。此处不把该报告描述成本子任务本地实测。
+HTTP成功只能说明收到响应；若源数据在到达前已经变老，再按固定30/60秒等待会延后发现上游下一次更新。
+
+本次核对[OKX官方资金费WebSocket文档](https://www.okx.com/docs-v5/en/#public-data-websocket-funding-rate-channel)说明推送间隔30–90秒，`ts`为数据返回时间。
+[REST资金费接口](https://www.okx.com/docs-v5/en/#public-data-rest-api-get-funding-rate)支持`instId=ANY`，限流10请求/2秒（IP+Instrument ID）。
+因此WebSocket并非60秒有效性的保证；此次没有增加OKX资金费WebSocket订阅，更没有借盘口时间更新资金费。
+
+对已审查的OKX **全产品**资金费计划，从入站patch计算`funding_rate`源时间到其独立接收时间的年龄。
+只接受共享可信门槛允许的正常或已过期率；缺时间、未来时间、无可信来源、demo、invalid及身份不匹配不参与采样。
+按排序后nearest-rank p90计算下一整轮开始间隔：
+
+`min(配置 funding_poll_seconds, max(5秒, stale_seconds - 到达年龄p90 - 5秒余量))`
+
+在60秒TTL、30秒配置下，0秒年龄仍取30秒；40秒取15秒；55秒或已过期取5秒。
+这是最多每5秒一次`ANY`全产品请求（至多12次/分钟，官方该端点预算的4%），不是每市场5秒一次，也不是全进程请求预算承诺。
+CCXT限流、既有并发槽和失败退避仍生效；实际周期可能更长。连续收到相同旧`ts`也不突破此上限，不能因HTTP成功重置源年龄。
+单个极老记录不会支配p90，未被p90代表的尾部市场仍可能过期；所有fresh计数继续逐市场执行原TTL。
+没有可信年龄时保留配置周期并标记`source_age_unknown`；其它平台及symbol回退维持原计划。
+
+这缩短了发现下一次上游更新的等待，**不保证消除缺口**。上游自身时间超过TTL、推送间隔过长、缺记录、请求延迟或错误时，可靠覆盖必须下降。
+本次没有增大`stale_seconds`、重写原`ts`、以本地接收时间冒充源时间，或把“当前可比较”改为“最近HTTP成功”。
+
 ## DEX范围
 
 仅已确认整个public payload的路径采用全产品计划：
@@ -55,14 +80,14 @@ DEX资金费若来自同一公开payload，状态mode为 `via_public_price_bulk`
 | --- | --- | --- |
 | stale_seconds | 60（未改变） | 原始时效门槛；周期元数据另按明确来源的6小时TTL |
 | broad_poll_seconds | 30 | 完整原生价格sweep的目标开始间隔 |
-| funding_poll_seconds | 30 | 原生资金费sweep目标间隔；旧已保存60秒配置继续保留 |
+| funding_poll_seconds | 30 | 原生资金费sweep基础目标间隔；OKX可信源接近过期时可按上述规则缩短。旧已保存60秒数值继续保留 |
 | broad_batch_size | 100 | generic/未审核路径批次上限，未改为20 |
 | broad_symbol_batch_size | 20 | CEX symbol回退上限，实际取与broad_batch_size的较小值 |
 | broad_inter_batch_seconds | 0.25 | sweep内让出间隔；平台最小间隔仍优先 |
 | broad_request_timeout_seconds | 25 | 单计划单元总超时，超时会取消未完成任务 |
 
 存量设置由Pydantic补新增字段，不静默覆盖用户已保存的周期或过期门槛。
-如果用户仍配置资金费60秒、过期60秒，网络及处理延迟足以造成边界过期；应在配置/覆盖状态里明确看见，而不是暗中延长TTL。
+如果用户仍配置资金费60秒、过期60秒，网络及处理延迟足以造成边界过期；OKX原生全产品层现在另做有界自适应，其它路径仍可能按原周期越过边界。应在覆盖状态里明确看见，而不是暗中延长TTL。
 
 ## 状态字段
 
@@ -76,11 +101,21 @@ DEX资金费若来自同一公开payload，状态mode为 `via_public_price_bulk`
 - `cycle_seconds`：两次完整sweep完成之间的实测间隔，包含目标等待、请求/保存开销；首轮或目录签名变化后暂为空。
 - `estimated_cycle_seconds`：目标周期、已知请求权重下界、已完成批次/整轮实测外推的较大值；不是保证。回退过慢、缺数据或受限时必须结合fresh比例与errors。
 
+资金费另外提供：
+
+- `funding_effective_poll_seconds`：原生全产品层本轮选定的开始间隔目标，包含本次计算的等待/错误退避；不是已实测的整轮完成间隔（后者仍是`funding_cycle_seconds`）。
+- `funding_schedule_reason`：`configured`（基础周期）、`source_age_unknown`（无可信响应年龄）、`source_near_expiry`（缩短等待）、`upstream_source_stale`（p90源数据本身已过期）或`request_backoff`（请求错误退避）。
+- `funding_arrival_source_age_p90_seconds`、`funding_arrival_source_age_max_seconds`、`funding_arrival_source_age_samples`、`funding_arrival_checked_at`：最近一次成功资金费响应中可验证的到达年龄分布、样本市场数及检查时间；不从合并缓存生成，不随状态读取而变年轻或重新采样。失败保留上次分布和检查时间；成功但缺可信时间时分布为空、样本0。多产品/回退时描述最近完成的那个响应批次，不是全venue同一时刻的普查。
+- `funding_source_stale_markets`、`funding_source_missing_markets`、`funding_source_future_markets`：读取时按共享字段门槛统计已有非demo原始rate的市场。分别为可信rate已过期、缺可验证时间/来源、时间在未来；未采集市场不计入这三个数。它们解释源数据问题，不写进请求错误或增加请求重试数。周期/类型等其他门槛仍会让`fresh_markets`更低。
+
+`funding_errors`继续描述请求/能力/缺记录错误。比如HTTP成功但源`ts`已老61秒时，`funding_errors`可为空而`funding_source_stale_markets`大于0；不能把这种情况当作网络在线就声称资金费可靠。
+
 `Collector.refresh_status_coverage()`先对目录和缓存取稳定快照，再按venue复用；状态接口每次调用，健康任务也定期调用。停机、禁用、长退避期间fresh会随真实字段年龄下降，observed与历史轮转信息可保留。
 
 ## 验证与剩余限制
 
 `tests/test_collection_schedule.py` 使用合成公开对象验证千市场价格/资金费各一次bulk方法、全目录覆盖、低速回退不占批量槽、已知100/220秒下界、读时过期、demo排除、last不能代替双边价、目录变化重置完成状态，以及DEX审核范围。
+新增合成顺序覆盖到达时55秒仍有效、同一源时间61秒后过期、请求超时退避、可信新源恢复；另覆盖未来/缺时间/demo/invalid不被采样，以及读取状态不重写最后一次响应年龄。
 这些是模拟调度结果，不是实网吞吐；官方文档和已安装解析器检查也不替代真实样本。
 本环境公共API受代理限制，根线程另保留 `docs/evidence/data-review-live-probes.json`；本子任务没有绕过网络限制或把父报告描述成本地实测。
 待在允许的环境逐平台测量真实耗时、缺失symbol、限流与持续覆盖。无法批量的来源、过多namespace、缺可信源时间或服务失败时，本实现明确允许fresh覆盖低于100%，不宣称所有fallback都能在60秒内完成。

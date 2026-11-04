@@ -15,7 +15,6 @@ from pathlib import Path
 
 import httpx
 from playwright.sync_api import expect, sync_playwright
-
 from watch_money.models import Instrument, now_ms
 from watch_money.storage import Storage
 
@@ -27,7 +26,7 @@ def seed(directory):
     store.set("settings", settings.model_dump())
     instruments = [Instrument(id=f"verification-fixture:{venue}:{symbol}", venue=venue,
                    native_symbol=f"{symbol}/USDT", asset_id=f"cex:{venue}:{venue}:{symbol}",
-                   native_asset_id=f"cex:{venue}:{venue}:{symbol}", base=symbol, quote="USDT",
+                   native_asset_id=f"cex:{venue}:{venue}:{symbol}", native_currency_id=symbol, base=symbol, quote="USDT",
                    kind="spot", mapping_verified=False)
                    for venue, symbol in (("gate", "PEPE"), ("bitget", "PEPE"), ("gate", "OTHER"))]
     store.save_instruments(instruments)
@@ -197,9 +196,18 @@ def main():
                         assert rejected.status_code == 409
                         assert api.get("/api/assets/verification").json()["coverage"]["traceable_verified_markets"] == 0
                         checks.append("two contradictory contract claims disable UI apply; direct real local apply also rejects atomically without verified coverage")
+                        expect(panel.get_by_label("读取身份来源 kucoin", exact=True)).to_be_visible()
+                        expect(panel.get_by_label("读取身份来源 kucoin", exact=True)).to_be_checked()
+                        expect(panel.get_by_label("读取身份来源 coinbase", exact=True)).to_be_visible()
+                        expect(panel.get_by_label("读取身份来源 coinbase", exact=True)).not_to_be_checked()
+                        panel.get_by_text("各平台原生范围、冲突与覆盖", exact=True).click()
+                        expect(panel.get_by_role("columnheader", name="平台 / 公开范围", exact=True)).to_be_visible()
+                        expect(panel.get_by_text("kucoin · spot", exact=True)).to_be_visible()
+                        expect(panel.get_by_text("coinbaseexchange · spot", exact=True)).to_be_visible()
+                        checks.append("KuCoin and Coinbase Exchange source controls and per-platform native-client/spot scope coverage are visible; Exchange is not silently selected for Advanced Trade")
                         panel.get_by_role("button", name="读取公开资产资料", exact=True).click()
                         expect(panel.get_by_role("alert")).to_contain_text("合成公开来源不可访问")
-                        assert mocked_refresh == [{"venues": ["gate", "bitget"]}]
+                        assert mocked_refresh == [{"venues": ["gate", "bitget", "kucoin"]}]
                         assert api.get("/api/assets/verification").json()["coverage"]["traceable_verified_markets"] == 0
                         checks.append("browser-mocked public-refresh failure is explicit and creates no evidence or verified mappings; no external source read")
                         page.set_viewport_size({"width": 390, "height": 844})

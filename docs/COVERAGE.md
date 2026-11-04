@@ -8,7 +8,7 @@
 
 新数据目录默认启用全部28个平台；已有启用配置保持不变。当前广覆盖按整产品批量与逐币回退分层，新配置目标价格/资金费周期30秒，目录1800秒重发现；存量周期不被强制修改。实际端点范围、限流下界、DEX整组支持及回退限制见 [COLLECTION.md](COLLECTION.md)。状态按读取时刻统计有效双边盘口与资金费，配置周期不等于实际完成周期，未提高60秒过期阈值。
 
-首批批量资产证据源是Gate/Bitget公开币种目录，另支持可审计人工证据；未核实、歧义、包装/桥接和单位冲突保持隔离。见 [ASSET_VERIFICATION.md](ASSET_VERIFICATION.md)。DEX仍依赖来源实际提供字段，GMX/Jupiter/Drift等不会因调度扩大而升级为已完成。最新本地验证677后端/29前端/48组浏览器，实网未验。
+批量资产证据源扩为Gate/Bitget/KuCoin/Coinbase Exchange官方币种目录，仅匹配原生currency ID、所列client及现货范围；现有Coinbase Advanced Trade不能套用Exchange目录。另支持可审计人工证据；未核实、歧义、包装/桥接和单位冲突保持隔离。见 [ASSET_VERIFICATION.md](ASSET_VERIFICATION.md)。DEX仍依赖来源实际提供字段，GMX/Jupiter/Drift等不会因调度扩大而升级为已完成。本轮测试证据见VALIDATION.md，当前环境实网未验。
 
 ## 12 个 CEX
 
@@ -43,8 +43,8 @@ BTC/ETH/SOL 小型审核表只用于已核对原生 base ID 的自动身份归�
 
 | 平台 | 已实现数据与采集路径 | 状态与未完成能力 |
 | --- | --- | --- |
-| <a id="hyperliquid"></a>Hyperliquid | REST universe、HIP-3 命名空间、mark/index、OI、hourly funding、按需深度；原生 BBO/context WS | 本地模拟与 loopback 验证；实网未验。源时间按字段区分，context 无源时间；大规模订阅分片和历史恢复未开发 |
-| <a id="lighter"></a>Lighter | 公共目录、价格/按需深度、资金费 | 实网未验；周期未经明确核验时不做 8h 归一化；原生 WS 未开发 |
+| <a id="hyperliquid"></a>Hyperliquid | REST universe、HIP-3 命名空间、mark/index、OI、hourly funding、按需深度；分片原生l2Book/context WS | 本地模拟与 loopback 验证；实网未验。源时间按字段区分，context 无源时间；全目录流最多500市场，预算截断显示，历史恢复未开发 |
+| <a id="lighter"></a>Lighter | 公共目录、价格/按需深度；原生market_stats/all WS盘口及原始资金费指标 | 实网未验；官方未明确的费率单位/基准保留原始指标，不输出归一化资金费；盘口使用明确的发布时刻 |
 | <a id="dydx"></a>dYdX | Indexer perpetual markets、预测 hourly funding、按需深度；原生 `v4_markets` WS | 本地模拟与 loopback 验证；实网未验。oracle 的 effectiveAt 只用于 index；该 WS 不重建深度；历史恢复未开发 |
 | <a id="paradex"></a>Paradex | CCXT 线性 perpetual 目录、ticker/funding/按需深度 | 实网未验；缺 multiplier 拒绝市场，缺周期不推断；原生 WS 未开发 |
 | <a id="aster"></a>Aster | CCXT 线性 perpetual 目录、ticker/funding/按需深度 | 实网未验；按市场返回周期，不固定 8h；原生 WS 未开发 |
@@ -54,7 +54,7 @@ BTC/ETH/SOL 小型审核表只用于已核对原生 base ID 的自动身份归�
 | <a id="jupiter-perps"></a>Jupiter Perps | Solana 官方只读 `/jlp-info`、`/pool-info`、`/market-stats`：custody、reference price、侧别借贷与可用流动性 | 部分能力，实网未验；限官方 mint enum；reference price 不冒充 last/mark/index，borrow 不是 funding，周期未知；完整 OI、执行报价和持仓成本未完成 |
 | <a id="drift"></a>Drift | 原 program 的可选 Solana RPC State/PerpMarket 元数据读取、名称、index、链上 status flags | metadata-only；原 program 身份/IDL 核对，本地模拟通过，实网生命周期未验证；inactive/invalid 表示本 adapter 不提供行情，不断言链上停运，不替换成后继程序 |
 
-Hyperliquid/dYdX WS 已接 collector，包含订阅、心跳、取消、断线/重订阅及稀疏补丁。连接成功不刷新字段年龄，也不证明资金费、执行价和所有字段最新。其他计划 DEX 原生 WS 尚未实现，REST 保留。跨所有 AMM/RFQ 协议的完整持仓成本及可执行路线仍未完成。
+Hyperliquid/Lighter/dYdX WS 已接 collector，包含订阅、心跳、取消、断线/重订阅及稀疏补丁。连接成功不刷新字段年龄，也不证明资金费、执行价和所有字段最新。其他计划 DEX 原生 WS 尚未实现，REST 保留。跨所有 AMM/RFQ 协议的完整持仓成本及可执行路线仍未完成。
 
 官方资料、字段口径与限流见 [DEX_SOURCES.md](DEX_SOURCES.md)、[DEX_CATALOG.md](DEX_CATALOG.md)、[DEX_STREAMING.md](DEX_STREAMING.md)；它们保留具体官方链接和来源核对证据。
 

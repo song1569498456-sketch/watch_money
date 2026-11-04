@@ -335,11 +335,11 @@ async def test_identity_active_market_and_local_subscription_limit_validate_befo
 
 def test_factory_is_lazy_public_only_and_excludes_unsupported_dexes():
     assert create_dex_stream(object()) is None
-    assert create_dex_stream(LighterAdapter()) is None
+    assert isinstance(create_dex_stream(LighterAdapter()), DexStreamAdapter)
     assert isinstance(create_dex_stream(HyperliquidAdapter()), DexStreamAdapter)
     assert isinstance(create_dex_stream(DydxAdapter()), DexStreamAdapter)
     with pytest.raises(TypeError):
-        DexStreamAdapter(LighterAdapter())
+        DexStreamAdapter(object())
 
 
 def test_transport_uses_inherited_proxy_verified_tls_and_control_heartbeats(monkeypatch):

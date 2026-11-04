@@ -313,13 +313,22 @@ class LighterAdapter(PublicREST):
                 "index": number(row.get("index_price"), positive=True),
                 "volume": number(row.get("daily_quote_token_volume"), nonnegative=True),
                 "open_interest": number(row.get("open_interest"), nonnegative=True),
-                "funding_rate": number(rate.get("rate")),
             }
             detail_source = f"{self.endpoint}/orderBookDetails"
             sources = field_sources(detail_source, values)
-            if values["funding_rate"] is not None:
-                sources["funding_rate"] = f"{self.endpoint}/funding-rates#exchange=lighter"
-            # This comparative endpoint omits a period. It is unsafe to infer hourly from settlement mechanics.
+            # The comparative endpoint is not the native funding payment stream.
+            # Its unit is not established here; never label this as a current
+            # native per-period rate merely because exchange=lighter matched.
+            metrics = {}
+            if number(rate.get("rate")) is not None:
+                from watch_money.models import now_ms
+
+                metrics = {"raw_comparative_funding_rate": str(rate["rate"]),
+                           "comparative_funding_unit": "unverified",
+                           "comparative_funding_basis": "comparison_endpoint_native_period_unverified",
+                           "comparative_funding_source": f"{self.endpoint}/funding-rates#exchange=lighter",
+                           "comparative_funding_observed_at_ms": str(now_ms()),
+                           "comparative_funding_source_at_ms": None}
             result.append(
                 MarketSnapshot(
                     instrument_id=instrument.id,
@@ -327,12 +336,12 @@ class LighterAdapter(PublicREST):
                     **values,
                     volume_unit="USDC",
                     oi_unit=instrument.base,
-                    funding_kind="current" if values["funding_rate"] is not None else None,
+                    protocol_metrics=metrics,
                     source=detail_source,
                     field_sources=sources,
                     issues=[
                         "source_event_time_unavailable",
-                        "funding_period_unverified",
+                        "comparative_funding_unit_and_native_period_unverified; raw metric only",
                         "best_bid_ask_require_orderbook",
                     ],
                 )
@@ -1410,9 +1419,9 @@ def coverage():
     }
     for venue in ("hyperliquid", "lighter", "dydx", "paradex", "aster"):
         limits = [blocked, ("Native public WebSocket plus REST; no complete historical/depth recovery"
-                           if venue in {"hyperliquid", "dydx"} else "REST polling; no native source stream recovery yet")]
+                           if venue in {"hyperliquid", "lighter", "dydx"} else "REST polling; no native source stream recovery yet")]
         if venue == "lighter":
-            limits.append("Funding raw fraction retained; endpoint period unverified, normalization disabled")
+            limits.append("Funding raw values only: unit and native period unverified; normalization disabled")
         if venue == "aster":
             limits.append(
                 "Funding normalization requires returned per-market interval; no fixed 8h assumption"
@@ -1422,7 +1431,7 @@ def coverage():
                 venue=venue,
                 category="perpetual-dex",
                 products=["perpetual"],
-                method="native public WebSocket + REST" if venue in {"hyperliquid", "dydx"} else "public REST",
+                method="native public WebSocket + REST" if venue in {"hyperliquid", "lighter", "dydx"} else "public REST",
                 capabilities=["market-discovery", "price", "orderbook", "funding", "full-catalog-rotation"],
                 requirements=["Public API network access"]
                 + (["Compatible CCXT version"] if venue in ("paradex", "aster") else []),

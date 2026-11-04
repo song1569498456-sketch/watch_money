@@ -10,10 +10,17 @@ type Evidence = { id: string; instrument_id: string; native_asset_id: string; ca
   status: string; blockers: string[] };
 type Source = { venue: string; endpoint: string; docs_url: string; state: string; last_attempt_at?: number;
   received_at?: number; response_rows?: number; matched_markets?: number; eligible_markets?: number;
-  blocked_markets?: number; error_type?: string };
+  blocked_markets?: number; error_type?: string; client_ids?: string[]; product_kinds?: string[];
+  scope_eligible_markets?: number; scope_rejected_markets?: number; scope_reasons?: Record<string, number>;
+  unmatched_currency_markets?: number; scope_note?: string };
+type PlatformCoverage = { venue: string; active_markets: number; source_supported: boolean; client_ids: string[];
+  product_kinds: string[]; source_scope_markets: number; scope_rejected_markets: number;
+  scope_reasons: Record<string, number>; source_covered_markets: number; source_blocked_markets: number;
+  source_blockers: Record<string, number>; verified_markets: number; traceable_verified_markets: number;
+  unverified_markets: number; conflicting_markets: number; scope_note?: string };
 type Review = { as_of: number; coverage: Record<string, number>; sources: Source[]; proposals: Proposal[];
   evidence: Evidence[]; audit: { at: number; action: string; payload: unknown }[];
-  truncated: { evidence: boolean; proposals: boolean } };
+  truncated: { evidence: boolean; proposals: boolean }; platform_coverage?: PlatformCoverage[] };
 type Preview = { preview_token: string; proposals: Proposal[]; ready: number; blocked: number };
 const labels: Record<string, string> = { not_requested: "尚未读取", observed: "已读取", ready: "证据可用", conflict: "证据冲突", unverified: "待核验",
   active: "有效", applied: "已应用", revoked: "已撤销", expired: "已过期", success: "已读取",
@@ -23,10 +30,21 @@ const reasons: Record<string, string> = {
   different_chains: "链身份不同", different_base_symbols_require_unit_review: "名称、单位或包装关系需核对",
   source_unavailable: "公开来源不可访问", evidence_expired: "证据已过期",
   native_asset_id_changed: "目录原生身份已变化", multiple_canonical_assets: "公开来源指向多个资产",
+  original_currency_id_missing: "缺少原始 baseId，不能用统一 ticker 代替",
+  original_currency_id_conflicts_with_native_identity: "原始币种 ID 与目录原生身份不一致",
+  native_client_out_of_source_scope: "客户端不在该公开资料的业务范围",
+  product_out_of_source_scope: "公开现货目录不能直接证明永续底层身份",
+  native_currency_namespace_unresolved: "原生币种命名空间未明确",
+  source_venue_not_supported: "暂无已审查的公开合约证据来源",
+  public_native_currency_scope_unverified: "原始币种 ID 或来源范围未核验",
+  network_or_contract_identity_incomplete: "网络或合约身份不完整",
+  multiple_or_missing_contract_identities: "多个合约部署或合约缺失，不能任选首项",
+  base_unit_scale_requires_review: "基币单位缩放待核验",
+  conflicting_active_evidence: "有效证据指向不同资产，需人工修订",
 };
 const explain = (value: string) => reasons[value] ?? value;
-function SourceLink({ url }: { url: string }) {
-  return /^https:\/\//.test(url) ? <a className="text-button break" href={url} target="_blank" rel="noreferrer">{url}</a> : <span className="break">{url}</span>;
+function SourceLink({ url }: { url: string | null | undefined }) {
+  return url && /^https:\/\//.test(url) ? <a className="text-button break" href={url} target="_blank" rel="noreferrer">{url}</a> : <span className="break">{url ?? "本地目录证据，无外部 URL"}</span>;
 }
 
 export function AssetVerification({ onChanged }: { onChanged: () => void }) {
@@ -39,7 +57,7 @@ export function AssetVerification({ onChanged }: { onChanged: () => void }) {
   const [input, setInput] = useState("");
   const [reason, setReason] = useState("");
   const [limit, setLimit] = useState(200);
-  const [venues, setVenues] = useState(["gate", "bitget"]);
+  const [venues, setVenues] = useState(["gate", "bitget", "kucoin"]);
   const load = async () => {
     const result = await api<Review>(`/api/assets/verification?limit=${limit}`);
     setData(result);
@@ -58,6 +76,7 @@ export function AssetVerification({ onChanged }: { onChanged: () => void }) {
   };
   const select = (ids: string[]) => { setSelected(ids); setPreview(null); setMessage(""); };
   const coverage = data?.coverage;
+  const sourceOptions = data?.sources.map((source) => source.venue) ?? ["gate", "bitget", "kucoin", "coinbase"];
   return <section className="panel" aria-labelledby="asset-verification-heading">
     <div className="panel-heading"><div><h2 id="asset-verification-heading"><ShieldCheck size={16} /> 批量资产身份核验</h2>
       <p>读取公开链与合约资料，预览可核验映射后应用；相同 ticker 不作为证明。</p></div>
@@ -72,20 +91,33 @@ export function AssetVerification({ onChanged }: { onChanged: () => void }) {
         <span className="badge amber">过期 {num(coverage?.expired_markets, 0)}</span>
       </div>
       <p className="muted">公开资料覆盖 {num(coverage?.source_covered_markets, 0)} 个市场；可核验提案 {num(coverage?.ready_proposals, 0)}，冲突 {num(coverage?.conflict_proposals, 0)}。核验状态不代表行情新鲜或可成交。</p>
-      <div className="inline-checks">{["gate", "bitget"].map((venue) => <label key={venue}><input type="checkbox" aria-label={`读取身份来源 ${venue}`}
+      <div className="inline-checks">{sourceOptions.map((venue) => <label key={venue}><input type="checkbox" aria-label={`读取身份来源 ${venue}`}
         checked={venues.includes(venue)} disabled={!!busy} onChange={() => setVenues((old) => old.includes(venue) ? old.filter((item) => item !== venue) : [...old, venue])} />{venue}</label>)}</div>
       <button className="button secondary" type="button" disabled={!!busy || !venues.length} onClick={() => void act("读取公开资料", async () => {
         await api("/api/assets/verification/public-refresh", "POST", { venues });
         await load(); setPreview(null); setMessage("已完成公开来源读取尝试。请核对来源状态与提案；尚未应用映射。");
       })}>读取公开资产资料</button>
-      <small className="muted">当前批量来源为 Gate 与 Bitget 的公开币种目录；其他平台保留未核实状态，可用下方证据导入补充。读取失败不会生成可核验身份。</small>
+      <small className="muted">四个公开注册源均限定现货与真实原生币种 ID；不能把现货资料直接传播到永续。Coinbase 仅限 Exchange，不包含 Advanced Trade。缺 baseId、多链歧义、读取失败继续未核实，资金费身份全覆盖尚未完成。</small>
     </div>
     {error && <div className="notice error" role="alert">{error}</div>}
     {message && <div className="notice" role="status">{message}</div>}
     {!!data?.sources.length && <div className="table-scroll"><table><thead><tr><th>公开来源</th><th>读取与覆盖</th><th>时间 / 限制</th></tr></thead><tbody>
       {data.sources.map((source) => <tr key={source.venue}><td><strong>{source.venue}</strong><small className="break"><SourceLink url={source.docs_url || source.endpoint} /></small></td>
-        <td>{labels[source.state] ?? source.state}<small>返回 {num(source.response_rows, 0)} 条 · 匹配 {num(source.matched_markets, 0)} 市场</small><small>可用 {num(source.eligible_markets, 0)} · 阻止 {num(source.blocked_markets, 0)}</small></td>
-        <td><small>尝试 {time(source.last_attempt_at)} · 接收 {time(source.received_at)}</small>{source.error_type && <small className="warning">{source.error_type} · 未取得可核验证据</small>}</td></tr>)}</tbody></table></div>}
+        <td>{labels[source.state] ?? source.state}<small>返回 {num(source.response_rows, 0)} 条 · 匹配 {num(source.matched_markets, 0)} 市场</small><small>可用 {num(source.eligible_markets, 0)} · 合约阻止 {num(source.blocked_markets, 0)}</small>
+          <small>原生范围 {num(source.scope_eligible_markets, 0)} · 范围拒绝 {num(source.scope_rejected_markets, 0)} · ID 未返回 {num(source.unmatched_currency_markets, 0)}</small>
+          <small className="muted">client: {source.client_ids?.join(" / ") || "未提供"} · {source.product_kinds?.join(" / ") || "范围未知"}</small>
+          {Object.entries(source.scope_reasons ?? {}).map(([reason, count]) => <small className="warning" key={reason}>{explain(reason)}：{num(count, 0)}</small>)}</td>
+        <td><small>尝试 {time(source.last_attempt_at)} · 接收 {time(source.received_at)}</small>{source.error_type && <small className="warning">{source.error_type} · 未取得可核验证据</small>}
+          <small className="muted">仅现货；永续需另核验底层 ID 与单位。</small></td></tr>)}</tbody></table></div>}
+    {!!data?.platform_coverage?.length && <details className="calculation-details"><summary>各平台原生范围、冲突与覆盖</summary><div className="table-scroll"><table>
+      <thead><tr><th>平台 / 公开范围</th><th>活跃与可追溯确认</th><th>公共证据覆盖</th><th>范围与冲突原因</th></tr></thead><tbody>
+        {data.platform_coverage.map((platform) => <tr key={platform.venue}><td><strong>{platform.venue}</strong>
+          <small>{platform.source_supported ? platform.client_ids.join(" / ") + " · " + platform.product_kinds.join(" / ") : "暂无审查通过的公开源"}</small></td>
+          <td>活跃 {num(platform.active_markets, 0)}<small>可追溯确认 {num(platform.traceable_verified_markets, 0)} · 未核实 {num(platform.unverified_markets, 0)}</small></td>
+          <td>可用证据 {num(platform.source_covered_markets, 0)}<small>原生范围 {num(platform.source_scope_markets, 0)} · 合约歧义 {num(platform.source_blocked_markets, 0)}</small></td>
+          <td><small>范围拒绝 {num(platform.scope_rejected_markets, 0)} · 映射冲突 {num(platform.conflicting_markets, 0)}</small>
+            {Object.entries({ ...platform.scope_reasons, ...platform.source_blockers }).map(([reason, count]) => <small className="warning" key={reason}>{explain(reason)}：{num(count, 0)}</small>)}</td></tr>)}</tbody>
+    </table></div></details>}
     <div className="filters" style={{ flexWrap: "wrap" }}><span>已选 {selected.length} 条证据</span>
       <button className="text-button" type="button" disabled={!!busy} onClick={() => select([...new Set(data?.proposals.filter((row) => row.status === "ready").flatMap((row) => row.evidence_ids) ?? [])])}>选择当前可核验证据</button>
       <button className="text-button" type="button" disabled={!!busy} onClick={() => select([])}>清空选择</button>

@@ -2,14 +2,32 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import random
-from time import monotonic
 from contextlib import suppress
+from time import monotonic
 
 from .models import MarketSnapshot, VenueStatus, now_ms
 
 VALUE_FIELDS = ('bid', 'ask', 'last', 'mark', 'index', 'volume', 'open_interest',
                 'funding_rate', 'funding_kind', 'funding_interval_hours', 'next_funding_at')
+
+
+def funding_response_source_ages(rows, instruments, as_of, stale_seconds):
+    """Arrival ages of this response's trusted rate fields, never merged cache."""
+    from .scanner import funding_field_state
+
+    ages = []
+    for row in rows:
+        item = instruments.get(row.instrument_id)
+        if item is None:
+            continue
+        state = funding_field_state(row, item, 'funding_rate', as_of, stale_seconds)
+        source, received = state['source_at'], state['received_at']
+        if (state['trusted'] and state['issue'] in (None, 'funding_rate_stale')
+                and source is not None and received is not None and 0 < source <= received <= as_of):
+            ages.append((received - source) / 1000)
+    return sorted(ages)
 
 
 def field_time(snapshot, field):
@@ -186,9 +204,20 @@ class Collector:
             settings = self.store.settings()
             if (not settings.collection_enabled or not settings.prefer_websocket or settings.demo_mode
                     or name not in settings.enabled_venues or name not in self.discovered):
+                status.stream_requested_markets = status.stream_selected_markets = 0
+                status.stream_truncated = False
                 return []
-            return sorted((i for i in self.instruments.values() if i.venue == name and i.active
-                           and i.base.upper() in {a.upper() for a in settings.watch_assets}), key=lambda i: i.id)
+            broad = settings.broad_collection_enabled and getattr(streamer, 'catalog_stream', False)
+            watched = {a.upper() for a in settings.watch_assets}
+            selected = sorted((i for i in self.instruments.values() if i.venue == name and i.active
+                               and (broad or i.base.upper() in watched)), key=lambda i: i.id)
+            status.stream_requested_markets = len(selected)
+            cap = getattr(streamer, 'max_catalog_markets', None)
+            if cap is not None:
+                selected = selected[:cap]
+            status.stream_selected_markets = len(selected)
+            status.stream_truncated = len(selected) < status.stream_requested_markets
+            return selected
 
         while not self.stopping.is_set():
             instruments = selection()
@@ -258,6 +287,7 @@ class Collector:
             for funding in (False, True):
                 selected = [item for item in catalog if not funding or item.kind == 'perpetual']
                 observed = fresh = 0
+                source_stale = source_missing = source_future = 0
                 for item in selected:
                     snapshot = snapshots.get(item.id)
                     if snapshot is None or snapshot.is_demo:
@@ -267,8 +297,17 @@ class Collector:
                         continue
                     observed += 1
                     if funding:
-                        fresh += all(funding_field_state(snapshot, item, field, as_of, settings.stale_seconds)['rankable']
-                                     for field in ('funding_rate', 'funding_kind', 'funding_interval_hours'))
+                        fields = {field: funding_field_state(snapshot, item, field, as_of, settings.stale_seconds)
+                                  for field in ('funding_rate', 'funding_kind', 'funding_interval_hours')}
+                        fresh += all(state['rankable'] for state in fields.values())
+                        rate = fields['funding_rate']
+                        source_stale += rate['trusted'] and rate['issue'] == 'funding_rate_stale'
+                        source_missing += not rate['trusted']
+                        # quality() may flag the whole snapshot invalid before
+                        # the field gate reaches its future-time check. Keep the
+                        # provenance diagnosis without treating it as rankable.
+                        source_future += any(stamp is not None and stamp > as_of
+                                             for stamp in (rate['source_at'], rate['received_at']))
                     else:
                         # Independent field source times survive later funding/OI
                         # envelopes; an absent price source time is not fresh.
@@ -279,6 +318,10 @@ class Collector:
                 setattr(status, f'{prefix}_observed_markets', observed)
                 setattr(status, f'{prefix}_fresh_markets', fresh)
                 setattr(status, f'{prefix}_coverage_ratio', fresh / len(selected) if selected else 0)
+                if funding:
+                    status.funding_source_stale_markets = source_stale
+                    status.funding_source_missing_markets = source_missing
+                    status.funding_source_future_markets = source_future
             adapter = self.adapters.get(name)
             if not hasattr(adapter, 'plan_light') or not getattr(adapter, 'layered_light', True):
                 status.light_mode = 'legacy_bounded_public_fetch'
@@ -379,6 +422,8 @@ class Collector:
                     continue
                 started = monotonic()
                 finished = 0
+                sweep_period = period
+                schedule_reason = 'configured'
                 for batch in jobs:
                     if self.stopping.is_set():
                         return
@@ -400,6 +445,20 @@ class Collector:
                         layer_errors[full_product].update(result.errors)
                         if result.unsupported:
                             layer_errors[full_product].update((key, 'Public capability unavailable') for key in ids if key not in result.errors)
+                        if funding and not result.error_type:
+                            # Inspect the incoming funding patch BEFORE cache merge:
+                            # a newer ticker envelope cannot renew a rate timestamp.
+                            ages = funding_response_source_ages(result.snapshots,
+                                {item.id: item for item in batch.instruments}, now_ms(), current.stale_seconds)
+                            update(arrival_source_age_p90_seconds=ages[math.ceil(len(ages) * .9) - 1] if ages else None,
+                                   arrival_source_age_max_seconds=max(ages, default=None),
+                                   arrival_source_age_samples=len(ages),
+                                   arrival_checked_at=now_ms())
+                            if full_product and hasattr(adapter, 'funding_poll_policy'):
+                                target, reason = adapter.funding_poll_policy(batch, source_ages=ages,
+                                    period=period, stale_seconds=current.stale_seconds)
+                                if target < sweep_period or reason != 'configured' and schedule_reason == 'configured':
+                                    sweep_period, schedule_reason = target, reason
                         snapshots = [self.merge_patch(row) for row in result.snapshots]
                         self.snapshots.update({row.instrument_id: row for row in snapshots})
                         await asyncio.to_thread(self.store.save_snapshots, snapshots, current.history_enabled)
@@ -425,7 +484,7 @@ class Collector:
                     finished += 1
                     elapsed = max(.001, monotonic() - started)
                     if signatures[full_product] == sweep_signature:
-                        estimates[full_product] = max(period, minimum, elapsed * len(jobs) / finished)
+                        estimates[full_product] = max(sweep_period, minimum, elapsed * len(jobs) / finished)
                     summarize()
                     gap = max(current.broad_inter_batch_seconds,
                               getattr(adapter, 'light_min_bulk_interval', 0) if full_product else 0)
@@ -439,18 +498,22 @@ class Collector:
                         cycles[full_product] = max(0, ended - completed_clock[full_product])
                     completed_clock[full_product] = ended
                     completed[full_product] = now_ms()
-                    estimates[full_product] = max(period, minimum, ended - started)
+                    estimates[full_product] = max(sweep_period, minimum, ended - started)
                     summarize()
                 # Cadence is start-to-start for a whole sweep, not a sleep per
                 # 20/100 markets. A long fallback sweep never delays native bulk.
-                delay = max(.01, period - (monotonic() - started))
+                elapsed = monotonic() - started
+                delay = max(.01, sweep_period - elapsed)
                 if failures:
                     delay = max(delay, min(300, period * 2 ** min(failures - 1, 5)))
+                if funding and full_product:
+                    update(effective_poll_seconds=round(elapsed + delay, 3),
+                           schedule_reason='request_backoff' if failures else schedule_reason)
                 await self.pause(delay)
 
         async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(worker(True))
-            tasks.create_task(worker(False))
+            tasks.create_task(worker(True), name=f'{prefix}:{name}:bulk')
+            tasks.create_task(worker(False), name=f'{prefix}:{name}:symbols')
 
     async def run_light(self, name, adapter, funding=False):
         """Rotate over the active catalog independently of detailed watchlist polling."""

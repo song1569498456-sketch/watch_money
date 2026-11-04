@@ -1,0 +1,26 @@
+{
+  "mode": "actual credential-free public requests through configured environment proxy; no bypass",
+  "results": [
+    {
+      "source": "kucoin",
+      "url": "https://api.kucoin.com/api/v3/currencies",
+      "error_type": "ProxyError",
+      "successful": false,
+      "at": 1793814966163
+    },
+    {
+      "source": "coinbase_exchange",
+      "url": "https://api.exchange.coinbase.com/currencies",
+      "error_type": "ProxyError",
+      "successful": false,
+      "at": 1793814966166
+    },
+    {
+      "source": "lighter",
+      "url": "https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails",
+      "error_type": "ProxyError",
+      "successful": false,
+      "at": 1793814966168
+    }
+  ]
+}

@@ -237,10 +237,12 @@ async def test_lighter_decimals_funding_exchange_filter_and_unknown_period():
         assert instruments[0].price_precision == 0.01
         snapshots = await adapter.fetch(instruments)
         assert snapshots[0].last == 2000.5
-        assert snapshots[0].funding_rate == 0.000096
+        assert snapshots[0].funding_rate is None and snapshots[0].funding_kind is None
+        assert float(snapshots[0].protocol_metrics["raw_comparative_funding_rate"]) == 0.000096
+        assert snapshots[0].protocol_metrics["comparative_funding_unit"] == "unverified"
         assert snapshots[0].funding_interval_hours is None
         assert snapshots[0].next_funding_at is None
-        assert "funding_period_unverified" in snapshots[0].issues
+        assert any("comparative_funding_unit_and_native_period_unverified" in issue for issue in snapshots[0].issues)
         assert snapshots[0].open_interest == 3 and snapshots[0].oi_unit == "ETH"
 
 

@@ -129,7 +129,7 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
   const activeRef = useRef(active);
   const hasRequested = useRef(false);
   activeRef.current = active;
-  const requestKey = JSON.stringify([sort, marketType, query, platforms]);
+  const requestKey = JSON.stringify([sort, marketType, query, platforms, refreshKey]);
   const currentResults = dataKey === requestKey && search.trim() === query;
   const expired = !!data && Math.max(clock, Date.now()) > scanDeadline(data, staleSeconds);
   const elapsed = data ? scanElapsed(data.as_of, Math.max(clock, Date.now())) : 0;

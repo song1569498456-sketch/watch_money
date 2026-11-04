@@ -247,8 +247,8 @@ class CexAdapter:
                                     and market.get("inverse") is None):
                     continue
                 base = market["base"]
-                base_id = str(market.get("baseId") or "").upper()
-                verified = base in _BASE_IDS and base_id in _BASE_IDS[base]
+                base_id = str(market.get("baseId") or "")
+                verified = base in _BASE_IDS and base_id.upper() in _BASE_IDS[base]
                 asset_id = base if verified else f"cex:{self.venue}:{client_id}:{base_id or base}"
                 identity = f"cex:{self.venue}:{client_id}:{kind}:{quote(str(market['id']), safe='')}"
                 precision = market.get("precision") or {}
@@ -261,6 +261,7 @@ class CexAdapter:
                                          nonnegative=True)
                 instrument = Instrument(
                     id=identity, venue=self.venue, native_symbol=market["symbol"], asset_id=asset_id,
+                    native_currency_id=base_id or None,
                     base=base, quote=market["quote"], settle=market.get("settle"), kind=kind,
                     contract_size=size, linear=not bool(market.get("inverse")), mapping_verified=verified,
                     # CCXT precisionMode may be decimal places or significant digits;
@@ -362,6 +363,25 @@ class CexAdapter:
                 # 10/2s; installed cost=2 and 110ms yields 220ms per request.
                 seconds += len(batch.instruments) * max(.2, getattr(client, 'rateLimit', 110) * .002)
         return seconds
+
+    def funding_poll_policy(self, batch: LightPollBatch, *, source_ages: list[float],
+                            period: float, stale_seconds: float) -> tuple[float, str]:
+        """A bounded refresh target, never an extension of source freshness.
+
+        OKX's reviewed ANY endpoint is one public request for the whole product;
+        5s uses at most 12 requests/minute versus its 10 requests/2s ceiling.
+        Symbol fallbacks and unreviewed providers retain their configured pace.
+        Ages must describe trusted timestamps in this response, not cached rows.
+        """
+        if not batch.full_product or not batch.instruments or self._resolve(batch.instruments[0])[0] != 'okx':
+            return period, 'configured'
+        ages = sorted(age for age in source_ages if math.isfinite(age) and age >= 0)
+        if not ages:
+            return period, 'source_age_unknown'
+        age = ages[math.ceil(len(ages) * .9) - 1]
+        target = min(period, max(5.0, stale_seconds - age - 5.0))
+        reason = 'upstream_source_stale' if age > stale_seconds else 'source_near_expiry' if target < period else 'configured'
+        return target, reason
 
     async def fetch(self, instruments: list[Instrument]) -> list[MarketSnapshot]:
         self.fetch_errors = {}

@@ -28,6 +28,7 @@ class Instrument(Model):
     native_symbol: str
     asset_id: str
     native_asset_id: str | None = None
+    native_currency_id: str | None = None
     quote_asset_id: str | None = None
     native_quote_asset_id: str | None = None
     quote_identity_source: str | None = None
@@ -131,6 +132,9 @@ class VenueStatus(Model):
     transport: str = 'REST'
     stream_state: str = 'idle'
     stream_reconnects: int = 0
+    stream_requested_markets: int = 0
+    stream_selected_markets: int = 0
+    stream_truncated: bool = False
     funding_state: str = 'idle'
     funding_subscriptions: int = 0
     funding_last_received_at: int | None = None
@@ -147,6 +151,15 @@ class VenueStatus(Model):
     funding_last_cycle_at: int | None = None
     funding_last_attempt_at: int | None = None
     funding_mode: str | None = None
+    funding_effective_poll_seconds: float | None = None
+    funding_schedule_reason: str | None = None
+    funding_arrival_source_age_p90_seconds: float | None = None
+    funding_arrival_source_age_max_seconds: float | None = None
+    funding_arrival_source_age_samples: int = 0
+    funding_arrival_checked_at: int | None = None
+    funding_source_stale_markets: int = 0
+    funding_source_missing_markets: int = 0
+    funding_source_future_markets: int = 0
     light_state: str = 'idle'
     light_subscriptions: int = 0
     light_last_received_at: int | None = None

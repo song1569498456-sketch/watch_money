@@ -33,8 +33,9 @@ class Clock:
 
 def market(identity, venue="gate", *, base="PEPE", kind="spot", native=None, **values):
     native = native or f"cex:{venue}:{venue}:{base}"
+    raw_currency_id = values.pop("native_currency_id", native.split(":")[-1] if native.startswith("cex:") else None)
     return Instrument(id=identity, venue=venue, native_symbol=f"{base}/USDT", asset_id=native,
-                      native_asset_id=native, base=base, quote="USDT", kind=kind, **values)
+                      native_asset_id=native, native_currency_id=raw_currency_id, base=base, quote="USDT", kind=kind, **values)
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(identity_module, "now_ms", clock)
     store = Storage(tmp_path)
     items = [market("gate-spot"), market("gate-quote"), market("gate-perp", kind="perpetual"),
-             market("bitget-perp", "bitget", kind="perpetual"),
+             market("bitget-perp", "bitget", kind="perpetual"), market("bitget-spot", "bitget"),
              market("onchain", "uniswap", kind="pool", native=f"ethereum:{ADDRESS}", chain="ethereum")]
     store.save_instruments(items)
     collector = SimpleNamespace(instruments=store.instruments())
@@ -71,6 +72,17 @@ def bitget_response(address=ADDRESS):
             "chains": [{"chain": "ERC20", "contractAddress": address}]}]}
 
 
+def kucoin_response(currency="PEPE", address=ADDRESS, chains=None):
+    return {"code": "200000", "data": [{"currency": currency, "name": "Renamable display name",
+            "chains": chains if chains is not None else [{"chainId": "eth", "chainName": "ERC20",
+                                                          "contractAddress": address}]}]}
+
+
+def coinbase_response(currency="PEPE", address=ADDRESS):
+    return [{"id": currency, "name": "Synthetic Exchange currency", "default_network": "ethereum",
+             "supported_networks": [{"id": "ethereum", "contract_address": address}]}]
+
+
 def public_client():
     def handle(request):
         assert "authorization" not in request.headers and "x-api-key" not in request.headers
@@ -86,24 +98,30 @@ async def test_public_bulk_import_preview_apply_restart_and_revoke_form_traceabl
     async with public_client() as client:
         env.service.client, env.service._owns_client = client, False
         imported = await env.service.public_refresh(["gate", "bitget"])
-    assert imported["imported"] == 5 and imported["mappings_changed"] is False
+    assert imported["imported"] == 4 and imported["mappings_changed"] is False
     assert all(not item.mapping_verified for item in env.collector.instruments.values())
     preview = env.service.preview(imported["evidence_ids"])
     assert preview["ready"] == 1 and preview["blocked"] == 0
     assert preview["proposals"][0]["venues"] == ["bitget", "gate", "uniswap"]
     applied = env.service.apply(imported["evidence_ids"], preview["preview_token"])
-    assert applied["applied_markets"] == 5
-    assert all(item.mapping_verified and item.mapping_evidence_ids for item in env.collector.instruments.values())
+    assert applied["applied_markets"] == 4
+    assert all(item.mapping_verified and item.mapping_evidence_ids for item in env.collector.instruments.values()
+               if item.kind != "perpetual")
+    assert all(not item.mapping_verified for item in env.collector.instruments.values() if item.kind == "perpetual")
     assert env.collector.instruments["gate-perp"].native_asset_id == "cex:gate:gate:PEPE"
     restored = Storage(env.store.directory).instruments()
     assert restored["gate-spot"].mapping_evidence_status == "verified"
-    assert identity_candidates(restored.values(), as_of=env.clock())[0]["comparison_ready"]
+    assert any(row["comparison_ready"] and len(row["instrument_ids"]) == 4
+               for row in identity_candidates(restored.values(), as_of=env.clock()))
     status = env.service.status()
-    assert status["coverage"]["traceable_verified_markets"] == 5
-    assert status["coverage"]["source_covered_markets"] == 4
-    assert all(source["response_rows"] == 1 and source["error_type"] is None for source in status["sources"])
+    assert status["coverage"]["traceable_verified_markets"] == 4
+    assert status["coverage"]["source_covered_markets"] == 3
+    assert all(source["response_rows"] == 1 and source["error_type"] is None for source in status["sources"]
+               if source["venue"] in {"gate", "bitget"})
+    assert all(source["state"] == "not_requested" for source in status["sources"]
+               if source["venue"] in {"kucoin", "coinbase"})
     revoked = env.service.revoke([imported["evidence_ids"][0]], "Synthetic correction: withdraw reviewed proof")
-    assert len(revoked["affected_instrument_ids"]) == 5
+    assert len(revoked["affected_instrument_ids"]) == 4
     assert all(not item.mapping_verified for item in env.collector.instruments.values())
     assert any(row["action"] == "asset_evidence_revoke" for row in env.store.audit())
 
@@ -126,6 +144,160 @@ def test_bitget_and_gate_normalize_exact_same_evm_contract_without_symbol_global
     assert gate["source_digest"] != bitget["source_digest"]  # Preserve source-specific fields.
 
 
+async def test_kucoin_fixed_currency_id_links_renamed_nonmajor_coin_to_contract_not_display_ticker(env):
+    # Synthetic official schema: XRB is the immutable currency id; NANO is only
+    # the local display/base symbol. This is not a live KuCoin listing assertion.
+    renamed = market("kucoin-renamed", "kucoin", base="NANO", native="cex:kucoin:kucoin:XRB")
+    other = market("gate-nano", base="NANO")
+    env.store.save_instruments([renamed, other])
+    calls = []
+
+    def handle(request):
+        assert "authorization" not in request.headers and "x-api-key" not in request.headers
+        calls.append(str(request.url))
+        if request.url.host == "api.kucoin.com":
+            assert request.url.path == "/api/v3/currencies" and not request.url.query
+            return httpx.Response(200, json=kucoin_response("XRB", OTHER_ADDRESS))
+        assert request.url.host == "api.gateio.ws"
+        return httpx.Response(200, json=[{"currency": "NANO", "chains": [{"name": "ETH", "addr": OTHER_ADDRESS}]}])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        env.service.client, env.service._owns_client = client, False
+        imported = await env.service.public_refresh(["gate", "kucoin"])
+    assert len(calls) == 2 and imported["imported"] == 2
+    records = env.service._records()
+    kucoin = next(row for row in records if row["venue"] == "kucoin")
+    assert kucoin["native_currency_id"] == kucoin["currency_id"] == "XRB"
+    assert kucoin["canonical_asset_id"] == f"ethereum:{OTHER_ADDRESS}"
+    assert kucoin["expires_at"] - kucoin["observed_at"] == 7 * 86400000  # No TTL widening.
+    preview = env.service.preview(imported["evidence_ids"])
+    assert preview["ready"] == 1 and preview["proposals"][0]["symbols"] == ["NANO"]
+    env.service.apply(imported["evidence_ids"], preview["preview_token"])
+    assert env.collector.instruments["kucoin-renamed"].mapping_verified
+    assert env.collector.instruments["gate-nano"].mapping_verified
+    assert env.collector.instruments["kucoin-renamed"].native_currency_id == "XRB"
+
+
+async def test_coinbase_exchange_contract_registry_does_not_spread_to_advanced_trade_or_derivatives(env):
+    exchange = market("cb-exchange", "coinbase", native="cex:coinbase:coinbaseexchange:PEPE")
+    advanced = market("cb-advanced", "coinbase")
+    derivative = market("cb-derivative", "coinbase", native="cex:coinbase:coinbaseexchange:PEPE", kind="perpetual")
+    env.store.save_instruments([exchange, advanced, derivative])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=coinbase_response()))) as client:
+        env.service.client, env.service._owns_client = client, False
+        imported = await env.service.public_refresh(["coinbase"])
+    direct = [row for row in env.service._records() if row["evidence_kind"] == "public_contract_metadata"]
+    assert [row["instrument_id"] for row in direct] == ["cb-exchange"]
+    assert direct[0]["source_field"].endswith("supported_networks")
+    source = imported["sources"][0]
+    assert source["scope_eligible_markets"] == source["matched_markets"] == 1
+    assert source["scope_reasons"] == {"native_client_out_of_source_scope": 1, "product_out_of_source_scope": 1}
+    coverage = next(row for row in env.service.status()["platform_coverage"] if row["venue"] == "coinbase")
+    assert coverage["active_markets"] == 3 and coverage["source_covered_markets"] == 1
+    assert coverage["scope_rejected_markets"] == 2
+    assert not env.collector.instruments["cb-advanced"].mapping_verified
+
+
+async def test_all_spot_currency_sources_reject_missing_original_id_and_perpetual_product_scope(env):
+    missing = market("missing-base-id", native_currency_id=None)
+    mismatched = market("wrong-base-id", native_currency_id="OTHER")
+    kucoin_spot = market("kc-spot", "kucoin")
+    kucoin_future = market("kc-perp", "kucoin", native="cex:kucoin:kucoinfutures:PEPE", kind="perpetual")
+    env.store.save_instruments([missing, mismatched, kucoin_spot, kucoin_future])
+
+    def handle(request):
+        payload = kucoin_response() if request.url.host == "api.kucoin.com" else gate_response()
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        env.service.client, env.service._owns_client = client, False
+        imported = await env.service.public_refresh(["gate", "kucoin"])
+    records = env.service._records()
+    attached = {row["instrument_id"] for row in records}
+    assert "kc-spot" in attached
+    assert not {"missing-base-id", "wrong-base-id", "gate-perp", "kc-perp"}.intersection(attached)
+    gate = next(row for row in imported["sources"] if row["venue"] == "gate")
+    assert gate["scope_reasons"]["original_currency_id_missing"] == 1
+    assert gate["scope_reasons"]["original_currency_id_conflicts_with_native_identity"] == 1
+    assert gate["scope_reasons"]["product_out_of_source_scope"] == 1
+    kucoin = next(row for row in imported["sources"] if row["venue"] == "kucoin")
+    assert kucoin["scope_reasons"] == {"native_client_out_of_source_scope": 1}
+
+
+async def test_original_currency_ids_are_case_sensitive_and_not_replaced_by_unified_base(env):
+    item = market("case-sensitive-id", "kucoin", base="PEPE", native="cex:kucoin:kucoin:pepe")
+    env.store.save_instruments([item])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=kucoin_response("PEPE")))) as client:
+        env.service.client, env.service._owns_client = client, False
+        imported = await env.service.public_refresh(["kucoin"])
+    assert imported["imported"] == 0
+    assert imported["sources"][0]["scope_eligible_markets"] == 1
+    assert imported["sources"][0]["unmatched_currency_markets"] == 1
+
+
+@pytest.mark.parametrize("chains", [
+    [{"chainId": "eth", "chainName": "ERC20", "contractAddress": ADDRESS},
+     {"chainId": "base", "chainName": "BASE", "contractAddress": ADDRESS}],
+    [{"chainId": "base", "chainName": "ERC20", "contractAddress": ADDRESS}],
+    [{"chainId": "unknown", "chainName": "ERC20", "contractAddress": ADDRESS}],
+    [{"chainId": "eth", "chainName": "ERC20", "contractAddress": ""}],
+    [{"chainId": "eth", "chainName": "ERC20", "contractAddress": "0x" + "0" * 40}],
+])
+def test_kucoin_schema_never_selects_first_chain_or_uses_conflicting_network_labels(chains):
+    parsed = parse_public_metadata("kucoin", kucoin_response(chains=chains))[0]
+    assert parsed["canonical_asset_id"] is None and parsed["blockers"]
+
+
+def test_coinbase_missing_contract_does_not_scrape_explorer_url_or_convertible_symbol():
+    payload = coinbase_response(address="")
+    payload[0]["convertible_to"] = ["USDC"]
+    payload[0]["supported_networks"][0]["crypto_address_link"] = "https://etherscan.io/token/" + ADDRESS + "?a={{address}}"
+    parsed = parse_public_metadata("coinbase", payload)[0]
+    assert parsed["canonical_asset_id"] is None
+    assert "network_or_contract_identity_incomplete" in parsed["blockers"]
+
+
+def test_old_public_evidence_without_original_id_is_downgraded_on_service_restart(env):
+    item = env.store.instruments()["gate-spot"]
+    old = {"id": "synthetic-old-public-evidence", "instrument_id": item.id, "native_asset_id": item.native_asset_id,
+           "venue": "gate", "canonical_asset_id": f"ethereum:{ADDRESS}", "catalog_fingerprint": module.catalog_fingerprint(item),
+           "evidence_kind": "public_contract_metadata", "source_url": module.SOURCES["gate"]["endpoint"],
+           "source_field": "synthetic-old-schema.chains", "observed_at": env.clock(),
+           "expires_at": env.clock() + 86400000, "relationship": "same_asset", "unit_multiplier": 1,
+           "blockers": []}  # Deliberately no original native_currency_id provenance.
+    env.service._insert([old])
+    env.store.map_assets([item.id], old["canonical_asset_id"], evidence={item.id: {
+        "status": "verified", "canonical_asset_id": old["canonical_asset_id"],
+        "catalog_fingerprint": module.catalog_fingerprint(item), "evidence_ids": [old["id"]],
+        "verified_at": env.clock(), "expires_at": old["expires_at"]}})
+    env.collector.instruments = env.store.instruments()
+    assert env.collector.instruments[item.id].mapping_verified
+    restarted = AssetVerificationService(env.store, env.collector, clock=env.clock)
+    assert not env.collector.instruments[item.id].mapping_verified
+    assert restarted._records()[0]["status"] == "scope_unverified"
+    assert any(row["action"] == "asset_public_scope_downgrade" for row in env.store.audit())
+
+
+async def test_new_sources_network_errors_have_zero_real_verified_coverage(env):
+    env.store.save_instruments([market("kc", "kucoin"),
+                               market("cb", "coinbase", native="cex:coinbase:coinbaseexchange:PEPE")])
+    requests = []
+
+    def fail(request):
+        requests.append(str(request.url))
+        raise httpx.ProxyError("synthetic proxy rejection, not a real API response")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(fail)) as client:
+        env.service.client, env.service._owns_client = client, False
+        imported = await env.service.public_refresh(["kucoin", "coinbase"])
+    assert requests == [module.SOURCES["kucoin"]["endpoint"], module.SOURCES["coinbase"]["endpoint"]]
+    assert imported["imported"] == 0 and not imported["evidence_ids"]
+    assert all(row["error_type"] == "ProxyError" and row["response_rows"] == 0 for row in imported["sources"])
+    assert env.service.status()["coverage"]["traceable_verified_markets"] == 0
+
+
 async def test_public_metadata_does_not_propagate_by_ticker_to_other_venues_or_scaled_units(env):
     other = market("unproven", "bybit")
     scaled = market("scaled", base="1000PEPE", kind="perpetual")
@@ -136,7 +308,7 @@ async def test_public_metadata_does_not_propagate_by_ticker_to_other_venues_or_s
     records = env.service._records()
     assert "unproven" not in {row["instrument_id"] for row in records}
     assert "scaled" not in {row["instrument_id"] for row in records}
-    assert imported["sources"][0]["matched_markets"] == 3
+    assert imported["sources"][0]["matched_markets"] == 2
     scaled_metadata = parse_public_metadata("gate", [{"currency": "1000PEPE", "chains": [{"name": "ETH", "addr": ADDRESS}]}])
     assert "base_unit_scale_requires_review" in scaled_metadata[0]["blockers"]
 
@@ -151,7 +323,7 @@ async def test_network_failure_is_explicit_not_a_successful_or_simulated_import(
     status = env.service.status()
     assert status["coverage"]["source_covered_markets"] == 0
     assert all(source["state"] == "error" and source["error_type"] == "ProxyError" and source["response_rows"] == 0
-               for source in status["sources"])
+               for source in status["sources"] if source["venue"] in {"gate", "bitget"})
     assert "fixture secret" not in str(status)
 
 
@@ -318,15 +490,15 @@ async def test_market_coverage_uses_active_denominator_without_erasing_inactive_
     env.store.save_instruments([current[identity].model_copy(update={"active": False}) for identity in
                                 ["gate-quote", "bitget-perp", "onchain"]])
     coverage = env.service.status()["coverage"]
-    assert coverage["catalog_markets"] == 5 and coverage["active_markets"] == 2
+    assert coverage["catalog_markets"] == 6 and coverage["active_markets"] == 3
     assert coverage["inactive_markets"] == 3 and coverage["market_count_scope"] == "active_catalog"
     assert coverage["verified_markets"] == coverage["traceable_verified_markets"] == 2
-    assert coverage["unverified_markets"] == coverage["legacy_verified_markets"] == 0
+    assert coverage["unverified_markets"] == 1 and coverage["legacy_verified_markets"] == 0
     assert coverage["source_covered_markets"] == 2
-    assert coverage["source_observed_markets"] == 4 and coverage["evidence_records"] == 5
+    assert coverage["source_observed_markets"] == 3 and coverage["evidence_records"] == 4
     env.store.map_asset("gate-spot", "legacy:PEPE")
     coverage = env.service.status()["coverage"]
-    assert coverage["verified_markets"] == coverage["active_markets"] == 2
+    assert coverage["verified_markets"] == 2 and coverage["active_markets"] == 3
     assert coverage["legacy_verified_markets"] == coverage["traceable_verified_markets"] == 1
 
 

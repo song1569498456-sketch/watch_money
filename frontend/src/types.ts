@@ -82,6 +82,15 @@ export interface VenueStatus {
   state: string;
   transport: string;
   stream_state: string;
+  funding_effective_poll_seconds?: number | null;
+  funding_schedule_reason?: string | null;
+  funding_arrival_source_age_p90_seconds?: number | null;
+  funding_arrival_source_age_max_seconds?: number | null;
+  funding_arrival_source_age_samples?: number;
+  funding_arrival_checked_at?: number | null;
+  funding_source_stale_markets?: number;
+  funding_source_missing_markets?: number;
+  funding_source_future_markets?: number;
   funding_state: string;
   funding_subscriptions: number;
   funding_last_received_at?: number;
@@ -97,6 +106,9 @@ export interface VenueStatus {
   light_errors: Record<string, string>;
   detail_errors: Record<string, string>;
   stream_reconnects: number;
+  stream_requested_markets?: number;
+  stream_selected_markets?: number;
+  stream_truncated?: boolean;
   last_received_at?: number;
   last_attempt_at?: number;
   retries: number;

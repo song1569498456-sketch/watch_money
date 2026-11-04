@@ -1,5 +1,7 @@
 # 当前开发状态
 
+2026-11-04 外部实测反馈后续：Hyperliquid/Lighter启用受预算限制的全目录源流；OKX资金费按到达源年龄自适应重查，保持60秒TTL；官方身份源扩为Gate/Bitget/KuCoin/Coinbase Exchange并严格限定原始币种ID、client及现货范围。永续身份和Lighter费率单位仍未充分确认，保持未知。**本批完整742项后端（24.02s）、31项前端、45组浏览器检查、构建/Ruff/diff通过**。证据见 [live-review-validation.json](evidence/live-review-validation.json)，实网父线程反馈与当前代理失败分别见 [LIVE_REVIEW_FOLLOWUP.md](LIVE_REVIEW_FOLLOWUP.md)。以下保留前批记录。
+
 2026-11-04 回放复审：价差与资金费身份核验已传递请求as_of，批准前/时/后三个边界回归通过；200小币种双平台合成批量身份验证通过。完整后端681 passed（19.30s）、Ruff及diff检查通过。本批未改前端，未重跑浏览器；真实身份覆盖及完整历史映射版本仍未验收。详见 [审计清单](AUDIT_BACKLOG.md)。
 
 2026-11-04 界面真实性复审：顶部刷新联动当前价差/资金费查询；缓存排行随时间保守失效、更新年龄并在返回时重查；我的监控可查看和取消星标市场。资金费兼容类型分组已在上一批完成。完整677后端、31前端、构建/Ruff通过，导航12组浏览器通过。具体证据见 [browser-navigation.json](evidence/browser-navigation.json) 与 [审计清单](AUDIT_BACKLOG.md)。本批仍为本地合成验收。
@@ -21,7 +23,7 @@
 ## 已实现并离线验证
 
 - 新数据目录默认启用全部28个计划平台，已有持久化启用列表保留。CEX目录不按主流币白名单裁剪，部分服务失败保留身份/单独报告。广覆盖按已发现活跃目录分层调度，已审查端点按整产品批量，其余有界逐币回退，新配置目标周期30秒、1800秒重发现；关注资产另有详细REST/可用源WS，不能称全目录同时实时更新。
-- CEX公共源WS及Hyperliquid/dYdX原生WS接入collector，包含稀疏字段、心跳/重连/选择变化取消与REST fallback。本地浏览器推送为初始完整markets、后续markets_delta增量/删除，保留过期转变、重连/模式重置；大目录实网负载未验。
+- CEX公共源WS及Hyperliquid/Lighter/dYdX原生WS接入collector，包含稀疏字段、心跳/重连/选择变化取消与REST fallback。本地浏览器推送为初始完整markets、后续markets_delta增量/删除，保留过期转变、重连/模式重置；大目录实网负载未验。
 - 资产级扫描按可核对身份、报价币、来源时间和有效bid/ask筛选best，展开原始市场与双向组合，保留两腿ID/源与接收时间。预算截断明示best仅限已扫范围。点击精确ID/策略进入calculator，不自动提交计算；指示扫描net=null/executable=false。
 - Calculator支持基础数量或实际多档买方asks的金额换算，刷新指定两腿深度；不外推或静默舍余。spot base/perpetual contracts的step与min_amount、深度、费用/FX/时效/身份继续校验；未知或不足时不输出假净收益。退出假设有unknown/entry/prices/basis互斥输入；显式双腿holding逐腿名义/时长、一次换汇，独立于funding情景。
 - 公共费用API/设置/计算器按venue、spot/perpetual、maker/taker隔离。112档案中22条普通公开参考，保留来源/核验时间/适用scope；Binance perpetual等未知保持空，Bybit特殊区、HIP-3/HL spot等不越scope自动套值。用户覆盖明确为假设、可审计/恢复；切腿/同平台换产品清除相应手填fee与holding、旧异步结果不串腿。不是账户实际费率，不使用账户API。

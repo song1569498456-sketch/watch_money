@@ -4,7 +4,7 @@ import asyncio
 import pytest
 
 from watch_money.adapters.cex import CexAdapter
-from watch_money.collector import Collector
+from watch_money.collector import Collector, funding_response_source_ages
 from watch_money.models import Instrument, MarketSnapshot, Settings, now_ms
 from watch_money.storage import Storage
 
@@ -93,6 +93,98 @@ def test_known_fallback_rate_limits_expose_unachievable_sixty_second_coverage():
     assert adapter.minimum_light_cycle_seconds(adapter.plan_light(items, funding=True), funding=True) >= 220
 
 
+@pytest.mark.parametrize(('ages', 'expected', 'reason'), [
+    ([0] * 10, 30, 'configured'),
+    ([40] * 10, 15, 'source_near_expiry'),
+    ([55] * 10, 5, 'source_near_expiry'),
+    ([61] * 10, 5, 'upstream_source_stale'),
+    ([], 30, 'source_age_unknown'),
+    ([-10, float('nan')], 30, 'source_age_unknown'),
+])
+def test_okx_adaptive_policy_is_a_bounded_public_bulk_target(ages, expected, reason):
+    adapter, _client, items = adapter_for(10)
+    batch = adapter.plan_light(items, funding=True)[0]
+    assert adapter.funding_poll_policy(batch, source_ages=ages, period=30, stale_seconds=60) == (expected, reason)
+    # The faster policy must never fan out the reviewed ANY request into symbols.
+    fallback = batch.__class__(batch.key, batch.instruments, False)
+    assert adapter.funding_poll_policy(fallback, source_ages=ages, period=30, stale_seconds=60) == (30, 'configured')
+
+
+def test_adaptive_response_ages_exclude_future_unknown_invalid_and_demo():
+    adapter, _client, items = adapter_for(6)
+    def row(item, **extra):
+        return MarketSnapshot(instrument_id=item.id, venue='okx', funding_rate=0,
+                              source='public:synthetic:funding', source_at=NOW - 55_000,
+                              received_at=NOW, **extra)
+    rows = [row(items[0]), row(items[1]).model_copy(update={'source_at': NOW - 61_000}),
+            row(items[2]).model_copy(update={'field_timestamps': {'funding_rate': NOW + 1}}),
+            row(items[3]).model_copy(update={'field_timestamps': {'funding_rate': None}}),
+            row(items[4], is_demo=True), row(items[5], valid=False)]
+    assert funding_response_source_ages(rows, {item.id: item for item in items}, NOW, 60) == [55, 61]
+    adapter, _client, items = adapter_for(1, venue='bybit')
+    assert adapter.funding_poll_policy(adapter.plan_light(items, funding=True)[0],
+                                      source_ages=[55], period=30, stale_seconds=60) == (30, 'configured')
+
+
+@pytest.mark.asyncio
+async def test_okx_source_age_refresh_does_not_mask_stale_source_or_fetch_failure(tmp_path, monkeypatch):
+    """Synthetic sequence: old-on-arrival -> expired -> request error -> recovery."""
+    adapter, client, items = adapter_for(3)
+    clock = [NOW]
+    monkeypatch.setattr('watch_money.adapters.cex.now_ms', lambda: clock[0])
+    monkeypatch.setattr('watch_money.collector.now_ms', lambda: clock[0])
+    source = [NOW - 55_000]
+    client.rate = lambda: {'timestamp': source[0], 'fundingRate': 0, 'interval': '1h',
+                           'fundingTimestamp': NOW + 3600_000}
+    store = Storage(tmp_path)
+    store.save_instruments(items)
+    store.set('settings', Settings(enabled_venues=['okx'], history_enabled=False).model_dump())
+    collector = Collector(store, {'okx': adapter})
+    collector.discovered.add('okx')
+    # A recent price envelope is no evidence that the separate rate is recent.
+    for item in items:
+        collector.snapshots[item.id] = MarketSnapshot(instrument_id=item.id, venue='okx', bid=100, ask=101,
+            source='public:synthetic:ticker', source_at=NOW, received_at=NOW)
+    checkpoints = []
+
+    async def pause(delay):
+        if asyncio.current_task().get_name() == 'funding:okx:bulk':
+            status = collector.statuses['okx']
+            checkpoints.append(status.model_dump())
+            if len(checkpoints) == 1:
+                assert 4 < delay <= 5
+                clock[0] += 6_000
+            elif len(checkpoints) == 2:
+                assert 4 < delay <= 5
+                client.failure = TimeoutError('synthetic public timeout')
+            elif len(checkpoints) == 3:
+                assert delay >= 30
+                client.failure = None
+                source[0] = clock[0]
+            else:
+                collector.stopping.set()
+        await asyncio.sleep(.001)
+
+    collector.pause = pause
+    await asyncio.wait_for(collector.run_light('okx', adapter, funding=True), 5)
+    near, stale, failed, recovered = checkpoints
+    assert near['funding_fresh_markets'] == 3 and near['funding_arrival_source_age_p90_seconds'] == 55
+    assert near['funding_schedule_reason'] == 'source_near_expiry' and not near['funding_errors']
+    assert stale['funding_fresh_markets'] == 0 and stale['funding_source_stale_markets'] == 3
+    assert stale['funding_arrival_source_age_max_seconds'] == 61
+    assert stale['funding_schedule_reason'] == 'upstream_source_stale' and not stale['funding_errors']
+    assert failed['funding_schedule_reason'] == 'request_backoff'
+    assert set(failed['funding_errors'].values()) == {'TimeoutError'}
+    assert failed['funding_arrival_checked_at'] == stale['funding_arrival_checked_at']
+    assert failed['funding_arrival_source_age_max_seconds'] == 61
+    assert recovered['funding_fresh_markets'] == 3 and not recovered['funding_errors']
+    assert recovered['funding_arrival_source_age_p90_seconds'] == 0
+    assert recovered['funding_effective_poll_seconds'] == 30 and recovered['funding_schedule_reason'] == 'configured'
+    assert all(call[1] is None for call in client.calls) and len(client.calls) == 4
+    assert Settings().stale_seconds == 60
+    assert all(row.field_timestamps['bid'] == NOW for row in collector.snapshots.values())
+
+
 @pytest.mark.asyncio
 async def test_bulk_runtime_rejection_replans_without_unbounded_single_fanout():
     class NotSupported(Exception):
@@ -142,6 +234,34 @@ def test_read_time_coverage_rejects_new_last_price_over_old_quotes_and_ages_when
     monkeypatch.setattr("watch_money.collector.now_ms", lambda: NOW + 61_000)
     collector.refresh_status_coverage()
     assert status.funding_fresh_markets == 0 and status.funding_coverage_ratio == 0
+
+
+def test_read_time_source_diagnostics_separate_stale_missing_future_without_rewriting_arrival_age(tmp_path):
+    adapter, _client, items = adapter_for(6)
+    store = Storage(tmp_path)
+    store.save_instruments(items)
+    collector = Collector(store, {'okx': adapter})
+    base = MarketSnapshot(instrument_id=items[0].id, venue='okx', funding_rate=.001, funding_kind='current',
+        funding_interval_hours=8, source='public:synthetic', source_at=NOW - 61_000, received_at=NOW)
+    collector.snapshots = {
+        items[0].id: base,
+        items[1].id: base.model_copy(update={'instrument_id': items[1].id, 'field_timestamps': {'funding_rate': None}}),
+        items[2].id: base.model_copy(update={'instrument_id': items[2].id, 'field_timestamps': {'funding_rate': NOW + 1}}),
+        items[3].id: base.model_copy(update={'instrument_id': items[3].id, 'source': ''}),
+        items[4].id: base.model_copy(update={'instrument_id': items[4].id, 'is_demo': True}),
+        items[5].id: base.model_copy(update={'instrument_id': items[5].id, 'valid': False,
+                                           'field_timestamps': {'funding_rate': NOW + 31_000}}),
+    }
+    status = collector.statuses['okx']
+    status.funding_arrival_source_age_p90_seconds = 55
+    status.funding_arrival_checked_at = NOW - 6_000
+    collector.refresh_status_coverage()
+    assert status.funding_observed_markets == 5 and status.funding_fresh_markets == 0
+    assert status.funding_source_stale_markets == 1
+    assert status.funding_source_missing_markets == 2
+    assert status.funding_source_future_markets == 2
+    assert status.funding_arrival_source_age_p90_seconds == 55
+    assert status.funding_arrival_checked_at == NOW - 6_000
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,7 @@
 | 平台 | 实现与数据 | 资金费语义 / 缺口 |
 | --- | --- | --- |
 | Hyperliquid | 原生 public POST `/info`：`perpDexs`、`spotMeta`、各命名空间 `meta`/`metaAndAssetCtxs`、按需 `l2Book`；mark/index、quote 成交量、base OI | `funding` 保留分数值，当前估算，每小时；不把 impact prices 当买卖一，不把 mark 当成交价。 |
-| Lighter | 原生 GET `/api/v1/orderBookDetails`、`funding-rates`、按需 `orderBookOrders`；last/mark/index、USDC 成交量、base OI | 只取 `exchange=lighter`；跨所比较接口未声明周期，保留原始率并标记 `funding_period_unverified`，不做 8h 归一化。 |
+| Lighter | REST `orderBookDetails`、按需 `orderBookOrders`；原生 WS `market_stats/all` 全目录 BBO、mark/index/last 与发布时间 | `current_funding_rate` 为即将支付估计，`funding_rate` 为上次结算；WS 数值单位/basis 未确认，仅保留原始 protocol_metrics。REST comparative rate 同样不发布为 canonical current funding。详见 DEX_STREAMING.md。 |
 | edgeX | 原生 V2 `/public/meta/getMetaData`、`quote/getTicker`、`funding/getLatestFundingRate`、`quote/getDepth` | 使用最新 funding endpoint 的 `fundingRate`、`isSettlement`、`fundingRateIntervalMin` 与 `fundingTimestamp`；不复用 ticker 的费率或时间。 |
 | dYdX | 原生 Indexer V4 `perpetualMarkets`、`orderbooks/perpetualMarket/{ticker}`；oracle、USD 成交量、base OI | `nextFundingRate` 是下一小时预测；报价 USD、结算 USDC 分开。CCXT dYdX 不提供 tickers，故未依赖其 ticker 方法。 |
 | Paradex | CCXT public markets、tickers、funding rates、order book | 周期取返回 interval 或市场 `funding_period_hours`；包括 24h 等不同合约周期，禁止统一设为 8h。 |

@@ -583,12 +583,13 @@ function App() {
               />
               <details className="panel settings-advanced"><summary>高级诊断 · 原生池状态</summary><NativePoolPanel settings={settings} /></details>
               <details className="panel settings-advanced"><summary>资产身份与映射管理</summary>
-              <AssetVerification onChanged={() => { void load(); setToast("身份核验状态已更新"); }} />
+              <AssetVerification onChanged={() => { setQueryRefresh((value) => value + 1); void load(); setToast("身份核验状态已更新"); }} />
               <IdentityCandidates refreshKey={identityVersion} />
               <AssetMappings
                 instruments={markets.instruments}
                 assets={assets}
                 onSave={() => {
+                  setQueryRefresh((value) => value + 1);
                   void load();
                   setToast("资产映射已更新，审计记录已保存");
                 }}
@@ -1689,6 +1690,7 @@ function Status({
                       源 WebSocket：
                       {stateName[s.stream_state] ?? s.stream_state ?? "未提供"}
                     </small>
+                    <small className={s.stream_truncated ? "warning" : "muted"}>源流选取 {s.stream_selected_markets ?? 0}/{s.stream_requested_markets ?? 0} 市场{s.stream_truncated ? " · 订阅预算截断，其余等待REST" : ""} · 不等于已收到有效盘口</small>
                     <small>全目录：{s.light_state ?? "未提供"} · {s.light_subscriptions ?? 0} 市场 · 最近 {age(s.light_last_received_at, now)}</small>
                     <CollectionCoverage status={s} prefix="light" />
                     <small>轻量重试：{num(s.light_retries, 0)} · 目录发现：{s.discovery_complete ? "已完成" : "尚未完成"}
@@ -1701,6 +1703,9 @@ function Status({
                     <small className="muted">{num(s.funding_subscriptions, 0)} 个市场 · 重试 {num(s.funding_retries, 0)}</small>
                     <small className="muted" title={time(s.funding_last_received_at)}>最近 {age(s.funding_last_received_at, now)}</small>
                     <CollectionCoverage status={s} prefix="funding" />
+                    {s.funding_effective_poll_seconds != null && <small>当前目标重查 {num(s.funding_effective_poll_seconds, 1)} 秒 · 不代表源端更新周期</small>}
+                    {s.funding_arrival_source_age_p90_seconds != null && <small>最近响应到达时源年龄 P90 / 最大 {num(s.funding_arrival_source_age_p90_seconds, 1)} / {num(s.funding_arrival_source_age_max_seconds, 1)} 秒 · {s.funding_arrival_source_age_samples ?? 0} 样本 · {age(s.funding_arrival_checked_at, now)}</small>}
+                    <small>已收到费率中：源时间过期 {s.funding_source_stale_markets ?? 0} · 缺失 {s.funding_source_missing_markets ?? 0} · 未来时间 {s.funding_source_future_markets ?? 0} 市场</small>
                   </td>
                   <td className="mono">{num(s.stream_reconnects, 0)}</td>
                   <td title={time(s.last_received_at)}>

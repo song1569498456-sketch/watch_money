@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from urllib.parse import urlsplit
 
 import httpx
@@ -17,9 +17,21 @@ from .models import Instrument, now_ms
 router = APIRouter(prefix="/api/assets/verification", tags=["asset-verification"])
 SOURCES = {
     "gate": {"endpoint": "https://api.gateio.ws/api/v4/spot/currencies",
-             "docs_url": "https://www.gate.com/docs/developers/apiv4/en/spot/#query-all-currency-information"},
+             "docs_url": "https://www.gate.com/docs/developers/apiv4/en/spot/#query-all-currency-information",
+             "client_ids": ["gate"], "product_kinds": ["spot"],
+             "scope_note": "Public spot currency registry; derivatives require independent underlying/unit evidence"},
     "bitget": {"endpoint": "https://api.bitget.com/api/v2/spot/public/coins",
-               "docs_url": "https://www.bitget.com/docs/catalog/classic-spot-market/classic-spot-market"},
+               "docs_url": "https://www.bitget.com/docs/catalog/classic-spot-market/classic-spot-market",
+               "client_ids": ["bitget"], "product_kinds": ["spot"],
+               "scope_note": "Public spot currency registry; derivatives require independent underlying/unit evidence"},
+    "kucoin": {"endpoint": "https://api.kucoin.com/api/v3/currencies",
+               "docs_url": "https://www.kucoin.com/docs-new/rest/spot-trading/market-data/get-all-currencies",
+               "client_ids": ["kucoin"], "product_kinds": ["spot"],
+               "scope_note": "Spot currency IDs only; kucoinfutures requires independent underlying evidence"},
+    "coinbase": {"endpoint": "https://api.exchange.coinbase.com/currencies",
+                 "docs_url": "https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/currencies/get-all-known-currencies",
+                 "client_ids": ["coinbaseexchange"], "product_kinds": ["spot"],
+                 "scope_note": "Coinbase Exchange registry only; Advanced Trade client coinbase is not implicitly equivalent"},
 }
 _CHAINS = {"ETH": "ethereum", "ERC20": "ethereum", "ETHEREUM": "ethereum", "BSC": "bsc",
            "BEP20": "bsc", "BASE": "base", "ARBITRUM": "arbitrum", "SOL": "solana", "SOLANA": "solana"}
@@ -32,9 +44,32 @@ def _digest(value) -> str:
 
 
 def catalog_fingerprint(instrument: Instrument) -> str:
-    return _digest({"id": instrument.id, "native_asset_id": instrument.native_asset_id or instrument.asset_id,
+    value = {"id": instrument.id, "native_asset_id": instrument.native_asset_id or instrument.asset_id,
                     "base": instrument.base, "kind": instrument.kind, "chain": instrument.chain,
-                    "contract_size": instrument.contract_size, "linear": instrument.linear})
+                    "contract_size": instrument.contract_size, "linear": instrument.linear}
+    if instrument.native_currency_id is not None:
+        value["native_currency_id"] = instrument.native_currency_id
+    return _digest(value)
+
+
+def public_source_scope(instrument: Instrument, venue: str) -> tuple[str | None, str | None]:
+    """Require original baseId, correct business client, product and native id."""
+    source = SOURCES.get(venue)
+    if source is None or instrument.venue != venue:
+        return None, "source_venue_not_supported"
+    native = instrument.native_asset_id or instrument.asset_id
+    parts = native.split(":")
+    if len(parts) != 4 or parts[:2] != ["cex", venue]:
+        return None, "native_currency_namespace_unresolved"
+    if parts[2] not in source["client_ids"]:
+        return None, "native_client_out_of_source_scope"
+    if instrument.kind not in source["product_kinds"]:
+        return None, "product_out_of_source_scope"
+    if not instrument.native_currency_id:
+        return None, "original_currency_id_missing"
+    if parts[3] != instrument.native_currency_id:
+        return None, "original_currency_id_conflicts_with_native_identity"
+    return instrument.native_currency_id, None
 
 
 def project_mapping_metadata(instrument: Instrument, metadata: dict, evidence_statuses: dict | None = None,
@@ -101,7 +136,7 @@ class RevokeSelection(Selection):
 
 
 class RefreshSources(BaseModel):
-    venues: list[str] = Field(default_factory=lambda: ["gate", "bitget"], min_length=1, max_length=2)
+    venues: list[str] = Field(default_factory=lambda: ["gate", "bitget", "kucoin"], min_length=1, max_length=len(SOURCES))
 
 
 def parse_public_metadata(venue: str, payload) -> list[dict]:
@@ -110,17 +145,21 @@ def parse_public_metadata(venue: str, payload) -> list[dict]:
         if not isinstance(payload, dict) or payload.get("code") != "00000":
             raise ValueError("Invalid Bitget public coins response")
         payload = payload.get("data")
+    elif venue == "kucoin":
+        if not isinstance(payload, dict) or payload.get("code") != "200000":
+            raise ValueError("Invalid KuCoin public currencies response")
+        payload = payload.get("data")
     if venue not in SOURCES or not isinstance(payload, list):
         raise ValueError("Invalid public currency list")
     result = []
     for index, row in enumerate(payload):
         if not isinstance(row, dict):
             continue
-        code = row.get("currency" if venue == "gate" else "coin")
+        code = row.get("currency" if venue in {"gate", "kucoin"} else "id" if venue == "coinbase" else "coin")
         if not isinstance(code, str) or not code:
             continue
         contracts, unresolved = set(), False
-        chains = row.get("chains")
+        chains = row.get("supported_networks" if venue == "coinbase" else "chains")
         if not isinstance(chains, list) or not chains:
             unresolved = True
             chains = []
@@ -129,11 +168,23 @@ def parse_public_metadata(venue: str, payload) -> list[dict]:
             if not isinstance(network, dict):
                 unresolved = True
                 continue
-            name = network.get("name" if venue == "gate" else "chain")
-            address = network.get("addr" if venue == "gate" else "contractAddress")
-            selected_fields.append({"network": name, "address": address})
+            name_key = {"gate": "name", "bitget": "chain", "kucoin": "chainId", "coinbase": "id"}[venue]
+            name = network.get(name_key)
+            if venue == "kucoin" and not name:
+                name = network.get("chainName")
+            address = network.get("addr" if venue == "gate" else "contract_address" if venue == "coinbase"
+                                  else "contractAddress")
+            selected_fields.append({"network": name, "address": address,
+                                    **({"chainName": network.get("chainName")} if venue == "kucoin" else {})})
             chain = _CHAINS.get(str(name).upper())
+            if venue == "kucoin" and network.get("chainId") and network.get("chainName"):
+                display_chain = _CHAINS.get(str(network["chainName"]).upper())
+                if display_chain and display_chain != chain:
+                    unresolved = True
+                    continue
             identity = _chain_address(f"{chain}:{address}") if chain and isinstance(address, str) else None
+            if identity and identity[1].lower() in {"0x" + "0" * 40, "0x" + "e" * 40}:
+                identity = None  # Native placeholders are not token contracts.
             if identity is None:
                 unresolved = True
             else:
@@ -145,10 +196,11 @@ def parse_public_metadata(venue: str, payload) -> list[dict]:
             blockers.append("multiple_or_missing_contract_identities")
         if _SCALED.match(code.upper()):
             blockers.append("base_unit_scale_requires_review")
-        result.append({"currency_id": code.upper(), "canonical_asset_id": next(iter(contracts))
+        result.append({"currency_id": code, "canonical_asset_id": next(iter(contracts))
                        if len(contracts) == 1 and not blockers else None,
                        "contracts": sorted(contracts), "blockers": blockers,
-                       "source_field": f"currencies[{index}].chains", "source_digest": _digest(selected_fields)})
+                       "source_field": f"currencies[{index}]." + ("supported_networks" if venue == "coinbase" else "chains"),
+                       "source_digest": _digest(selected_fields)})
     return result
 
 
@@ -163,6 +215,22 @@ class AssetVerificationService:
                 CREATE TABLE IF NOT EXISTS asset_identity_sources (
                     venue TEXT PRIMARY KEY, record TEXT NOT NULL);
             """)
+            unsupported_old_proof = []
+            catalog_for_scope = store.instruments()
+            for evidence_id, value in db.execute("SELECT id,record FROM asset_identity_evidence WHERE status='active'"):
+                fact = json.loads(value)
+                if fact["evidence_kind"] == "public_contract_metadata":
+                    instrument = catalog_for_scope.get(fact["instrument_id"])
+                    raw, issue = public_source_scope(instrument, fact["venue"]) if instrument else (None, "missing")
+                    if issue or not fact.get("native_currency_id") or raw != fact["native_currency_id"]:
+                        unsupported_old_proof.append(evidence_id)
+            if unsupported_old_proof:
+                db.executemany("UPDATE asset_identity_evidence SET status='scope_unverified' WHERE id=?",
+                               [(value,) for value in unsupported_old_proof])
+                self._audit(db, "asset_public_scope_downgrade", {"evidence_ids": unsupported_old_proof,
+                    "reason": "Original currency ID or reviewed business/product scope cannot be established"})
+        if unsupported_old_proof:
+            collector.instruments = store.instruments()
 
     async def close(self):
         if self._owns_client and self.client is not None:
@@ -222,7 +290,7 @@ class AssetVerificationService:
 
     async def public_refresh(self, venues: list[str]) -> dict:
         if any(venue not in SOURCES for venue in venues):
-            raise ValueError("Only Gate and Bitget reviewed public bulk endpoints are supported")
+            raise ValueError("Only reviewed public contract registries are supported: " + ", ".join(SOURCES))
         if self.client is None:
             self.client = httpx.AsyncClient(timeout=20, follow_redirects=False)
         catalog = self.store.instruments()
@@ -231,7 +299,21 @@ class AssetVerificationService:
             source = SOURCES[venue]
             attempt = {"venue": venue, **source, "state": "error", "last_attempt_at": self.clock(),
                        "received_at": None, "response_rows": 0, "matched_markets": 0,
-                       "eligible_markets": 0, "blocked_markets": 0, "error_type": None}
+                       "eligible_markets": 0, "blocked_markets": 0, "error_type": None,
+                       "scope_count_scope": "active_catalog", "scope_eligible_markets": 0,
+                       "scope_rejected_markets": 0, "scope_reasons": {}, "unmatched_currency_markets": 0}
+            scoped = []
+            scope_reasons = Counter()
+            for instrument in catalog.values():
+                if not instrument.active or instrument.venue != venue:
+                    continue
+                currency_id, problem = public_source_scope(instrument, venue)
+                if problem:
+                    scope_reasons[problem] += 1
+                else:
+                    scoped.append((instrument, currency_id))
+            attempt.update(scope_eligible_markets=len(scoped), scope_rejected_markets=sum(scope_reasons.values()),
+                           scope_reasons=dict(scope_reasons))
             try:
                 response = await self.client.get(source["endpoint"], headers={"Accept": "application/json"})
                 response.raise_for_status()
@@ -244,18 +326,16 @@ class AssetVerificationService:
                 for currency in parsed:
                     by_code[currency["currency_id"]].append(currency)
                 matched, eligible = set(), set()
-                for instrument in catalog.values():
+                for instrument, currency_id in scoped:
                     native = instrument.native_asset_id or instrument.asset_id
-                    parts = native.split(":")
                     # This is a venue-local currency id join, not ticker matching
                     # across exchanges or stripping 1000/bridge/wrapped prefixes.
-                    if len(parts) != 4 or parts[:3] != ["cex", venue, venue] or instrument.venue != venue:
-                        continue
-                    for currency in by_code.get(parts[3].upper(), []):
+                    for currency in by_code.get(currency_id, []):
                         matched.add(instrument.id)
                         if not currency["blockers"]:
                             eligible.add(instrument.id)
                         record = {**currency, "instrument_id": instrument.id, "native_asset_id": native,
+                                  "native_currency_id": currency_id,
                                   "venue": venue, "source_url": source["endpoint"],
                                   "observed_at": observed, "expires_at": observed + 7 * 86400000,
                                   "evidence_kind": "public_contract_metadata", "relationship": "same_asset",
@@ -266,7 +346,8 @@ class AssetVerificationService:
                 attempt.update(state="observed", received_at=observed,
                                response_rows=len(payload if isinstance(payload, list) else payload["data"]),
                                matched_markets=len(matched), eligible_markets=len(eligible),
-                               blocked_markets=len(matched) - len(eligible))
+                               blocked_markets=len(matched) - len(eligible),
+                               unmatched_currency_markets=len(scoped) - len(matched))
             except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
                 attempt["error_type"] = type(exc).__name__
             attempts.append(attempt)
@@ -278,6 +359,8 @@ class AssetVerificationService:
         # on-chain markets without pretending a new exchange event was observed.
         canonical = {record["canonical_asset_id"] for record in records if record["canonical_asset_id"]}
         for instrument in catalog.values():
+            if not instrument.active:
+                continue
             native = instrument.native_asset_id or instrument.asset_id
             address = _chain_address(native)
             if address is None or f"{address[0]}:{address[1]}" not in canonical:
@@ -326,6 +409,10 @@ class AssetVerificationService:
                     issues.add("evidence_expired_or_future")
                 if instrument is None or catalog_fingerprint(instrument) != fact["catalog_fingerprint"]:
                     issues.add("catalog_identity_changed")
+                if fact["evidence_kind"] == "public_contract_metadata" and instrument is not None:
+                    currency_id, scope_issue = public_source_scope(instrument, fact["venue"])
+                    if scope_issue or currency_id != fact.get("native_currency_id"):
+                        issues.add("public_native_currency_scope_unverified")
                 if len(known_targets[fact["instrument_id"]]) > 1:
                     issues.add("conflicting_active_evidence")
                 if fact["relationship"] != "same_asset" or fact["unit_multiplier"] != 1:
@@ -410,9 +497,48 @@ class AssetVerificationService:
         traceable = [item for item in verified if item.mapping_evidence_ids]
         with self.store.connect() as db:
             attempts = {venue: json.loads(record) for venue, record in db.execute("SELECT venue,record FROM asset_identity_sources")}
-        sources = [attempts.get(venue, {"venue": venue, **source, "state": "not_requested", "last_attempt_at": None,
+        sources = [{"venue": venue, **source, "state": "not_requested", "last_attempt_at": None,
                     "received_at": None, "response_rows": 0, "matched_markets": 0, "eligible_markets": 0,
-                    "blocked_markets": 0, "error_type": None}) for venue, source in SOURCES.items()]
+                    "blocked_markets": 0, "error_type": None, "scope_count_scope": "active_catalog",
+                    "scope_eligible_markets": 0, "scope_rejected_markets": 0, "scope_reasons": {},
+                    "unmatched_currency_markets": 0, **attempts.get(venue, {}),
+                    "client_ids": source["client_ids"], "product_kinds": source["product_kinds"]}
+                   for venue, source in SOURCES.items()]
+        current_public = [fact for fact in records if fact["status"] == "active"
+                          and fact["evidence_kind"] == "public_contract_metadata"
+                          and fact["expires_at"] > self.clock() and fact["instrument_id"] in catalog
+                          and catalog[fact["instrument_id"]].active
+                          and fact["catalog_fingerprint"] == catalog_fingerprint(catalog[fact["instrument_id"]])]
+        by_venue = defaultdict(list)
+        for instrument in active:
+            by_venue[instrument.venue].append(instrument)
+        platform_coverage = []
+        for venue in sorted(set(by_venue) | set(SOURCES)):
+            members = by_venue[venue]
+            problems = Counter()
+            for instrument in members:
+                _, problem = public_source_scope(instrument, venue)
+                if problem:
+                    problems[problem] += 1
+            facts = [fact for fact in current_public if fact["venue"] == venue]
+            member_verified = [item for item in members if item.mapping_verified]
+            blocked_reasons = defaultdict(set)
+            for fact in facts:
+                for problem in fact["blockers"]:
+                    blocked_reasons[problem].add(fact["instrument_id"])
+            platform_coverage.append({"venue": venue, "active_markets": len(members),
+                "source_supported": venue in SOURCES, "client_ids": SOURCES.get(venue, {}).get("client_ids", []),
+                "product_kinds": SOURCES.get(venue, {}).get("product_kinds", []),
+                "source_scope_markets": len(members) - sum(problems.values()),
+                "scope_rejected_markets": sum(problems.values()), "scope_reasons": dict(problems),
+                "source_covered_markets": len({fact["instrument_id"] for fact in facts if not fact["blockers"]}),
+                "source_blocked_markets": len({fact["instrument_id"] for fact in facts if fact["blockers"]}),
+                "source_blockers": {problem: len(ids) for problem, ids in blocked_reasons.items()},
+                "verified_markets": len(member_verified),
+                "traceable_verified_markets": sum(bool(item.mapping_evidence_ids) for item in member_verified),
+                "unverified_markets": len(members) - len(member_verified),
+                "conflicting_markets": sum(item.mapping_evidence_status == "conflicting_evidence" for item in members),
+                "scope_note": SOURCES.get(venue, {}).get("scope_note", "")})
         return {"as_of": self.clock(), "coverage": {"catalog_markets": len(instruments),
             "active_markets": len(active), "inactive_markets": len(instruments) - len(active),
             "market_count_scope": "active_catalog", "verified_markets": len(verified),
@@ -427,7 +553,8 @@ class AssetVerificationService:
             "source_observed_markets": len({row["instrument_id"] for row in records
                                            if row["evidence_kind"] == "public_contract_metadata"}),
             "ready_proposals": preview["ready"], "conflict_proposals": preview["blocked"]},
-            "sources": sources, "proposals": preview["proposals"][:limit], "evidence": records[:limit],
+            "sources": sources, "platform_coverage": platform_coverage,
+            "proposals": preview["proposals"][:limit], "evidence": records[:limit],
             "audit": [row for row in self.store.audit() if row["action"].startswith("asset_")],
             "truncated": {"evidence": len(records) > limit, "proposals": len(preview["proposals"]) > limit}}
 
