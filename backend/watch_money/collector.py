@@ -767,8 +767,12 @@ class Collector:
             instruments, snapshots = demo_markets()
             return {'instruments': [i.model_dump() for i in instruments],
                     'snapshots': [enrich(s, settings.stale_seconds) for s in snapshots], 'mode': 'demo'}
-        ids = {key for key, i in self.instruments.items() if i.venue in allowed
-               and (settings.broad_collection_enabled or i.base.upper() in {s.upper() for s in settings.watch_assets})}
-        return {'instruments': [self.instruments[key].model_dump() for key in sorted(ids)],
-                'snapshots': [enrich(s, settings.stale_seconds) for key, s in self.snapshots.items() if key in ids],
+        # Worker-built API/WS views may overlap discovery and patch ingestion.
+        # Freeze membership once; never iterate a mutating collector dictionary.
+        watched = {s.upper() for s in settings.watch_assets}
+        selected = {key: i for key, i in tuple(self.instruments.items()) if i.venue in allowed
+                    and (settings.broad_collection_enabled or i.base.upper() in watched)}
+        snapshots = tuple(self.snapshots.items())
+        return {'instruments': [selected[key].model_dump() for key in sorted(selected)],
+                'snapshots': [enrich(s, settings.stale_seconds) for key, s in snapshots if key in selected],
                 'mode': 'live'}

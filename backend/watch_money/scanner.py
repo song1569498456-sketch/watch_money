@@ -8,6 +8,7 @@ from itertools import product
 from typing import Literal
 
 from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse
 
 from .identity import identity_candidates
 from .models import Instrument, MarketSnapshot, now_ms
@@ -444,4 +445,4 @@ def scan_api(request: Request, limit: int = Query(100, ge=1, le=1000),
     result.update(enabled=enabled, mode="indicative_public_market_scan")
     result["stats"].update(collector_catalog_markets=len(catalog),
                            excluded_by_settings=len(catalog) - len(instruments))
-    return result
+    return JSONResponse(result)

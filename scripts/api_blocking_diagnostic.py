@@ -124,7 +124,7 @@ async def measure(size):
 async def main(args):
     results = [await measure(size) for size in args.sizes]
     evidence = {'kind': 'synthetic_local_api_blocking_diagnostic', 'at': now_ms(),
-                'production_edits': False, 'network_requests': False,
+                'production_edits_by_script': False, 'network_requests': False,
                 'included': ['actual in-process ASGI routing/serialization', 'synthetic confirmed four-venue identity groups',
                              'actual SQLite and Parquet writes', '10ms event-loop timer'],
                 'excluded': ['exchange and TCP/browser traffic', 'active collectors', 'other process isolation'],

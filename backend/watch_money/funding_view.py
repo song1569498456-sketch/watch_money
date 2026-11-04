@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 from typing import Literal
 
 from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse
 
 from .identity import identity_candidates
 from .models import Instrument, MarketSnapshot, now_ms
@@ -228,4 +229,4 @@ def funding_api(request: Request, sort: Sort = "rate", limit: int = Query(500, g
                                 sort=sort, limit=limit, rate_basis=rate_basis)
     result.update(enabled=enabled, venues=venues, venue_filter=venue, platforms_filter=platform_filter, search=search)
     result["stats"].update(collector_catalog_markets=len(catalog), excluded_by_settings=len(catalog) - len(selected))
-    return result
+    return JSONResponse(result)

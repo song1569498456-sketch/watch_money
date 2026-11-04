@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .collector import Collector, sanitize_legacy_volume
@@ -105,7 +106,9 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
 
     @app.get('/api/markets')
     def markets():
-        return collector.markets()
+        # This sync endpoint runs in a worker. Render here rather than returning
+        # a large dict for FastAPI to recursively encode on the event loop.
+        return JSONResponse(collector.markets())
 
     @app.get('/api/status')
     def status():
@@ -232,10 +235,16 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
         await ws.accept()
         from .market_stream import market_delta
         previous = None
+
+        def build_frame(previous):
+            current = collector.markets()
+            return current, json.dumps(market_delta(previous, current), ensure_ascii=False,
+                                       allow_nan=False, separators=(',', ':'))
+
         try:
             while True:
-                current = collector.markets()
-                await ws.send_json(market_delta(previous, current))
+                current, frame = await asyncio.to_thread(build_frame, previous)
+                await ws.send_text(frame)
                 previous = current
                 await asyncio.sleep(store.settings().refresh_ms / 1000)
         except (WebSocketDisconnect, RuntimeError, OSError):
