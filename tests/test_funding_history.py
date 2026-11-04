@@ -182,7 +182,7 @@ async def test_local_limit_since_and_cache_range_are_explicit(setup_history):
     assert len(client.calls) == 1
 
 
-@pytest.mark.parametrize("client_id,venue", [("deribit", "deribit"), ("gate", "gate"), ("krakenfutures", "kraken")])
+@pytest.mark.parametrize("client_id,venue", [("deribit", "deribit"), ("krakenfutures", "kraken")])
 @pytest.mark.asyncio
 async def test_unreviewed_settlement_semantics_are_501_without_requests(setup_history, client_id, venue):
     service, item, client, _ = setup_history(client_id, venue=venue)
@@ -325,3 +325,96 @@ async def test_service_limits_reject_before_network(setup_history, limit):
     with pytest.raises(HTTPException) as raised:
         await service.get(item.id, refresh=True, limit=limit)
     assert raised.value.status_code == 422 and not client.calls
+
+
+def configure_reviewed_history(setup_history, venue, settle='USDT'):
+    service, item, client, adapter = setup_history(venue, venue=venue)
+    item = item.model_copy(update={'settle': settle, 'base': 'BTC' if settle == 'BTC' else 'PEPE',
+                                  'native_symbol': f'PEPE/USDT:{settle}'})
+    service.collector.instruments[item.id] = item
+    market = {'id': 'PEPE_USDT' if venue == 'gate' else 'PEPEUSDT',
+              'symbol': item.native_symbol, 'swap': True, 'settle': settle}
+    adapter._markets[item.id] = (venue, market)
+    return service, item, client, adapter, market
+
+
+@pytest.mark.parametrize('venue,settle', [('gate', 'USDT'), ('gate', 'BTC'), ('gate', 'USD1'),
+                                        ('bitget', 'USDT'), ('bitget', 'USDC'), ('bitget', 'BTC')])
+async def test_new_public_history_native_units_signs_and_scope(setup_history, venue, settle):
+    service, item, client, _, market = configure_reviewed_history(setup_history, venue, settle)
+    client.response = [entry(EVENT + i * 1000, rate, info=(
+        {'t': (EVENT + i * 1000) // 1000, 'r': rate} if venue == 'gate' else
+        {'fundingTime': str(EVENT + i * 1000), 'fundingRate': rate, 'symbol': market['id']}))
+        for i, rate in enumerate(['0.0001', '-0.0002', '0'])]
+    report = await service.get(item.id, refresh=True, limit=1000, since=EVENT)
+    assert [r['funding_rate'] for r in report['records']] == [.0001, -.0002, 0]
+    assert [r['long_cashflow_sign'] for r in report['records']] == [-1, 1, 0]
+    assert all(r['funding_interval_hours'] is None and r['settle'] == settle for r in report['records'])
+    assert all(r['native_market_id'] == market['id'] and r['rate_unit'] == 'decimal_ratio_per_settlement'
+               for r in report['records'])
+    assert client.calls[0][2] == 100 and client.calls[0][3]['paginate'] is False
+    if venue == 'bitget':
+        assert client.calls[0][3] == {'paginate': False, 'uta': False, 'pageNo': 1}
+        assert report['summary']['next_since'] is None
+        assert any('latest page 1' in issue for issue in report['summary']['issues'])
+    else:
+        assert client.calls[0][3]['settle'] == settle.lower()
+
+
+@pytest.mark.parametrize('venue', ['gate', 'bitget'])
+async def test_new_history_rejects_wrong_native_clocks_rates_and_scope(setup_history, venue):
+    service, item, client, _, market = configure_reviewed_history(setup_history, venue)
+    raw = {'t': EVENT // 1000, 'r': '.0001'} if venue == 'gate' else {
+        'fundingTime': str(EVENT), 'fundingRate': '.0001', 'symbol': market['id']}
+    client.response = [entry(info={}), entry(EVENT + 1, info=raw),
+                       entry(info=raw | ({'r': 'NaN'} if venue == 'gate' else {'fundingRate': 'NaN'}))]
+    result = await service.get(item.id, refresh=True)
+    assert result['records'] == [] and result['summary']['rejected_count'] == 3
+    if venue == 'bitget':
+        client.response = [entry(info=raw | {'symbol': 'OTHERUSDT'})]
+        assert (await service.get(item.id, refresh=True))['records'] == []
+    market['settle'] = 'OTHER'
+    calls = len(client.calls)
+    with pytest.raises(HTTPException) as error:
+        await service.get(item.id, refresh=True)
+    assert error.value.status_code == 409 and len(client.calls) == calls
+
+
+@pytest.mark.parametrize('venue', ['gate', 'bitget'])
+async def test_installed_ccxt_public_history_routing_and_clock_without_network(venue):
+    import ccxt.async_support as ccxt
+    client = getattr(ccxt, venue)()
+    symbol = 'PEPE/USDT:USDT'
+    market = {'id': 'PEPE_USDT' if venue == 'gate' else 'PEPEUSDT', 'symbol': symbol,
+              'swap': True, 'spot': False, 'contract': True, 'option': False, 'type': 'swap',
+              'settle': 'USDT', 'settleId': 'usdt', 'base': 'PEPE', 'quote': 'USDT',
+              'linear': True, 'inverse': False}
+    client.markets = {symbol: market}
+    client.markets_by_id = {market['id']: [market]}
+    calls = []
+    async def public(request):
+        calls.append(request)
+        if venue == 'gate':
+            return [{'t': EVENT // 1000, 'r': '-0.0002'}]
+        return {'code': '00000', 'data': [{'symbol': market['id'], 'fundingTime': str(EVENT),
+                                          'fundingRate': '-0.0002'}]}
+    async def forbidden(*args, **kwargs):
+        pytest.fail('unexpected transport or authenticated endpoint')
+    client.fetch = forbidden
+    if venue == 'gate':
+        client.publicFuturesGetSettleFundingRate = public
+        params = {'paginate': False, 'settle': 'usdt'}
+    else:
+        client.publicMixGetV2MixMarketHistoryFundRate = public
+        params = {'paginate': False, 'uta': False, 'pageNo': 1}
+    try:
+        rows = await client.fetch_funding_rate_history(symbol, EVENT, 100, params)
+        assert rows[0]['timestamp'] == EVENT and rows[0]['fundingRate'] == -.0002
+        assert len(calls) == 1
+        if venue == 'gate':
+            assert calls[0]['contract'] == market['id'] and calls[0]['settle'] == 'usdt'
+            assert calls[0]['from'] == EVENT // 1000
+        else:
+            assert calls[0]['productType'] == 'USDT-FUTURES' and calls[0]['pageNo'] == 1
+    finally:
+        await client.close()

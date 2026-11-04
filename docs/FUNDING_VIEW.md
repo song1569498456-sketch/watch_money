@@ -43,3 +43,11 @@ current/predicted 分别标注估算/预测；即便某平台当前返回 settle
 未知历史周期不使用当前目录周期回填。失败、未覆盖、无返回与截断都有单独提示。
 
 验证：`.venv/bin/python -m pytest tests/test_funding_view.py -q`；前端 `npm run typecheck`。
+
+## R38 Bitget/Gate公开结算历史
+
+现有历史接口的显式refresh新增Bitget Classic和Gate，仍限一页最多100条、单刷新锁/适配器并发及15秒超时。Bitget强制uta=false、paginate=false、pageNo=1，原始fundingTime毫秒必须与统一timestamp一致，symbol必须等于目录nativeID；since只过滤最新页，不作为旧页回填游标。Gate强制paginate=false与精确settle（BTC/USDT/USD1），原始t秒×1000必须吻合统一timestamp，r保留原字符串。目录swap/nativeID/settle不明时拒绝刷新。
+
+费率单位为每次结算的小数比例，不乘合约张数/乘数、不额外除100；正值多付空收。历史原始周期未提供则null，不推定8小时，也不拿当下目录周期回填历史。记录额外保留native_market_id、settle、rate_unit、native_settlement_time/native_time_unit。现有去重、修订、首次收到时间和本地采样隔离保持。缓存及新接口都不是全历史完整性证明；Gate当前费率独立源时间仍未知。
+
+官方来源见COVERAGE R38。本轮使用合成响应和安装版CCXT公开方法替身测试，没有行情主机实测，没有账户凭证/交易/生产映射变更。

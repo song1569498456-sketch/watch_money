@@ -19,6 +19,8 @@ router = APIRouter(prefix="/api/funding", tags=["funding-history"])
 # Explicitly reviewed public historical settlement contracts. A generic CCXT
 # capability alone does not prove that a trailing/predicted rate was settled.
 SETTLED_ENDPOINTS = {
+    "bitget": (100, "https://www.bitget.com/docs/catalog/classic-contract-market/classic-contract-market#get-historical-funding-rates"),
+    "gate": (100, "https://www.gate.com/docs/developers/apiv4/en/futures/#futures-market-historical-funding-rate"),
     "binanceusdm": (1000, "https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History"),
     "binancecoinm": (1000, "https://developers.binance.com/docs/derivatives/coin-margined-futures/market-data/rest-api/Get-Funding-Rate-History-of-Perpetual-Futures"),
     "okx": (100, "https://www.okx.com/docs-v5/en/#public-data-rest-api-get-funding-rate-history"),
@@ -137,6 +139,12 @@ class FundingHistoryService:
             raise HTTPException(409, "Discover this market before refreshing funding history") from None
         if client_id not in SETTLED_ENDPOINTS:
             raise HTTPException(501, "Historical settled-rate endpoint semantics not yet reviewed for this service")
+        if client_id in {"gate", "bitget"}:
+            allowed = {"USDT", "BTC", "USD1"} if client_id == "gate" else {"USDT", "USDC", instrument.base}
+            if (not _market.get("id") or _market.get("swap") is not True
+                    or _market.get("symbol") != instrument.native_symbol
+                    or _market.get("settle") != instrument.settle or instrument.settle not in allowed):
+                raise HTTPException(409, "Historical market native ID, product or settlement scope is unresolved")
         client = adapter._client(client_id)
         if client.has.get("fetchFundingRateHistory") is not True:
             raise HTTPException(501, "Native public funding rate history is not supported")
@@ -145,9 +153,13 @@ class FundingHistoryService:
             raise HTTPException(409, "Funding history requires a credential-free public client")
         page_limit = min(limit, SETTLED_ENDPOINTS[client_id][0])
         params: dict[str, Any] = {"paginate": False} if client_id in {
-            "binanceusdm", "binancecoinm", "okx", "bybit"} else {}
+            "binanceusdm", "binancecoinm", "okx", "bybit", "gate", "bitget"} else {}
         if client_id.startswith("binance"):
             params["subType"] = "linear" if instrument.linear else "inverse"
+        if client_id == "gate":
+            params["settle"] = instrument.settle.lower()
+        if client_id == "bitget":
+            params.update(uta=False, pageNo=1)
         if client_id == "kucoinfutures":
             params["uta"] = False
         if client_id == "bybit" and since is not None:
@@ -185,6 +197,16 @@ class FundingHistoryService:
             # OKX fundingRate is predicted even in history; only realizedRate
             # proves the actual charged rate. Guard against parser regressions.
             value = raw.get("realizedRate") if client_id == "okx" else raw.get("fundingRate", payload.get("fundingRate"))
+            if client_id in {"gate", "bitget"}:
+                # Independently validate the native settlement clock against
+                # CCXT. Never use response time or today's period as history.
+                native_time = _number(raw.get("t" if client_id == "gate" else "fundingTime"), positive=True)
+                native_time = native_time * 1000 if native_time is not None and client_id == "gate" else native_time
+                if native_time is None or native_time != timestamp:
+                    reason = reason or "native_settlement_timestamp_mismatch"
+                value = raw.get("r" if client_id == "gate" else "fundingRate")
+                if client_id == "bitget" and raw.get("symbol") != _market["id"]:
+                    reason = reason or "wrong_native_market"
             rate = _number(value)
             if timestamp is None:
                 reason = reason or "missing_settlement_timestamp"
@@ -214,13 +236,21 @@ class FundingHistoryService:
                             "source": f"ccxt:{client_id}:fetch_funding_rate_history:{instrument.native_symbol}",
                             "source_docs": SETTLED_ENDPOINTS[client_id][1], "event_type": event_type,
                             "received_at": received, "first_received_at": received, "last_seen_at": received,
-                            "revision": 1, "is_demo": False})
+                            "revision": 1, "is_demo": False,
+                            **({"native_market_id": _market["id"], "settle": instrument.settle,
+                                "rate_unit": "decimal_ratio_per_settlement",
+                                "native_settlement_time": raw.get("t" if client_id == "gate" else "fundingTime"),
+                                "native_time_unit": "seconds" if client_id == "gate" else "milliseconds"}
+                               if client_id in {"gate", "bitget"} else {})})
         await asyncio.to_thread(self._save, records)
         latest = max((row["settlement_at"] for row in records), default=None)
         next_since = latest + 1 if latest is not None and latest < received else None
         issues = [f"rejected_{reason}:{count}" for reason, count in sorted(reasons.items())]
         if since is not None and next_since is None:
             issues.append("no_forward_cursor_progress")
+        if client_id == "bitget":
+            issues.append("Bitget latest page 1 only; since filters locally and does not fetch older pages")
+            next_since = None
         issues.append("One manual page only; exchange retention and missing earlier records remain unknown")
         return {"refreshed": True, "pages": 1, "page_limit": page_limit,
                 "fetched_count": len(payloads), "accepted_count": len(records), "rejected_count": rejected,

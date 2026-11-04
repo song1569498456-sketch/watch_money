@@ -1,6 +1,6 @@
 # 平台覆盖报告
 
-统计时间：2026-11-04。本表记录代码范围，**28 个计划平台不等于 28 个实网已验收平台**。所有平台最近在线验证均为“未验证”；官方数据主机仍受环境网络策略限制，没有真实行情或 24 小时运行证据。
+统计时间：2026-11-04。本表记录代码范围，**28 个计划平台不等于 28 个实网已验收平台**。本云环境官方数据主机仍受网络策略限制；父线程已提供OKX/Bitget/Gate及Hyperliquid短时真实证据，见STATUS和AUDIT_BACKLOG；它们不能替代全平台或24小时验收。
 
 当前阶段按用户最新顺序收敛：先资产级价差/best/双向组合/规模计算闭环，再资金费聚合，最后其他简洁指标与已有历史。不新增交易账户，不因下表列出原生协议缺口就先扩大其开发范围。
 
@@ -12,7 +12,7 @@
 
 ## 12 个 CEX
 
-共用能力为：公开市场目录、分批轻量 ticker、关注资产详细行情、按需盘口及受 CCXT Pro 支持的源 WS。永续的 funding/OI 只保留来源实际提供且单位可核对的字段。目录按 client 隔离部分失败；失败服务的旧身份保留并标为待核实，不当作完整目录或确认退市。所有条目均为**实现及本地模拟验证，实网未验**。
+共用能力为：公开市场目录、分批轻量 ticker、关注资产详细行情、按需盘口及受 CCXT Pro 支持的源 WS。永续的 funding/OI 只保留来源实际提供且单位可核对的字段。目录按 client 隔离部分失败；失败服务的旧身份保留并标为待核实，不当作完整目录或确认退市。下表首先描述代码范围；逐平台短时真实反馈和仍未验项目见本文末尾R38盘点，不应统称全平台已实网通过。
 
 | 平台 / 官方文档 | 产品和服务范围 | 具体边界 |
 | --- | --- | --- |
@@ -87,7 +87,7 @@ Hyperliquid/Lighter/dYdX WS 已接 collector，包含订阅、心跳、取消、
 
 扫描器现返回资产级汇总/best，并可展开该资产的原始市场与双向组合，逐腿展示ID/报价币/source/receipt/时效；选中方向把精确两个instrument ID与策略带入calculator，不按ticker重新匹配，也不自动提交计算。best明确是否只在已扫描范围；资产/平台筛选不隐藏原生身份冲突。该闭环与费用UI整合后的最终合成浏览器复验已通过。price/funding best仅从身份/有效字段/已知来源时间满足rankable的方向选择，未知源时间仍显示原因但不进可靠排行。
 
-资金费专页 API `GET /api/funding` 已接入，按全部已发现活跃 perpetual 展示原始费率、实际周期、8h 归一化、类型、下次时间/倒计时及逐字段时效；未确认身份的市场仍可单独展示，只有身份合格组可作同资产矩阵比较。它是本地行情观测，不是已结算历史。`GET /api/funding/history/{instrument_id}` 另提供缓存读取及显式 `refresh=true` 的公共历史单页拉取；当前代码白名单仅 Binance USDⓈ-M/COIN-M、OKX、Bybit、MEXC、KuCoin Futures，需原生公开能力且无账户凭证。记录独立 SQLite、原始费率/来源/接收时间与修订；不支持后台自动全历史回填，forward since hint 不证明连续完整。资金费页和历史接口已通过本轮离线与浏览器回归，仍待实网核对，不因本地字段名为 settled 就宣称真实结算样本已验收。详见 [SCANNER.md](SCANNER.md)、[FUNDING_VIEW.md](FUNDING_VIEW.md)。
+资金费专页 API `GET /api/funding` 已接入，按全部已发现活跃 perpetual 展示原始费率、实际周期、8h 归一化、类型、下次时间/倒计时及逐字段时效；未确认身份的市场仍可单独展示，只有身份合格组可作同资产矩阵比较。它是本地行情观测，不是已结算历史。`GET /api/funding/history/{instrument_id}` 另提供缓存读取及显式 `refresh=true` 的公共历史单页拉取；当前代码白名单仅 Binance USDⓈ-M/COIN-M、OKX、Bybit、MEXC、KuCoin Futures、Bitget Classic及Gate，需原生公开能力且无账户凭证。记录独立 SQLite、原始费率/来源/接收时间与修订；不支持后台自动全历史回填，forward since hint 不证明连续完整。资金费页和历史接口已通过本轮离线与浏览器回归，仍待实网核对，不因本地字段名为 settled 就宣称真实结算样本已验收。详见 [SCANNER.md](SCANNER.md)、[FUNDING_VIEW.md](FUNDING_VIEW.md)。
 
 指定规模计算已增加 `min_amount` 最小委托数量门槛：现货按 base，永续按原生 contracts/乘数转换后的数量，不能因盘口使用 base 就跳过。显式配置的双腿 `holding_rate_per_hour` 在各持有期按各腿名义价值计费、各自只换汇一次，独立于资金费维持/减半/归零/反转情景；未配置短现货借贷费仍阻止净收益。这只是用户成本假设的核算支持，不是所有协议持仓费已自动接入。
 
@@ -100,3 +100,26 @@ Hyperliquid/Lighter/dYdX WS 已接 collector，包含订阅、心跳、取消、
 官方 API/WS 数据域名仍受当前云环境 restricted/enforced 网络策略限制；可阅读官方 GitHub 源码不代表允许访问主网行情。RPC URL 默认空，主网链状态及原始真实样本没有验证；不绕过代理/策略。模拟通知符合用户“先不配置，模拟测试”的要求，没有真实飞书/Telegram 发送。
 
 所有实现均须在可达的授权网络下逐平台核对实样、周期/单位/限流，再完成至少 24 小时真实采集及人工核算。Windows 实机启动也未验证。当前完整计划仍未通过验收，见 [STATUS.md](STATUS.md)、[ACCEPTANCE.md](ACCEPTANCE.md)、[VALIDATION.md](VALIDATION.md)。
+
+## R38 CEX数据与身份缺口盘点（2026-11-04）
+
+“目录已接”不表示可比较；新鲜盘口、可核验身份、资金费周期和已结算历史分别验收。以下是代码盘点，不是本轮在线探测。当前四个公开合约身份源仅能为指定client的现货生成待审核证据；衍生品底层及单位证明仍不能从同ticker现货继承。其余8平台的公开自动身份源没有实现，不能从名称合并。
+
+| 平台 | 已有数据路径及下一项数据缺口 | 身份发现范围与下一步 |
+| --- | --- | --- |
+| Binance | 现货/USDT与币本位永续、批量报价/费率、手动结算历史；逐平台公开实样与地区可用性待验 | 未接公开自动chain/address源，保留原生ID；不为补身份调用账户接口 |
+| OKX | 现货/永续批量与历史；父线程确认原生费率时间存在过龄空窗，保持60秒门槛 | 未接公开自动chain/address源，广泛币种底层证据待核验 |
+| Bybit | 现货/正反向永续、周期及手动历史；真实周期切换/字段时效待验 | 未接公开自动chain/address源，category与原生ID隔离 |
+| Bitget | 批量报价/周期已有短时实证；本批新增Classic已结算历史，单页与实样待验 | 公开coins现货证据已接；与Gate的199候选组只做隔离库演练，生产未批准；永续仍缺底层证据 |
+| Gate | 现货/三settle永续BBO已有180秒实证，静默市场覆盖不全；本批新增历史，当前费率独立时钟仍未知 | 公开currencies现货证据已接；BTC/USDT/USD1合约名不等于资产身份，不能借现货批准 |
+| MEXC | 现货/永续及手动历史；单市场回退下的全目录时效待实测 | 官方Wallet接口需鉴权，本批不调用；未接其它合格公开合约证据源 |
+| KuCoin | 现货与futures隔离、批量数据及futures历史；实样待核对 | 公共v3 currencies已接，严格原生currency ID；不延伸至kucoinfutures |
+| Coinbase | 目前Advanced Trade公共现货，产品分页/批量覆盖待完善 | Exchange currencies证据源已有，但client不匹配Advanced Trade，禁止隐式套用；尚未接入Exchange行情client |
+| Kraken | spot/futures目录与批量路径；历史结算语义未接 | 未接公开自动合约证据源，XBT等别名不能泛化为全币种核验 |
+| HTX | spot/正反向永续批量路径；周期缺失仍不归一化，历史未接 | 已查公开Currency & Chains文档未列token合约地址，不能仅凭baseChain认同一资产；其它官方来源待核验 |
+| Deribit | spot/perpetual目录；按币种批量覆盖未接；8h trailing不作为下一笔离散结算 | 未接公开自动合约证据源；连续资金费语义保留，不能套用本批历史实现 |
+| Upbit | Korea现货目录/批量，KRW/BTC/USDT报价保留；无本项目永续范围 | 未接公开自动合约证据源；不替换地区服务或按ticker跨平台合并 |
+
+本批官方核查：[Bitget Classic历史](https://www.bitget.com/docs/catalog/classic-contract-market/classic-contract-market#get-historical-funding-rates)、[Gate历史](https://www.gate.com/docs/developers/apiv4/en/futures/#futures-market-historical-funding-rate)、[HTX公共币种/链](https://huobiapi.github.io/docs/spot/v1/en/#apiv2-currency-amp-chains)、[MEXC Wallet鉴权范围](https://www.mexc.com/api-docs/spot-v3/wallet-endpoints/)。前两项增加高质量结算数据，不提高实时资金费新鲜度，也不增加任何身份批准；后两项只记录文档核查边界，不代表已试过私有接口。
+
+独立24小时测试固定其开始时提交；本批只更新现有开发分支、未修改任何正在运行的外部环境或其数据库。新历史功能需在独立实验中显式refresh核验，不应混入旧提交的24小时证据。
