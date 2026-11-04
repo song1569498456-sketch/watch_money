@@ -348,3 +348,37 @@ def test_routes_support_manual_batch_preview_apply_revoke_and_reject_credentials
         payload[0]["source_url"] = "https://user:secret@example.invalid/token?apiKey=secret"
         assert client.post("/api/assets/verification/evidence", json={"items": payload}).status_code == 422
         assert client.post("/api/assets/verification/public-refresh", json={"venues": ["private-account-api"]}).status_code == 422
+
+
+async def test_bulk_small_asset_catalog_verifies_distinct_contracts_without_ticker_allowlist(env):
+    """200 synthetic assets, two official-schema sources; never live coverage evidence."""
+    items, gate, bitget = [], [], []
+    for index in range(200):
+        symbol = f"SMALL{index}"
+        address = f"0x{index + 1:040x}"
+        items.extend([market(f"gate-{index}", base=symbol), market(f"bitget-{index}", "bitget", base=symbol)])
+        gate.append({"currency": symbol, "chains": [{"name": "ETH", "addr": address}]})
+        bitget.append({"coin": symbol, "chains": [{"chain": "ERC20", "contractAddress": address}]})
+    # Same display ticker with different contracts must not become a cross-venue group.
+    items.extend([market("conflict-gate", base="CLASH"), market("conflict-bitget", "bitget", base="CLASH")])
+    gate.append({"currency": "CLASH", "chains": [{"name": "ETH", "addr": ADDRESS}]})
+    bitget.append({"coin": "CLASH", "chains": [{"chain": "ERC20", "contractAddress": OTHER_ADDRESS}]})
+    env.store.save_instruments(items)
+    env.collector.instruments = env.store.instruments()
+    def handle(request):
+        assert "authorization" not in request.headers
+        return httpx.Response(200, json=gate if request.url.host == "api.gateio.ws" else {"code": "00000", "data": bitget})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        env.service.client, env.service._owns_client = client, False
+        imported = await env.service.public_refresh(["gate", "bitget"])
+    preview = env.service.preview(imported["evidence_ids"])
+    ready_ids = [identity for proposal in preview["proposals"] if proposal["status"] == "ready"
+                 for identity in proposal["evidence_ids"]]
+    checked = env.service.preview(ready_ids)
+    env.service.apply(ready_ids, checked["preview_token"])
+    groups = identity_candidates(env.collector.instruments.values(), as_of=env.clock())
+    comparable = [row for row in groups if row["kind"] == "identity" and row["comparison_ready"] and len(row["venues"]) > 1]
+    assert len(comparable) == 200
+    assert all(len(row["instrument_ids"]) == 2 for row in comparable)
+    assert not any("CLASH" in row["symbols"] for row in comparable)
+    assert env.service.status()["coverage"]["traceable_verified_markets"] >= 400

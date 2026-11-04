@@ -102,3 +102,6 @@ shutdown `await service.close()`。HTTP client 按需创建，外部注入 clien
 验证：`.venv/bin/python -m pytest tests/test_asset_verification.py tests/test_identity.py tests/test_core.py -q`。
 测试覆盖公开 schema、精确局部 ID、非主流币多产品/多平台、无 ticker 扩散、多个网络/地址、
 前缀/包装单位冲突、导入/预览/应用/修订/撤销、重启、过期缓存与回放、并发确认、数据库回滚及来源失败。
+
+
+回放检查：价差扫描、资金费视图、组合计算均传入请求时点核验批准时间。回放早于映射批准时不得使用该映射。现有撤销/过期状态仍保守拒绝，未实现完整历史版本恢复。新增200个小币种、两个平台的合成批量验收可形成200组，证明链路不受主流币白名单限制；它不是实网身份覆盖统计。

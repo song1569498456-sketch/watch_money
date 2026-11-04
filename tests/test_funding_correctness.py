@@ -105,3 +105,26 @@ def test_multiple_type_cohorts_compare_inside_type_without_cross_type_extremes()
     group = build_funding_view(markets, snapshots, NOW, 60)["groups"][0]
     assert group["spread_8h_rate"] == pytest.approx(.005) and group["funding_kind"] == "predicted"
     assert {row["funding_kind"] for row in group["compatible_comparisons"] if row["comparison_ready"]} == {"current", "predicted"}
+
+
+@pytest.mark.parametrize("offset,ready", [(-1, False), (0, True), (1, True)])
+def test_replay_uses_mapping_approval_cutoff_in_both_rankings(offset, ready):
+    from watch_money.models import now_ms
+    approved = now_ms() - 10000
+    markets = [item("a", "alpha"), item("b", "beta")]
+    # One leg was already known; the other was approved after the historical
+    # quote. Today's valid mapping must not retroactively authorize that pair.
+    markets = [market.model_copy(update={"mapping_verified_at": approved - 1000 if index == 0 else approved,
+               "mapping_evidence_status": "verified", "mapping_expires_at": approved + 86400000})
+               for index, market in enumerate(markets)]
+    snapshots = [observation(market, .001 * (index + 1)).model_copy(update={
+                 "source_at": approved - 100, "received_at": approved - 100})
+                 for index, market in enumerate(markets)]
+    scan = scan_markets(markets, snapshots, approved + offset, 60)
+    view = build_funding_view(markets, snapshots, approved + offset, 60)
+    assert bool(scan["groups"][0]["best_spread_candidate"]) == ready
+    assert bool(scan["groups"][0]["best_funding_candidate"]) == ready
+    assert bool(view["groups"]) == ready
+    assert view["matrix_groups"][0]["comparison_ready"] == ready
+    if not ready:
+        assert "mapping_not_known_as_of" in scan["groups"][0]["identity_blockers"]

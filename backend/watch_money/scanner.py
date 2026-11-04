@@ -290,7 +290,7 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
     if market_type in {"spot", "perpetual"}:
         active = [item for item in active if (item.kind == "perpetual") == (market_type == "perpetual")]
     by_id = {item.id: item for item in active}
-    identity_rows = [row for row in identity_candidates(active) if row["kind"] == "identity"]
+    identity_rows = [row for row in identity_candidates(active, as_of=as_of) if row["kind"] == "identity"]
     query = q.strip().casefold()
     if query:
         # Select a whole identity group when one native market matches. Searching

@@ -155,7 +155,7 @@ def build_funding_view(instruments: Iterable[Instrument] | Mapping[str, Instrume
         raise ValueError("invalid funding observation time or stale threshold")
     catalog = list(instruments.values() if isinstance(instruments, Mapping) else instruments)
     markets = [item for item in catalog if item.active and item.kind == "perpetual"]
-    identities = [row for row in identity_candidates(markets) if row["kind"] == "identity"]
+    identities = [row for row in identity_candidates(markets, as_of=as_of) if row["kind"] == "identity"]
     by_market = {instrument_id: identity for identity in identities for instrument_id in identity["instrument_ids"]}
     latest = {}
     for snapshot in snapshots.values() if isinstance(snapshots, Mapping) else snapshots:
