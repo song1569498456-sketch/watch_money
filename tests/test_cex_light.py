@@ -124,7 +124,7 @@ async def test_product_and_settlement_groups_have_explicit_request_family(venue,
 
 
 @pytest.mark.asyncio
-async def test_binance_service_clients_and_deribit_bases_never_mix():
+async def test_binance_service_clients_and_deribit_settlement_scope():
     items = [instrument(venue="binance", client="binance"),
              instrument(venue="binance", client="binanceusdm", kind="perpetual", settle="USDT"),
              instrument(venue="binance", client="binancecoinm", kind="perpetual", settle="BTC", linear=False)]
@@ -134,8 +134,21 @@ async def test_binance_service_clients_and_deribit_bases_never_mix():
     assert all(len(client.calls) == 1 for client in clients.values())
     bases = [instrument(base, venue="deribit", kind="perpetual", settle="USDC") for base in ("BTC", "ETH")]
     adapter, clients = adapter_for(bases, venue="deribit")
+    payloads = {}
+    for item in bases:
+        market = {"id": item.base + "_USDC-PERPETUAL", "symbol": item.native_symbol,
+                  "swap": True, "settle": "USDC"}
+        adapter._markets[item.id] = ("deribit", market)
+        payloads[item.native_symbol] = {"symbol": item.native_symbol, "timestamp": EVENT,
+            "info": {"instrument_name": market["id"], "base_currency": item.base,
+                     "quote_currency": item.quote, "creation_timestamp": EVENT,
+                     "bid_price": 100, "ask_price": 101}}
+    async def summaries(symbols, params):
+        clients["deribit"].calls.append((symbols, params))
+        return payloads
+    clients["deribit"].fetch_tickers = summaries
     assert len(await adapter.fetch_light(bases)) == 2
-    assert len(clients["deribit"].calls) == 2
+    assert clients["deribit"].calls == [(None, {"code": "USDC", "kind": "future"})]
 
 
 @pytest.mark.asyncio

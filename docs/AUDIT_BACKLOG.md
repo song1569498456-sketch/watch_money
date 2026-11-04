@@ -307,3 +307,12 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - funding_history.py扩展Bitget Classic/Gate公共历史。分页禁用、最多100条、一刷新锁/限时；Gate精确settle/nativeID/t秒，Bitget精确native symbol/fundingTime毫秒、uta=false/pageNo=1。原始与统一时间矛盾、缺原始费率、错币/未来拒绝；不将当前目录周期填到历史。小数比例/收付方向与原始时间单位可追溯。
 - Bitget latest-page endpoint不接收历史since窗口，明确本地过滤与未知遗漏，next_since为null。历史数据不补实时费率时钟，Gate当前费率独立更新时间仍未知；前端原历史入口复用。
 - 34项历史专项和1089项全量后端（41.44秒）通过；含安装CCXT的实际公开方法与替身HTTP响应，未使用真实行情网络；CI范围Ruff/diff通过，一条上游TestClient弃用警告。没有前端修改/浏览器重跑；新历史实网、全身份、24小时和远端CI仍开放。父线程固定提交运行不受本批变更影响，不合并测试证据。
+
+### R39 Deribit永续批量摘要与清除语义（2026-11-04）
+
+- 选择R38中明确未接的Deribit整组报价，官方currency参数对衍生品按结算币匹配；现有CCXT有symbols基础币限制。现改perpetual按settle计划、fetch_tickers(None, code=settle, kind=future)，150个不同base同settle一批；跨settle隔离，spot/未知settle不宣称整组覆盖，复用有界并发及缺市场/异常诊断。
+- 新解析严格目录swap/settle/nativeID和原始base/quote，不接受仅同ticker或其它返回合约；creation_timestamp是唯一摘要源时钟，未知/过期/未来继续被可靠排行门槛排除。原生null侧输出明确清除标记，集成回归验证旧帧/同时间值不能恢复、较新快照可以恢复；volume保持base单位。
+- 摘要的current_funding/funding_8h不注入标准资金费或已结算历史；原独立端点与摘要语义不可混用，保持后续单独审阅。没有增加跨平台身份批准，没有账户/交易/地域替代；本云环境未执行实网、未改父线程固定提交的24小时运行。
+- 新增test_deribit_summary.py共18项：结算币分组、空侧、volume、源时间、ID/字段冲突、安装CCXT公开路由替身、额外市场过滤、清除交错和恢复；18项专项通过。完整套件结果见本节末尾与VALIDATION。
+
+- 最终验证：1107项完整后端（51.62秒）、18项专项、CI范围Ruff/diff通过；上游TestClient弃用警告一条。未改前端，未重跑浏览器；实网与远端CI未确认。

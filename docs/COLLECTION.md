@@ -277,3 +277,7 @@ python scripts/probe_okx_funding_timing.py --live --samples 18 --interval 10 --s
 每轮原子更新输出文件；`finished=false` 表示尚未完成（中断后前面完整轮次仍可读），最终写 `finished=true`。`completed_requested_cycles` 区分完成轮次与提前停止，`stop_reason`说明原因，`stopped_on_error`仅表示终止性错误，不意味着此前没有失败。summary汇总每条请求流的尝试/成功/超时、错误类别、最大耗时和过龄响应，以及配对同ts/不同ts/不可用次数；失败不被悄悄丢弃或算作成功。
 
 `evidence/okx-funding-probe-timeout-synthetic.json`是首轮ETH超时、次轮恢复且ts保持旧值的MockTransport证据，非真实OKX请求。诊断界面将“请求状态”与“统计时费率字段状态”分别展示，超时/连接错误与源时间过龄分别提示；旧观测可以与新请求失败同时存在，不能互相替代。
+
+### R39 Deribit结算币摘要
+
+永续轻量采集按settle分组走官方get_book_summary_by_currency(kind=future)，不再用base分片；已审查整组模式通过CCXT fetch_tickers(None, code=settle)避免其symbol路径的基础币限制。保持原限流、批量并发、逐市场缺失/错误及NotSupported回退标记，现货未升级整组能力。只接受目录nativeID/base/quote一致且swap/settle匹配的返回项；原始时间和显式null盘口遵守字段合并清除屏障。源时间未知/过期不参加可靠排行，摘要资金费字段不自动进入结算或预估比较。官方来源与限制见COVERAGE R39。

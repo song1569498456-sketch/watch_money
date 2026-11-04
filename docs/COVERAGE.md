@@ -117,9 +117,17 @@ Hyperliquid/Lighter/dYdX WS 已接 collector，包含订阅、心跳、取消、
 | Coinbase | 目前Advanced Trade公共现货，产品分页/批量覆盖待完善 | Exchange currencies证据源已有，但client不匹配Advanced Trade，禁止隐式套用；尚未接入Exchange行情client |
 | Kraken | spot/futures目录与批量路径；历史结算语义未接 | 未接公开自动合约证据源，XBT等别名不能泛化为全币种核验 |
 | HTX | spot/正反向永续批量路径；周期缺失仍不归一化，历史未接 | 已查公开Currency & Chains文档未列token合约地址，不能仅凭baseChain认同一资产；其它官方来源待核验 |
-| Deribit | spot/perpetual目录；按币种批量覆盖未接；8h trailing不作为下一笔离散结算 | 未接公开自动合约证据源；连续资金费语义保留，不能套用本批历史实现 |
+| Deribit | spot/perpetual目录；永续按settle批量摘要已接（R39，本地验证），现货仍有界路径；8h trailing不作为下一笔离散结算 | 未接公开自动合约证据源；连续资金费语义保留，不能套用本批历史实现 |
 | Upbit | Korea现货目录/批量，KRW/BTC/USDT报价保留；无本项目永续范围 | 未接公开自动合约证据源；不替换地区服务或按ticker跨平台合并 |
 
 本批官方核查：[Bitget Classic历史](https://www.bitget.com/docs/catalog/classic-contract-market/classic-contract-market#get-historical-funding-rates)、[Gate历史](https://www.gate.com/docs/developers/apiv4/en/futures/#futures-market-historical-funding-rate)、[HTX公共币种/链](https://huobiapi.github.io/docs/spot/v1/en/#apiv2-currency-amp-chains)、[MEXC Wallet鉴权范围](https://www.mexc.com/api-docs/spot-v3/wallet-endpoints/)。前两项增加高质量结算数据，不提高实时资金费新鲜度，也不增加任何身份批准；后两项只记录文档核查边界，不代表已试过私有接口。
 
 独立24小时测试固定其开始时提交；本批只更新现有开发分支、未修改任何正在运行的外部环境或其数据库。新历史功能需在独立实验中显式refresh核验，不应混入旧提交的24小时证据。
+
+## R39 Deribit永续按结算币批量报价（2026-11-04）
+
+官方[summary接口](https://docs.deribit.com/api-reference/market-data/public-get_book_summary_by_currency)提供当前买一卖一及creation_timestamp；[currency指南](https://docs.deribit.com/articles/currency-parameter)区分衍生品结算币与现货匹配。旧CCXT按symbol推导base且禁止混合base，不能据此实现USDC结算小币种的整组覆盖。现在永续批量使用symbols=None、code=原生目录settle、kind=future，再只按当前请求目录中的准确instrument_name/base/quote接收；dated futures、options和其它返回市场不能混入。本地150个不同base同settle只计划一批；跨settle仍隔离，现货及未知settle不标full_product。
+
+每条来源时间取原始creation_timestamp毫秒，缺时间保留未知，不用统一parser的其它时钟或本地收到时间替代。原生bid_price/ask_price显式null清除对应侧，非数字/负值和错原生ID拒绝；旧帧/同时间正值不能越过清除屏障，较新快照恢复。volume按官方base单位，不按contracts乘数重算；未引入额外持仓量推断。
+
+摘要中的current_funding/funding_8h没有被导入资金费标准字段，也未被当成已结算历史；其当前文档语义应单独审阅，不能从摘要字段名推断现有独立资金费端点的语义相同。本批未增加历史端点/资产批准，真实覆盖仍待外部验证；没有新增网络探测，不改独立24小时环境。已安装CCXT公共方法的离线请求替身验证实际USDC/future路由及原始时间解析，不能替代实网。

@@ -45,10 +45,10 @@ class LightPollResult:
 
 
 # Reviewed all-product endpoints, not an inference from CCXT's capability flag.
-# Coinbase's product listing can be paginated; Deribit additionally requires a
-# currency-specific request. Keep their bounded symbol path until reviewed.
+# Coinbase product listing remains bounded. Deribit perpetual summaries are
+# grouped by settlement currency; spot remains on the bounded symbol path.
 _PRODUCT_TICKERS = {"binance", "binanceusdm", "binancecoinm", "okx", "bybit", "bitget", "gate",
-                    "mexc", "kucoin", "kucoinfutures", "kraken", "krakenfutures", "htx", "upbit"}
+                    "mexc", "kucoin", "kucoinfutures", "kraken", "krakenfutures", "htx", "upbit", "deribit"}
 _PRODUCT_FUNDING = {"binanceusdm", "binancecoinm", "okx", "bybit", "bitget", "gate",
                     "kucoinfutures", "krakenfutures", "htx"}
 
@@ -319,6 +319,8 @@ class CexAdapter:
                 continue
             capability = "fetchFundingRates" if funding else "fetchTickers"
             reviewed = client_id in (_PRODUCT_FUNDING if funding else _PRODUCT_TICKERS)
+            if client_id == "deribit":
+                reviewed = reviewed and item.kind == "perpetual" and bool(item.settle)
             # Installed HTX bulk funding only supports inverse contracts.
             reviewed = reviewed and not (funding and client_id == "htx" and item.linear)
             key = self._poll_key(item, funding)
@@ -464,8 +466,9 @@ class CexAdapter:
         groups: dict[tuple, list[Instrument]] = defaultdict(list)
         for item in selected.values():
             client_id, _market = self._resolve(item)
-            # Deribit's summary endpoint additionally requires one base currency.
-            key = self._poll_key(item, False)[1:] if _full_product else (
+            # Derivatives use settlement currency, not the underlying ticker.
+            key = self._poll_key(item, False)[1:] if (_full_product or
+                client_id == "deribit" and item.kind == "perpetual") else (
                 client_id, item.kind, item.settle, item.linear, item.base if client_id == "deribit" else None)
             groups[key].append(item)
         patches: dict[str, MarketSnapshot] = {}
@@ -495,7 +498,8 @@ class CexAdapter:
                     try:
                         async with self._bulk_semaphore, self._semaphore:
                             payloads = await self._ticker_parser.fetch(
-                                client, None if _full_product else [item.native_symbol for item in batch], params)
+                                client, None if (_full_product or client_id == "deribit" and items[0].kind == "perpetual")
+                                else [item.native_symbol for item in batch], params)
                         await self._record_payload("fetch_tickers", payloads)
                         if not isinstance(payloads, dict):
                             raise ValueError("Public fetch_tickers returned a non-mapping payload")
@@ -523,8 +527,13 @@ class CexAdapter:
                             # different market; extra response entries are ignored.
                             if ticker.get("symbol") not in (None, item.native_symbol):
                                 continue
-                            patch = _light_ticker_patch(item, client_id, ticker, "fetch_tickers",
-                                                        batch_markets[item.id], received_at=observed)
+                            if client_id == "deribit" and item.kind == "perpetual":
+                                patch = _deribit_summary_patch(item, ticker, batch_markets[item.id], observed)
+                                if patch is None:
+                                    errors[item.id] = "InvalidNativeSummary"
+                            else:
+                                patch = _light_ticker_patch(item, client_id, ticker, "fetch_tickers",
+                                                           batch_markets[item.id], received_at=observed)
                             if patch is not None:
                                 patches[item.id] = patch
                         continue
@@ -940,6 +949,10 @@ def _light_params(client_id: str, instrument: Instrument, *, full_product: bool 
                 params["subType"] = "linear" if instrument.linear else "inverse"
             if client_id == "gate" and instrument.settle:
                 params["settle"] = instrument.settle.lower()
+    if client_id == "deribit" and instrument.kind == "perpetual":
+        if not instrument.settle:
+            raise ValueError("Deribit summary requires a known settlement currency")
+        params.update(code=instrument.settle, kind="future")
     if client_id == "coinbase":
         params["usePrivate"] = False
     if full_product:
@@ -952,6 +965,54 @@ def _light_params(client_id: str, instrument: Instrument, *, full_product: bool 
         if client_id in {"kucoin", "kucoinfutures"}:
             params.update(type="swap" if instrument.kind == "perpetual" else "spot", uta=False)
     return params
+
+
+def _deribit_summary_patch(instrument: Instrument, ticker: dict, market: dict,
+                           received_at: int) -> MarketSnapshot | None:
+    """Bind native summary to one discovered perpetual, retaining null BBO sides."""
+    raw = ticker.get("info")
+    if (not isinstance(raw, dict) or not market.get("id") or market.get("swap") is not True
+            or market.get("settle") != instrument.settle
+            or raw.get("instrument_name") != market["id"]
+            or raw.get("base_currency") != market.get("baseId", instrument.base)
+            or raw.get("quote_currency") != market.get("quoteId", instrument.quote)):
+        return None
+    stamp = _timestamp(raw.get("creation_timestamp"))
+    # Missing native time stays unknown even if a parser supplied another clock.
+    normalized = dict(ticker, timestamp=stamp)
+    clears = []
+    for field in ("bid", "ask"):
+        key = field + "_price"
+        if key not in raw:
+            return None
+        if raw[key] is None:
+            normalized[field] = None
+            clears.append(field)
+        else:
+            value = _number(raw[key], positive=True)
+            if value is None:
+                return None
+            normalized[field] = value
+    patch = _light_ticker_patch(instrument, "deribit", normalized, "fetch_tickers", market,
+                                received_at=received_at)
+    source = f"ccxt:deribit:fetch_tickers:{instrument.native_symbol}"
+    if patch is None:
+        volume, unit, suffix = volume_fields("deribit", instrument, normalized, market)
+        patch = MarketSnapshot(instrument_id=instrument.id, venue=instrument.venue,
+                               source=source, source_at=stamp, received_at=received_at,
+                               volume=volume, volume_unit=unit,
+                               field_sources={"volume": f"{source}.{suffix}"} if volume is not None else {},
+                               field_timestamps={"volume": stamp} if volume is not None else {})
+    fields = dict(patch.field_sources)
+    times = dict(patch.field_timestamps)
+    for field in ("bid", "ask"):
+        fields[field] = f"{source}.info.{field}_price:summary_creation_timestamp"
+        if field in clears:
+            fields[field] += ":explicit_unavailable"
+        times[field] = stamp
+    return patch.model_copy(update={"bid": normalized["bid"], "ask": normalized["ask"],
+                                    "cleared_fields": clears, "field_sources": fields,
+                                    "field_timestamps": times})
 
 
 def _light_ticker_patch(instrument: Instrument, client_id: str, ticker: dict,
