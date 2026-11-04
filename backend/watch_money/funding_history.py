@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api/funding", tags=["funding-history"])
 # Explicitly reviewed public historical settlement contracts. A generic CCXT
 # capability alone does not prove that a trailing/predicted rate was settled.
 SETTLED_ENDPOINTS = {
+    "htx": (50, "https://huobiapi.github.io/docs/coin_margined_swap/v1/en/#query-historical-funding-rate"),
     "bitget": (100, "https://www.bitget.com/docs/catalog/classic-contract-market/classic-contract-market#get-historical-funding-rates"),
     "gate": (100, "https://www.gate.com/docs/developers/apiv4/en/futures/#futures-market-historical-funding-rate"),
     "binanceusdm": (1000, "https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History"),
@@ -145,6 +146,13 @@ class FundingHistoryService:
                     or _market.get("symbol") != instrument.native_symbol
                     or _market.get("settle") != instrument.settle or instrument.settle not in allowed):
                 raise HTTPException(409, "Historical market native ID, product or settlement scope is unresolved")
+        if client_id == "htx":
+            if _market.get("inverse") is not True or _market.get("linear") is not False:
+                raise HTTPException(501, "HTX linear historical settlement semantics not reviewed; inverse only")
+            if (not _market.get("id") or _market.get("swap") is not True
+                    or _market.get("symbol") != instrument.native_symbol
+                    or _market.get("settle") != instrument.settle or instrument.settle != instrument.base):
+                raise HTTPException(409, "HTX inverse native contract and fee currency scope is unresolved")
         client = adapter._client(client_id)
         if client.has.get("fetchFundingRateHistory") is not True:
             raise HTTPException(501, "Native public funding rate history is not supported")
@@ -153,9 +161,11 @@ class FundingHistoryService:
             raise HTTPException(409, "Funding history requires a credential-free public client")
         page_limit = min(limit, SETTLED_ENDPOINTS[client_id][0])
         params: dict[str, Any] = {"paginate": False} if client_id in {
-            "binanceusdm", "binancecoinm", "okx", "bybit", "gate", "bitget"} else {}
+            "binanceusdm", "binancecoinm", "okx", "bybit", "gate", "bitget", "htx"} else {}
         if client_id.startswith("binance"):
             params["subType"] = "linear" if instrument.linear else "inverse"
+        if client_id == "htx":
+            params["page_index"] = 1
         if client_id == "gate":
             params["settle"] = instrument.settle.lower()
         if client_id == "bitget":
@@ -207,6 +217,14 @@ class FundingHistoryService:
                 value = raw.get("r" if client_id == "gate" else "fundingRate")
                 if client_id == "bitget" and raw.get("symbol") != _market["id"]:
                     reason = reason or "wrong_native_market"
+            if client_id == "htx":
+                value = raw.get("realized_rate")
+                if _timestamp(raw.get("funding_time")) != timestamp or timestamp is None:
+                    reason = reason or "native_settlement_timestamp_mismatch"
+                if raw.get("contract_code") != _market["id"]:
+                    reason = reason or "wrong_native_market"
+                if raw.get("fee_asset") != instrument.settle or raw.get("symbol") != instrument.base:
+                    reason = reason or "wrong_native_fee_asset_or_base"
             rate = _number(value)
             if timestamp is None:
                 reason = reason or "missing_settlement_timestamp"
@@ -241,15 +259,22 @@ class FundingHistoryService:
                                 "rate_unit": "decimal_ratio_per_settlement",
                                 "native_settlement_time": raw.get("t" if client_id == "gate" else "fundingTime"),
                                 "native_time_unit": "seconds" if client_id == "gate" else "milliseconds"}
-                               if client_id in {"gate", "bitget"} else {})})
+                               if client_id in {"gate", "bitget"} else {}),
+                            **({"native_market_id": _market["id"], "settle": instrument.settle,
+                                "rate_unit": "decimal_ratio_per_settlement", "rate_field": "realized_rate",
+                                "native_settlement_time": raw.get("funding_time"),
+                                "native_time_unit": "milliseconds",
+                                "advertised_funding_rate": str(raw["funding_rate"])
+                                    if _number(raw.get("funding_rate")) is not None else None}
+                               if client_id == "htx" else {})})
         await asyncio.to_thread(self._save, records)
         latest = max((row["settlement_at"] for row in records), default=None)
         next_since = latest + 1 if latest is not None and latest < received else None
         issues = [f"rejected_{reason}:{count}" for reason, count in sorted(reasons.items())]
         if since is not None and next_since is None:
             issues.append("no_forward_cursor_progress")
-        if client_id == "bitget":
-            issues.append("Bitget latest page 1 only; since filters locally and does not fetch older pages")
+        if client_id in {"bitget", "htx"}:
+            issues.append(f"{client_id} latest page 1 only; since filters locally and does not fetch older pages")
             next_since = None
         issues.append("One manual page only; exchange retention and missing earlier records remain unknown")
         return {"refreshed": True, "pages": 1, "page_limit": page_limit,

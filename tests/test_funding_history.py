@@ -418,3 +418,81 @@ async def test_installed_ccxt_public_history_routing_and_clock_without_network(v
             assert calls[0]['productType'] == 'USDT-FUTURES' and calls[0]['pageNo'] == 1
     finally:
         await client.close()
+
+
+def htx_inverse_history(setup_history):
+    service, item, client, adapter = setup_history('htx', venue='htx')
+    item = item.model_copy(update={'base': 'BTC', 'quote': 'USD', 'settle': 'BTC',
+                                  'linear': False, 'native_symbol': 'BTC/USD:BTC'})
+    service.collector.instruments[item.id] = item
+    market = {'id': 'BTC-USD', 'symbol': item.native_symbol, 'swap': True, 'linear': False,
+              'inverse': True, 'settle': 'BTC', 'base': 'BTC', 'quote': 'USD', 'type': 'swap',
+              'spot': False, 'contract': True}
+    adapter._markets[item.id] = ('htx', market)
+    return service, item, client, adapter, market
+
+
+def htx_raw(**changes):
+    return {'contract_code': 'BTC-USD', 'symbol': 'BTC', 'fee_asset': 'BTC',
+            'funding_time': str(EVENT), 'funding_rate': '.009', 'realized_rate': '.0001'} | changes
+
+
+@pytest.mark.parametrize('rate,sign', [('.0001', -1), ('-.0002', 1), ('0', 0)])
+async def test_htx_inverse_uses_realized_not_advertised_rate(setup_history, rate, sign):
+    service, item, client, _, _ = htx_inverse_history(setup_history)
+    client.response = [entry(rate='.009', info=htx_raw(realized_rate=rate))]
+    result = await service.get(item.id, refresh=True, since=EVENT, limit=1000)
+    record = result['records'][0]
+    assert record['raw_funding_rate'] == rate and record['funding_rate'] == float(rate)
+    assert record['long_cashflow_sign'] == sign
+    assert record['advertised_funding_rate'] == '.009' and record['rate_field'] == 'realized_rate'
+    assert record['native_time_unit'] == 'milliseconds' and record['settle'] == 'BTC'
+    assert record['funding_interval_hours'] is None and result['summary']['next_since'] is None
+    assert client.calls[0][2:] == (50, {'paginate': False, 'page_index': 1})
+
+
+@pytest.mark.parametrize('changes', [{'realized_rate': None}, {'realized_rate': 'NaN'},
+    {'funding_time': str(EVENT // 1000)}, {'funding_time': str(EVENT + 1)},
+    {'fee_asset': 'ETH'}, {'symbol': 'OTHER'}, {'contract_code': 'OTHER-USD'}])
+async def test_htx_inverse_missing_realized_or_native_mismatch_is_not_settled(setup_history, changes):
+    service, item, client, _, _ = htx_inverse_history(setup_history)
+    client.response = [entry(info=htx_raw(**changes))]
+    result = await service.get(item.id, refresh=True)
+    assert result['records'] == [] and result['summary']['rejected_count'] == 1
+
+
+async def test_htx_linear_and_credentials_rejected_without_requests(setup_history):
+    service, item, client, _, market = htx_inverse_history(setup_history)
+    market.update(linear=True, inverse=False)
+    with pytest.raises(HTTPException) as error:
+        await service.get(item.id, refresh=True)
+    assert error.value.status_code == 501 and not client.calls
+    market.update(linear=False, inverse=True)
+    client.apiKey = 'synthetic-marker'
+    with pytest.raises(HTTPException) as error:
+        await service.get(item.id, refresh=True)
+    assert error.value.status_code == 409 and not client.calls
+
+
+async def test_htx_installed_parser_routes_inverse_public_but_returns_advertised_rate(setup_history):
+    import ccxt.async_support as ccxt
+    service, item, _, adapter, market = htx_inverse_history(setup_history)
+    client = ccxt.htx()
+    client.markets = {item.native_symbol: market}
+    client.markets_by_id = {market['id']: [market]}
+    calls = []
+    async def public(params):
+        calls.append(params)
+        return {'status': 'ok', 'data': {'current_page': 1, 'data': [htx_raw()]}}
+    async def forbidden(*args, **kwargs):
+        pytest.fail('unexpected network or linear endpoint')
+    client.fetch = forbidden
+    client.contractPublicGetV5MarketFundingRateHistory = forbidden
+    client.contractPublicGetSwapApiV1SwapHistoricalFundingRate = public
+    adapter._clients['htx'] = client
+    try:
+        report = await service.get(item.id, refresh=True)
+        assert report['records'][0]['funding_rate'] == .0001
+        assert calls == [{'contract_code': 'BTC-USD', 'page_size': 50, 'page_index': 1}]
+    finally:
+        await adapter.close()

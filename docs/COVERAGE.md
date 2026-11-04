@@ -87,7 +87,7 @@ Hyperliquid/Lighter/dYdX WS 已接 collector，包含订阅、心跳、取消、
 
 扫描器现返回资产级汇总/best，并可展开该资产的原始市场与双向组合，逐腿展示ID/报价币/source/receipt/时效；选中方向把精确两个instrument ID与策略带入calculator，不按ticker重新匹配，也不自动提交计算。best明确是否只在已扫描范围；资产/平台筛选不隐藏原生身份冲突。该闭环与费用UI整合后的最终合成浏览器复验已通过。price/funding best仅从身份/有效字段/已知来源时间满足rankable的方向选择，未知源时间仍显示原因但不进可靠排行。
 
-资金费专页 API `GET /api/funding` 已接入，按全部已发现活跃 perpetual 展示原始费率、实际周期、8h 归一化、类型、下次时间/倒计时及逐字段时效；未确认身份的市场仍可单独展示，只有身份合格组可作同资产矩阵比较。它是本地行情观测，不是已结算历史。`GET /api/funding/history/{instrument_id}` 另提供缓存读取及显式 `refresh=true` 的公共历史单页拉取；当前代码白名单仅 Binance USDⓈ-M/COIN-M、OKX、Bybit、MEXC、KuCoin Futures、Bitget Classic及Gate，需原生公开能力且无账户凭证。记录独立 SQLite、原始费率/来源/接收时间与修订；不支持后台自动全历史回填，forward since hint 不证明连续完整。资金费页和历史接口已通过本轮离线与浏览器回归，仍待实网核对，不因本地字段名为 settled 就宣称真实结算样本已验收。详见 [SCANNER.md](SCANNER.md)、[FUNDING_VIEW.md](FUNDING_VIEW.md)。
+资金费专页 API `GET /api/funding` 已接入，按全部已发现活跃 perpetual 展示原始费率、实际周期、8h 归一化、类型、下次时间/倒计时及逐字段时效；未确认身份的市场仍可单独展示，只有身份合格组可作同资产矩阵比较。它是本地行情观测，不是已结算历史。`GET /api/funding/history/{instrument_id}` 另提供缓存读取及显式 `refresh=true` 的公共历史单页拉取；当前代码白名单仅 Binance USDⓈ-M/COIN-M、OKX、Bybit、MEXC、KuCoin Futures、Bitget Classic、Gate及HTX币本位永续，需原生公开能力且无账户凭证。记录独立 SQLite、原始费率/来源/接收时间与修订；不支持后台自动全历史回填，forward since hint 不证明连续完整。资金费页和历史接口已通过本轮离线与浏览器回归，仍待实网核对，不因本地字段名为 settled 就宣称真实结算样本已验收。详见 [SCANNER.md](SCANNER.md)、[FUNDING_VIEW.md](FUNDING_VIEW.md)。
 
 指定规模计算已增加 `min_amount` 最小委托数量门槛：现货按 base，永续按原生 contracts/乘数转换后的数量，不能因盘口使用 base 就跳过。显式配置的双腿 `holding_rate_per_hour` 在各持有期按各腿名义价值计费、各自只换汇一次，独立于资金费维持/减半/归零/反转情景；未配置短现货借贷费仍阻止净收益。这只是用户成本假设的核算支持，不是所有协议持仓费已自动接入。
 
@@ -116,7 +116,7 @@ Hyperliquid/Lighter/dYdX WS 已接 collector，包含订阅、心跳、取消、
 | KuCoin | 现货与futures隔离、批量数据及futures历史；实样待核对 | 公共v3 currencies已接，严格原生currency ID；不延伸至kucoinfutures |
 | Coinbase | 目前Advanced Trade公共现货，产品分页/批量覆盖待完善 | Exchange currencies证据源已有，但client不匹配Advanced Trade，禁止隐式套用；尚未接入Exchange行情client |
 | Kraken | spot/futures目录与批量路径；历史结算语义未接 | 未接公开自动合约证据源，XBT等别名不能泛化为全币种核验 |
-| HTX | spot/正反向永续批量路径；周期缺失仍不归一化，历史未接 | 已查公开Currency & Chains文档未列token合约地址，不能仅凭baseChain认同一资产；其它官方来源待核验 |
+| HTX | spot/正反向永续批量路径；周期缺失仍不归一化，币本位历史已接R40、线性历史未接 | 已查公开Currency & Chains文档未列token合约地址，不能仅凭baseChain认同一资产；其它官方来源待核验 |
 | Deribit | spot/perpetual目录；永续按settle批量摘要已接（R39，本地验证），现货仍有界路径；8h trailing不作为下一笔离散结算 | 未接公开自动合约证据源；连续资金费语义保留，不能套用本批历史实现 |
 | Upbit | Korea现货目录/批量，KRW/BTC/USDT报价保留；无本项目永续范围 | 未接公开自动合约证据源；不替换地区服务或按ticker跨平台合并 |
 
@@ -131,3 +131,13 @@ Hyperliquid/Lighter/dYdX WS 已接 collector，包含订阅、心跳、取消、
 每条来源时间取原始creation_timestamp毫秒，缺时间保留未知，不用统一parser的其它时钟或本地收到时间替代。原生bid_price/ask_price显式null清除对应侧，非数字/负值和错原生ID拒绝；旧帧/同时间正值不能越过清除屏障，较新快照恢复。volume按官方base单位，不按contracts乘数重算；未引入额外持仓量推断。
 
 摘要中的current_funding/funding_8h没有被导入资金费标准字段，也未被当成已结算历史；其当前文档语义应单独审阅，不能从摘要字段名推断现有独立资金费端点的语义相同。本批未增加历史端点/资产批准，真实覆盖仍待外部验证；没有新增网络探测，不改独立24小时环境。已安装CCXT公共方法的离线请求替身验证实际USDC/future路由及原始时间解析，不能替代实网。
+
+## R40 HTX币本位已结算历史与其他历史边界（2026-11-04）
+
+[HTX官方币本位文档](https://huobiapi.github.io/docs/coin_margined_swap/v1/en/#query-historical-funding-rate)区分funding_rate与realized_rate，公共GET swap-api/v1/swap_historical_funding_rate无需签名。当前已安装CCXT虽然保留原始字段，却将funding_rate放入统一fundingRate；本服务只使用原始realized_rate，null/非有限值拒绝，不拿预计或名义费率补空。
+
+新范围仅swap/inverse=true/linear=false、费用币与settle/base一致的币本位永续，准确contract_code/symbol/fee_asset及funding_time毫秒必须匹配目录/统一时间。每次手动刷新最多50条、page_index=1、paginate=false；since仅本地筛选，不代表旧页回填。历史周期未知，不引用文档一般8小时或今日目录推断所有历史；保留原始费率、名义funding_rate、单位与时间字段。公共realized_rate不是用户账户实际账单证明。
+
+HTX线性CCXT已路由v5 market funding_rate_history，不直接沿用旧USDT文档或币本位realized_rate规则，本批明确501未审阅；官方旧USDT文档本次读取超时。Kraken已发现[公开历史接口](https://docs.kraken.com/api-reference/historical-funding-rates/historical-funding-rates)，但[官方线性合约说明](https://support.kraken.com/articles/4844359082772-linear-multi-collateral-derivatives-contract-specifications)涉及连续资金费，绝对金额与relativeFundingRate不同；仍不能接入当前“离散已结算”记录模型，保持未支持并待单独建模。上述均不是地区不可用结论，也没有尝试账户或地域替代。
+
+本批只做文档与本地合成/安装解析器测试；新历史实样、保留范围及单位仍待独立实测，没有修改正在运行的24小时环境、生产身份映射或账户。

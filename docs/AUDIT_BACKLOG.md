@@ -316,3 +316,12 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 新增test_deribit_summary.py共18项：结算币分组、空侧、volume、源时间、ID/字段冲突、安装CCXT公开路由替身、额外市场过滤、清除交错和恢复；18项专项通过。完整套件结果见本节末尾与VALIDATION。
 
 - 最终验证：1107项完整后端（51.62秒）、18项专项、CI范围Ruff/diff通过；上游TestClient弃用警告一条。未改前端，未重跑浏览器；实网与远端CI未确认。
+
+### R40 HTX币本位公开结算历史（2026-11-04）
+
+- 官方历史原始realized_rate与funding_rate含义不同；安装CCXT统一fundingRate使用后者。新增仅逆向币本位严格读取realized_rate，缺失/非有限不补值；核验contract_code/base/fee_asset和funding_time毫秒，不把外层响应ts当结算时间。
+- 限swap/inverse且settle=base，最多50条page_index=1/paginate=false，since仅本地过滤，next_since=null；原始名义/实际率、字段名和时间单位保留。未知历史周期不假定8h，公共费率不证明用户账户实际支付。
+- HTX线性已安装CCXT使用v5新接口、语义未审阅，明确501；旧USDT官方文档本次读取超时。Kraken公开历史与连续资金费/绝对金额模型已定位官方来源但未接，不能冒充离散settled记录。详细来源见COVERAGE R40。
+- 46项历史专项通过，含新增12项原始费率偏差/空值、单位、原生身份、时间、公开路由、线性与凭证拒绝；安装CCXT方法替身未发生网络访问。未改独立24小时测试或已有历史独立核验环境，未改前端、账户、交易或生产映射；全量结果见本节末尾。
+
+- 最终验证：1119项全量后端（43.38秒）、46项历史专项、CI范围Ruff/diff通过；上游TestClient弃用警告一条。未改前端，未重跑浏览器；新路径实网与远端CI未确认。

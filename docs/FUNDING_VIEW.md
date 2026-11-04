@@ -51,3 +51,9 @@ current/predicted 分别标注估算/预测；即便某平台当前返回 settle
 费率单位为每次结算的小数比例，不乘合约张数/乘数、不额外除100；正值多付空收。历史原始周期未提供则null，不推定8小时，也不拿当下目录周期回填历史。记录额外保留native_market_id、settle、rate_unit、native_settlement_time/native_time_unit。现有去重、修订、首次收到时间和本地采样隔离保持。缓存及新接口都不是全历史完整性证明；Gate当前费率独立源时间仍未知。
 
 官方来源见COVERAGE R38。本轮使用合成响应和安装版CCXT公开方法替身测试，没有行情主机实测，没有账户凭证/交易/生产映射变更。
+
+## R40 HTX币本位历史
+
+现有历史页/refresh接口新增HTX币本位永续，官方来源见COVERAGE R40。只取原始realized_rate而非CCXT统一fundingRate；funding_time毫秒、contract_code、symbol、fee_asset逐项验证。保留rate_field=realized_rate、advertised_funding_rate、native_market_id、settle与时间单位；收付符号按小数比例，不按反向合约张数或USD面值缩放。历史周期缺失仍null，最多50条最新第一页、since本地过滤、next_since=null，拒绝把有限页当全历史。
+
+线性接口新版本尚未审查，返回明确未支持；Kraken连续历史模型也未加入。无身份批准、自动历史回填、账户或交易。当前测试数据均合成；API公共历史率与用户账户实际费用不同。
