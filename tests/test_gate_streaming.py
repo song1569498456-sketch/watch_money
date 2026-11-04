@@ -374,3 +374,48 @@ async def test_rejected_subscription_is_reported_without_public_payload_content(
     assert diag['rejected_subscriptions'] == 1 and diag['state'] == 'failed'
     assert diag['acknowledged_markets'] == 0 and diag['closed_at'] is not None
     assert 'detail' not in json.dumps(diag)
+
+
+@pytest.mark.parametrize('kind', ['spot', 'futures'])
+@pytest.mark.parametrize('explicit_null', [False, True])
+def test_live_reported_44_success_ack_shape_optional_error(kind, explicit_null):
+    """Parent captured 44 matching-ID successes without error; IDs here synthetic.
+
+    This reproduces the reported wire shape, not a claim to store exact raw
+    captured frames (which were not supplied to this workspace).
+    """
+    from watch_money.adapters.gate_streaming import GateFuturesStreamAdapter
+    adapter = (GateSpotStreamAdapter(rest()) if kind == 'spot' else
+               GateFuturesStreamAdapter(rest(), settle='usdt'))
+    for request_id in range(1, 45):
+        count = 36 if request_id == 44 else 50
+        adapter._subscriptions[request_id] = {'market_count':count,'acknowledged':False}
+        ack = {'id':request_id,'channel':adapter.channel,'event':'subscribe','result':{'status':'success'}}
+        if explicit_null:
+            ack['error'] = None
+        adapter._acknowledge(ack)
+    diag = adapter.diagnostics()
+    assert diag['acknowledged_batches'] == 44
+    assert diag['acknowledged_markets'] == 2186
+    assert diag['uncorrelated_acknowledgements'] == 0
+    assert diag['unique_accepted_markets'] == 0  # acknowledgement is not quote coverage
+
+
+@pytest.mark.parametrize('error', [{'code':2,'message':'synthetic error'}, {}, False, 'denied'])
+def test_success_label_cannot_override_non_null_error(error):
+    adapter = GateSpotStreamAdapter(rest())
+    adapter._subscriptions[1] = {'market_count':50,'acknowledged':False}
+    adapter._acknowledge({'id':1,'error':error,'result':{'status':'success'}})
+    assert adapter.diagnostics()['acknowledged_batches'] == 0
+    assert adapter.diagnostics()['uncorrelated_acknowledgements'] == 1
+
+
+@pytest.mark.parametrize('ack', [{}, {'id':1}, {'id':True,'result':{'status':'success'}},
+                                 {'id':99,'result':{'status':'success'}},
+                                 {'id':1,'result':{'status':'failed'}},
+                                 {'id':1,'result':{'status':'success','unexpected':1}}])
+def test_optional_error_does_not_relax_request_or_success_validation(ack):
+    adapter = GateSpotStreamAdapter(rest())
+    adapter._subscriptions[1] = {'market_count':50,'acknowledged':False}
+    adapter._acknowledge(ack)
+    assert adapter.diagnostics()['acknowledged_batches'] == 0

@@ -141,7 +141,6 @@ class GateSpotStreamAdapter:
     catalog_stream = True
     max_catalog_markets = 5000
     venue = 'gate'
-    require_ack_error_field = True
     channel = CHANNEL
     endpoint = ENDPOINT
     ping_channel = 'spot.ping'
@@ -211,9 +210,10 @@ class GateSpotStreamAdapter:
         if request is None:
             self._diag['uncorrelated_acknowledgements'] += 1
             return
-        # Official generic response echoes id; no identity inference from an
-        # anonymous success. Explicit null error + success status is conservative.
-        if (self.require_ack_error_field and 'error' not in message) or message.get('error') is not None or message.get('result') != {'status': 'success'}:
+        # error is optional on successful Gate spot AND futures responses.
+        # A missing error never proves success by itself: require the exact
+        # echoed request ID and success object, and reject any non-null error.
+        if message.get('error') is not None or message.get('result') != {'status': 'success'}:
             self._diag['uncorrelated_acknowledgements'] += 1
             return
         if request['acknowledged']:
@@ -427,9 +427,6 @@ class GateSpotStreamAdapter:
 
 class GateFuturesStreamAdapter(GateSpotStreamAdapter):
     """Reviewed connection-scoped perpetual BBO; no funding or size conversion."""
-    # Official futures success examples omit error; an exact echoed request ID
-    # and success object are still required. Anonymous success stays uncounted.
-    require_ack_error_field = False
     channel = 'futures.book_ticker'
     ping_channel = 'futures.ping'
     pong_channel = 'futures.pong'

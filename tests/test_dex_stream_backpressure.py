@@ -1,5 +1,6 @@
 """Offline native source lifecycle regressions; never contact an exchange."""
 import asyncio
+import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -153,23 +154,50 @@ async def test_queued_snapshot_retains_arrival_receipt_and_future_at_arrival_is_
 
 
 @pytest.mark.asyncio
-async def test_slow_observer_is_bounded_drops_explicitly_and_never_blocks_pongs():
+@pytest.mark.parametrize("extra_frame", [False, True])
+async def test_slow_observer_is_bounded_drops_explicitly_and_never_blocks_pongs(extra_frame):
     entered = asyncio.Event()
 
     async def observer(*args):
         entered.set()
         await asyncio.Event().wait()
 
-    socket = Socket([book()])
+    fence = object()
+    class FencedSocket(Socket):
+        def __init__(self):
+            super().__init__([book()])
+            self.ping_sent = asyncio.Event()
+            self.paused = asyncio.Event()
+            self.pongs_received = 0
+        async def send(self, text):
+            await super().send(text)
+            if json.loads(text) == {"method": "ping"}:
+                self.ping_sent.set()
+        async def recv(self):
+            value = await self.events.get()
+            if value is fence:
+                # All earlier frames were handled; later heartbeat pongs may
+                # queue but cannot change overflow between baseline and close.
+                self.paused.set()
+                await asyncio.Event().wait()
+            if value.get("channel") == "pong":
+                self.pongs_received += 1
+            return json.dumps(value)
+    socket = FencedSocket()
     stream = DexStreamAdapter(HyperliquidAdapter(), connection_factory=connector([socket]),
-                              heartbeat_seconds=.005, heartbeat_timeout=.02)
+                              heartbeat_seconds=.005, heartbeat_timeout=5)
     stream.on_payload = observer
     generator = stream.stream([instrument()])
     assert (await anext(generator)).bid == 100
     await entered.wait()
     for index in range(200):
         socket.events.put_nowait(book(at=EVENT + index))
-    await asyncio.sleep(.06)
+    await asyncio.wait_for(socket.ping_sent.wait(), 1)
+    if extra_frame:
+        socket.events.put_nowait({"channel": "pong"})
+    socket.events.put_nowait(fence)
+    await asyncio.wait_for(socket.paused.wait(), 1)
+    assert socket.pongs_received >= 1  # processed before reaching the fence
     assert stream._observer_queue.qsize() == 64
     assert stream.payload_observer_dropped >= 136
     assert all(not task.done() for task in stream._tasks)
