@@ -8,12 +8,14 @@ from contextlib import closing
 from pathlib import Path
 from threading import RLock
 from typing import Any
+from datetime import datetime
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from .adapters.cex import CexAdapter, _number, _timestamp
 from .models import now_ms
-from .adapters.dex import HyperliquidAdapter
+from .adapters.dex import DydxAdapter, HyperliquidAdapter
 
 router = APIRouter(prefix="/api/funding", tags=["funding-history"])
 
@@ -131,6 +133,77 @@ class FundingHistoryService:
                              "cursor_semantics": "forward_since_hint_only_not_gap_proof",
                              "direction": "positive_longs_pay_shorts_negative_shorts_pay_longs"}}
 
+    async def _refresh_dydx(self, instrument, adapter, since, limit):
+        native = instrument.native_symbol
+        if (instrument.kind != "perpetual" or not instrument.active or instrument.chain != "dydx"
+                or instrument.id != f"dydx:perpetual:{native}"
+                or native != f"{instrument.base}-{instrument.quote}"
+                or instrument.settle != "USDC"):
+            raise HTTPException(409, "Discover the exact dYdX v4 market first")
+        page_limit = min(limit, 100)
+        endpoint = f"{adapter.endpoint}/historicalFunding/{quote(native, safe='')}"
+        try:
+            payload = await adapter.request("GET", endpoint, params={"limit": page_limit})
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in {401, 403, 451}:
+                raise HTTPException(403, "Public history access restricted; no alternate route attempted") from None
+            if isinstance(exc, TimeoutError) or type(exc).__name__ in {"ReadTimeout", "ConnectTimeout"}:
+                raise HTTPException(504, "Public funding history request timed out") from None
+            raise HTTPException(502, {"error": "Public funding history request failed", "type": type(exc).__name__}) from None
+        received = now_ms()
+        if self.collector.instruments.get(instrument.id) != instrument:
+            raise HTTPException(409, "Market scope changed while retrieving history")
+        rows = payload.get("historicalFunding") if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or len(rows) > page_limit:
+            raise HTTPException(502, "Malformed or oversized public funding history response")
+        records, reasons = [], {}
+        for row in rows:
+            reason, stamp = None, None
+            if not isinstance(row, dict):
+                row, reason = {}, "malformed_record"
+            raw_time = row.get("effectiveAt")
+            try:
+                parsed = datetime.fromisoformat(raw_time) if isinstance(raw_time, str) and "T" in raw_time else None
+                if parsed is not None and parsed.tzinfo is not None:
+                    stamp = _timestamp(int(parsed.timestamp() * 1000))
+            except (ValueError, OverflowError, OSError):
+                pass
+            if row.get("ticker") != native:
+                reason = reason or "wrong_native_market"
+            if stamp is None or stamp > received:
+                reason = reason or "invalid_or_future_settlement_time"
+            elif since is not None and stamp < since:
+                reason = reason or "before_requested_since"
+            rate = _number(row.get("rate"))
+            height = row.get("effectiveAtHeight")
+            if not isinstance(height, str) or not height.isascii() or not height.isdigit():
+                reason = reason or "invalid_native_height"
+            if rate is None:
+                reason = reason or "missing_or_nonfinite_settled_rate"
+            if reason:
+                reasons[reason] = reasons.get(reason, 0) + 1
+                continue
+            records.append({"instrument_id": instrument.id, "venue": "dydx", "symbol": native,
+                "native_market_id": native, "settle": instrument.settle, "settlement_at": stamp,
+                "native_settlement_time": raw_time, "native_time_unit": "timezone_aware_iso8601",
+                "native_block_height": height, "funding_rate": rate, "raw_funding_rate": str(row["rate"]),
+                "rate_unit": "decimal_ratio_per_published_funding_tick", "funding_kind": "settled",
+                "funding_interval_hours": None, "period_source": None,
+                "long_cashflow_sign": -1 if rate > 0 else 1 if rate < 0 else 0,
+                "short_cashflow_sign": 1 if rate > 0 else -1 if rate < 0 else 0,
+                "source": endpoint, "source_docs": "https://docs.dydx.xyz/indexer-client/http#get-historical-funding",
+                "event_type": "regular", "received_at": received, "first_received_at": received,
+                "last_seen_at": received, "revision": 1, "is_demo": False})
+        await asyncio.to_thread(self._save, records)
+        return {"refreshed": True, "pages": 1, "page_limit": page_limit,
+                "fetched_count": len(rows), "accepted_count": len(records),
+                "rejected_count": sum(reasons.values()), "next_since": None, "has_more": None,
+                "truncated": len(rows) >= page_limit or limit > page_limit,
+                "issues": [f"rejected_{reason}:{count}" for reason, count in sorted(reasons.items())] + [
+                    "Latest descending page only; since filters locally, older-page retrieval is not implemented",
+                    "Historical funding epoch duration is unknown; governance can change the default hourly interval"]}
+
     async def _refresh_hyperliquid(self, instrument, adapter, since, limit):
         """One bounded market-history call; never userFunding or wallet data."""
         docs = "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals#retrieve-historical-funding-rates"
@@ -211,6 +284,8 @@ class FundingHistoryService:
 
     async def _refresh(self, instrument, since: int | None, limit: int) -> dict:
         adapter = self.collector.adapters.get(instrument.venue)
+        if instrument.venue == "dydx" and isinstance(adapter, DydxAdapter):
+            return await self._refresh_dydx(instrument, adapter, since, limit)
         if instrument.venue == "hyperliquid" and isinstance(adapter, HyperliquidAdapter):
             return await self._refresh_hyperliquid(instrument, adapter, since, limit)
         if instrument.kind != "perpetual" or not isinstance(adapter, CexAdapter):

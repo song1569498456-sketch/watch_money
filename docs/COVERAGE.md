@@ -145,3 +145,9 @@ HTX线性CCXT已路由v5 market funding_rate_history，不直接沿用旧USDT文
 ## R41 Hyperliquid历史补齐（2026-11-04）
 
 原生公开fundingHistory接入已有已结算历史入口，首个perp dex和HIP-3保留完整命名空间，原生time毫秒、fundingRate小数比例及官方1小时周期；不从premium或8h计算公式推算历史值。单请求500行/500小时上限、截断游标和目录变化检查，访问拒绝不绕过。没有用户参数、账户调用、实时费率或跨平台身份批准。普通与HIP-3合约历史真实样本、上游保留范围及完整历史仍待独立实测。官方来源和临时库复测步骤见FUNDING_VIEW R41；原24小时测试不变。
+
+## R43 dYdX历史与24小时条件补充（2026-11-04）
+
+dYdX v4公共historicalFunding新增已结算历史，准确ticker、带时区effectiveAt、原始height/rate；治理可能改变epoch，逐条周期未证实则null。最新单页最多100条，不提供旧页自动回填，尚无实网验证。官方来源/临时库复测步骤见FUNDING_VIEW R43；生产身份未批准。
+
+独立长测的403发生于OKX公共ticker WebSocket经本地代理建连，保留错误仅代理地址，缺底层响应详情；此前51.7秒计时延迟及其他平台覆盖同时下降。不能归因单平台，亦不能确认代理策略/上游/短暂基础设施原因。守卫在13分50秒停止，24小时未完成、不重试或绕过；需要用户环境或支持方核查运行、代理和网络条件。更新证据摘要deribit-replay-and-guard-stop.json，未触碰原环境。

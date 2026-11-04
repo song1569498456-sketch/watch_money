@@ -96,3 +96,13 @@ PYTEST
 ```
 
 核对结果coin与完整native_market_id、原始time/settlement_at、费率原文、1h周期及正负收付；重复读取缓存不触网，重复refresh不增长重复记录。与独立公开POST fundingHistory相同coin/startTime/endTime的响应对照时，不把查询时点不同导致的新增结算算作错误。故障/空返回及缺口照实记录，不能据此认定全部历史或用户实际到账。
+
+## R43 dYdX v4公共历史
+
+接入GET /v4/historicalFunding/{ticker}，精确匹配已发现dydx/perpetual/chain、原生ticker/base/quote与USDC结算。保留rate小数、effectiveAt带时区ISO原文及转换后的毫秒、effectiveAtHeight字符串；无时区、错ticker、未来时间、无效高度/非有限率拒绝。查询后目录变化拒绝入库。官方默认每小时，但治理可修改epoch且记录未带逐条周期，因此funding_interval_hours保持null，不能为历史做8h收益归一化。高度是indexer报告值，不是节点/区块哈希认证或重组证明。
+
+一个显式refresh最多100条最新页，保留原刷新锁/总超时；since只在本地过滤，next_since=null，不混用上游向过去的effectiveBeforeOrAt与向未来游标。403/451停止该请求，无重试/备用地区。数据仍是市场率，不是账户支付，不影响实时快照或身份批准。
+
+官方[HTTP历史文档](https://docs.dydx.xyz/indexer-client/http#get-historical-funding)、[资金费及治理参数](https://docs.dydx.xyz/concepts/trading/funding)、[公开控制器](https://github.com/dydxprotocol/v4-chain/blob/main/indexer/services/comlink/src/controllers/api/v4/historical-funding-controller.ts)、[返回字段转换](https://github.com/dydxprotocol/v4-chain/blob/main/indexer/services/comlink/src/request-helpers/request-transformer.ts)。官方源码main可能变化，本批按2026-11-04可读版本检查，未执行主网请求。
+
+独立实测可复用上节临时库脚本，将HyperliquidAdapter改为DydxAdapter、coin改为BTC-USD、collector.adapters键改为dydx；先从discover目录选准确ticker，其他步骤保持。只能在授权网络的新检出与临时目录执行，不接入旧24小时进程。检查ticker、effectiveAt、effectiveAtHeight、原始rate与未知周期，并与同limit的公开历史响应核对；保存失败/空返回/截断，不把单页当全历史。
