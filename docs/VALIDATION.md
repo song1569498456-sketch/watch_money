@@ -1,5 +1,7 @@
 # 验证记录
 
+2026-11-04 完整盘口空侧修复：Hyperliquid完整快照为空的一侧显式清除，双空也发patch；删除时刻随持久化保留，旧/同时间报价不能复活，新快照可恢复。Lighter market_stats保留缺省字段，仅明确无报价时清除。8项新增回归及**完整750后端测试（21.91s）、Ruff/diff通过**；本批未改前端，未重跑本地浏览器。详见 [DEX_STREAMING.md](DEX_STREAMING.md) 和 [审计清单](AUDIT_BACKLOG.md)。全部合成验证，实网限制不变。
+
 2026-11-04 外部实测反馈后续：Hyperliquid/Lighter启用受预算限制的全目录源流；OKX资金费按到达源年龄自适应重查，保持60秒TTL；官方身份源扩为Gate/Bitget/KuCoin/Coinbase Exchange并严格限定原始币种ID、client及现货范围。永续身份和Lighter费率单位仍未充分确认，保持未知。**本批完整742项后端（24.02s）、31项前端、45组浏览器检查、构建/Ruff/diff通过**。证据见 [live-review-validation.json](evidence/live-review-validation.json)，实网父线程反馈与当前代理失败分别见 [LIVE_REVIEW_FOLLOWUP.md](LIVE_REVIEW_FOLLOWUP.md)。以下保留前批记录。
 
 2026-11-04 回放复审：价差与资金费身份核验已传递请求as_of，批准前/时/后三个边界回归通过；200小币种双平台合成批量身份验证通过。完整后端681 passed（19.30s）、Ruff及diff检查通过。本批未改前端，未重跑浏览器；真实身份覆盖及完整历史映射版本仍未验收。详见 [审计清单](AUDIT_BACKLOG.md)。

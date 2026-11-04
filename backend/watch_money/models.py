@@ -89,6 +89,8 @@ class MarketSnapshot(Model):
     source_at: int | None = None
     received_at: int = Field(default_factory=now_ms)
     source: str
+    # Explicit unavailable quote observations; omission remains a sparse no-op.
+    cleared_fields: list[Literal['bid', 'ask']] = Field(default_factory=list)
     field_sources: dict[str, str] = Field(default_factory=dict)
     field_timestamps: dict[str, int | None] = Field(default_factory=dict)
     field_received_at: dict[str, int] = Field(default_factory=dict)
@@ -96,6 +98,12 @@ class MarketSnapshot(Model):
     valid: bool = True
     issues: list[str] = Field(default_factory=list)
     is_demo: bool = False
+
+    @model_validator(mode='after')
+    def clear_only_missing_quotes(self):
+        if any(getattr(self, field) is not None for field in self.cleared_fields):
+            raise ValueError('Cleared quote fields must have no value')
+        return self
 
 class OrderBook(Model):
     instrument_id: str

@@ -122,3 +122,9 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 外部62f1815真实计数及当前环境失败探测分别见 [LIVE_REVIEW_FOLLOWUP.md](LIVE_REVIEW_FOLLOWUP.md)，不可与本地合成验收混用。
 
 本批最终整合：742后端、31前端、45组浏览器（baseline6/navigation12/followup12/funding6/identity9）全部通过，生产构建/Ruff/diff通过。共享订阅窗口跨重连保留预算；身份变更使隐藏扫描查询失效，返回重新检查。仍无当前环境成功实网或24小时证据。
+
+## 完整盘口空侧复审
+
+- R10 已修复：Hyperliquid完整l2Book/BBO空侧不再省略patch；明确清除bid/ask并保存删除时刻。两侧空也发patch；旧帧和同时间冲突帧不得复活已清除报价，持久化重载仍保留屏障，新快照可恢复。单侧缺失只阻止使用该侧的方向，不捏造对手价。
+- Lighter market_stats保留稀疏更新语义：省略字段不清空/不续期，明确null/零/无效价格清除对应侧。没有把order_book增量规则误作全量替换；完整原生深度重建仍未实现。
+- 回归包含单侧/两侧空、恢复、乱序/同时间、过期、无源时间和持久化屏障。测试均合成，未新增实网声明。

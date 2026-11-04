@@ -102,12 +102,12 @@ def test_hyperliquid_rejects_fake_times_and_unusable_values_and_flags_crossed_pa
     item = instrument()
     patch = hyperliquid_patch(item, bbo(time=EVENT // 1000, bid="102"))
     assert patch.source_at is None and not patch.valid and patch.issues
-    assert hyperliquid_patch(item, bbo(bid="NaN", ask="0")) is None
+    assert set(hyperliquid_patch(item, bbo(bid="NaN", ask="0")).cleared_fields) == {"bid", "ask"}
     assert hyperliquid_patch(item, bbo("ETH")) is None
     assert hyperliquid_patch(item, {"channel": "pong"}) is None
     empty = bbo()
     empty["data"]["bbo"] = [None, {"px": "101", "sz": "0"}]
-    assert hyperliquid_patch(item, empty) is None
+    assert set(hyperliquid_patch(item, empty).cleared_fields) == {"bid", "ask"}
     with pytest.raises(ValueError, match="malformed bbo"):
         hyperliquid_patch(item, {"channel": "bbo", "data": {"coin": "BTC", "bbo": []}})
 

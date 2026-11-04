@@ -72,7 +72,7 @@ def _connection_factory(endpoint: str):
 
 def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
            *, source_at: int | None = None, funding_kind: str = "current",
-           protocol_metrics: dict | None = None) -> MarketSnapshot | None:
+           protocol_metrics: dict | None = None, cleared_fields: tuple = ()) -> MarketSnapshot | None:
     values, sources, times = {}, {}, {}
     source = f"{ENDPOINTS[instrument.venue]}#{channel}:{instrument.native_symbol}"
     for field, native, mode in mappings:
@@ -81,6 +81,10 @@ def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
             continue
         values[field] = value
         sources[field] = f"{source}.{native}"
+        times[field] = source_at
+    for field in cleared_fields:
+        values[field] = None
+        sources[field] = f"{source}.{field}:explicit_unavailable"
         times[field] = source_at
     if not values and not protocol_metrics:
         return None
@@ -93,7 +97,7 @@ def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
         for field in ("funding_kind", "funding_interval_hours"):
             sources[field] = f"{source}:{field}:documented_hourly_perpetual"
             times[field] = source_at
-    crossed = "bid" in values and "ask" in values and values["bid"] > values["ask"]
+    crossed = values.get("bid") is not None and values.get("ask") is not None and values["bid"] > values["ask"]
     issues = ["source_event_time_unavailable; receipt time is not source time"] if source_at is None else []
     if crossed:
         issues.append("crossed orderbook: bid exceeds ask")
@@ -101,7 +105,7 @@ def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
     return MarketSnapshot(instrument_id=instrument.id, venue=instrument.venue, source=source,
                           source_at=source_at, received_at=received, field_sources=sources,
                           field_timestamps=times, field_received_at={field: received for field in times},
-                          valid=not crossed, issues=issues, is_demo=False,
+                          valid=not crossed, issues=issues, is_demo=False, cleared_fields=list(cleared_fields),
                           **({"protocol_metrics": protocol_metrics} if protocol_metrics else {}), **values)
 
 
@@ -123,12 +127,14 @@ def hyperliquid_patch(instrument: Instrument, message: dict) -> MarketSnapshot |
                             and number(level.get("px"), positive=True) is not None
                             and number(level.get("sz"), positive=True) is not None), None) for side in levels]
         prices = {field: level.get("px") for field, level in zip(("bid", "ask"), levels, strict=True)
-                  if isinstance(level, dict) and number(level.get("sz"), positive=True) is not None}
+                  if isinstance(level, dict) and number(level.get("sz"), positive=True) is not None
+                  and number(level.get("px"), positive=True) is not None}
         # This protocol defines milliseconds. Reject apparent seconds instead of guessing.
         event_time = number(row.get("time"), positive=True)
         source_at = int(event_time) if event_time is not None and event_time >= 100_000_000_000 else None
         return _patch(instrument, channel, prices,
-                      (("bid", "bid", "positive"), ("ask", "ask", "positive")), source_at=source_at)
+                      (("bid", "bid", "positive"), ("ask", "ask", "positive")), source_at=source_at,
+                      cleared_fields=tuple(field for field in ("bid", "ask") if field not in prices))
     if channel == "activeAssetCtx":
         ctx = row.get("ctx")
         if not isinstance(ctx, dict):
@@ -182,7 +188,9 @@ def lighter_patches(instruments: dict[str, Instrument], message: dict) -> list[M
             ("bid", "best_bid_price", "positive"), ("ask", "best_ask_price", "positive"),
             ("mark", "mark_price", "positive"), ("index", "index_price", "positive"),
             ("last", "last_trade_price", "positive"), ("volume", "daily_quote_token_volume", "nonnegative"),
-        ), source_at=source_at, protocol_metrics=metrics)
+        ), source_at=source_at, protocol_metrics=metrics,
+            cleared_fields=tuple(field for field, native in (("bid", "best_bid_price"), ("ask", "best_ask_price"))
+                                 if native in row and number(row[native], positive=True) is None))
         if patch is not None:
             patch.issues.append("Source timestamps describe upstream market_stats publication, not individual trade time")
             if "funding_unit" in metrics:

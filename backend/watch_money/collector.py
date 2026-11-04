@@ -157,6 +157,9 @@ class Collector:
         if old is None:
             return quality(snapshot)
         patch = snapshot.model_dump(exclude_unset=True)
+        clears = set(snapshot.cleared_fields)
+        for field in clears:
+            patch[field] = None
         old = quality(old)
         data = old.model_dump()
         timestamps = dict(old.field_timestamps)
@@ -171,7 +174,13 @@ class Collector:
                      and stamp < previous)
             if stamp is None or previous is None:
                 older = snapshot.field_received_at.get(field, snapshot.received_at) < received.get(field, old.received_at)
-            if patch[field] is None or (getattr(old, field) is not None and older):
+            tombstone = getattr(old, field) is None and sources.get(field, '').endswith(':explicit_unavailable')
+            if tombstone and field not in clears and stamp is not None:
+                # A contradictory equal-time or delayed quote cannot resurrect
+                # a removed side, even after persistence or stream restart.
+                barrier = previous if previous is not None else received.get(field)
+                older = older or (barrier is not None and stamp <= barrier)
+            if (patch[field] is None and field not in clears) or older:
                 patch.pop(field, None)
                 if field == 'volume':
                     patch.pop('volume_unit', None)
@@ -192,7 +201,7 @@ class Collector:
         if patch.get('volume') is not None:
             issues.discard('legacy_volume_unit_unverified')
         data.update(field_timestamps=timestamps, field_sources=sources, field_received_at=received,
-                    issues=sorted(issues))
+                    cleared_fields=[], issues=sorted(issues))
         return quality(MarketSnapshot.model_validate(data))
 
     async def run_stream(self, name, streamer):

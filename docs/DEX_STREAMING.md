@@ -221,3 +221,11 @@ official service subscription acceptance, unit reconciliation and sustained
 - [dYdX delta market message](https://docs.dydx.xyz/types/markets_update_message)
 - [dYdX trading delta fields](https://docs.dydx.xyz/types/trading_perpetual_market)
 - [dYdX oracle price and effectiveAt](https://docs.dydx.xyz/types/oracle_price_market)
+
+## Empty quote observations and update semantics
+
+Hyperliquid `l2Book` replaces the complete two-sided quote snapshot. An empty or unusable side emits an explicit `cleared_fields` bid/ask observation, including its own source/receipt time. Two empty sides still produce a patch. The collector clears that quote while preserving the other fields, and keeps the removal timestamp across persistence. Older or equal-time quotes cannot resurrect a removed side; a newer valid snapshot restores it. Untimed removal uses its receipt as a conservative recovery barrier, never as a fabricated source timestamp. Ordinary sparse nulls remain no-ops unless explicitly marked unavailable.
+
+The [Lighter official market-data guide](https://docs.lighter.xyz/developers/integration-guides/market-data) distinguishes `subscribed/order_book` (full book) from `update/order_book` (changed levels, nonce continuity). This integration consumes `market_stats`, not that order-book delta stream. The available reference does not establish that every stats message must contain every quote field. Therefore omission is preserved as a sparse no-op with the old field time; an explicitly null/zero/unusable best quote invalidates that side conservatively. Missing markets or fields never clear unrelated quotes or rejuvenate them. Full native order-book delta reconstruction remains outside this implementation.
+
+Regression: `tests/test_empty_book_snapshots.py` checks both empty, each single empty side, per-direction ranking exclusion, recovery, stale data, persistence, out-of-order/equal-time frames, untimed removal and Lighter omission versus explicit unavailability. These are synthetic protocol fixtures, not a new live recording.

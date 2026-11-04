@@ -77,7 +77,8 @@ def test_lighter_selects_native_market_ids_and_single_market_shape_without_fabri
                "market_stats": row(12, best_bid_price=None, best_ask_price=None)}
     patch, = lighter_patches({"12": item}, message)
     assert patch.instrument_id == item.id and patch.bid is None and patch.ask is None
-    assert "bid" not in patch.model_dump(exclude_unset=True)
+    assert patch.model_dump(exclude_unset=True)["bid"] is None
+    assert set(patch.cleared_fields) == {"bid", "ask"}
     assert lighter_patches({"12": item}, stats({"11": row(11)})) == []
     with pytest.raises(ValueError, match="identity mismatch"):
         lighter_patches({"12": item}, stats({"12": row(11)}))
