@@ -439,3 +439,14 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 全量初跑中两项既有followup验收fixture缺少原生ID/时间而失败；补齐官方字段后，缓存重启与修订断言保留。部分拒收时游标断言按新语义改为null；两项复测通过，最终完整结果另记。未因失败放宽原生校验。
 
 - 最终验证：1248项完整后端（52.56秒，1条上游TestClient弃用警告）、129项历史专项、2项旧验收复测、CI范围Ruff/diff通过；无前端/浏览器变更，实网和远端CI未确认。
+
+### R52 dYdX页面一致性与非唯一高度（2026-11-04）
+
+- 父线程c4ae43e离线发现：缓存已存100，since+limit=1刷新300/200/100时返回缓存100，自动299/199/99会跳过新页；同高度事件被减一游标跳过、同页冲突按顺序改写修订。这是合成边界，不是实网同高度事件证据。
+- [官方模型](https://raw.githubusercontent.com/dydxprotocol/v4-chain/main/indexer/packages/postgres/src/models/funding-index-updates-model.ts)包含eventId/perpetualId/height；公开historicalFunding响应未提供可继续同高度事件的唯一cursor。撤回R50自动height-1提示，next_before_height恒null，pagination_incomplete=true，coverage改为dydx_manual_height_filter_no_safe_continuation。before_height仅保留人工明确筛选；手动跳低高度仍可能丢边界事件，不能当完整回填。
+- refresh=true返回本次响应中通过验证并保存的记录（records_scope=accepted_current_response_page），保留数据库实际revision/first_received等；不使用混合缓存窗口代替本页。普通缓存读取仍是local_cache_query，cached_matching_count继续单独表示缓存匹配量。页面truncated不再由其它缓存行数量推断。
+- 同页重复高度（含前导零等价表示）或同一结算时间的记录全部按ambiguous_native_event_identity拒收，不按返回顺序选赢家，不保存或写修订；即便缓存已有记录也不会被该页改写，刷新返回空页而不是旧缓存。单独下一次观测的来源变化仍沿用R45审计修订，不把它当已证明的链上更正。
+- 新7项回归覆盖旧缓存+since+limit=1连续手动300/200/100页面、两种响应顺序/同高度同或异时间、已有缓存保护及高度等价拼写；旧自动cursor断言改为停止，既有时区fixture为独立事件补不同高度。保留单页上限/身份/原生时间/取消边界。
+- 仅离线、未访问行情主机/受阻OKX连接、未改账户或独立环境。R50“读取next_before_height继续”的复测步骤已被撤回；复测应人工指定已知高度并核对records_scope，不声称能遍历所有事件。完整历史需要官方可证明的事件唯一标识或分页协议，当前为明确阻塞；24小时仍未验收。
+
+- 最终验证：1255项完整后端（51.79秒，1条上游TestClient弃用警告）、136项历史专项、CI范围Ruff/diff通过。无前端/浏览器变更、实网与远端CI未确认。

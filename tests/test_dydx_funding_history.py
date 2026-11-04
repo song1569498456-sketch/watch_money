@@ -67,7 +67,7 @@ async def test_invalid_native_fields_rejected(env, changes):
 async def test_timezone_and_since_do_not_change_rate_or_fetch_older_page(env):
     service, item, client, _, calls = env({'historicalFunding': [
         row(effectiveAt='2026-01-01T08:00:00+08:00', rate='0'),
-        row(effectiveAt='2026-01-01T01:00:00Z', rate='.0002')]})
+        row(effectiveAt='2026-01-01T01:00:00Z', effectiveAtHeight='1235', rate='.0002')]})
     async with client:
         result = await service.get(item.id, refresh=True, since=1767225600001)
     assert len(result['records']) == 1 and result['records'][0]['funding_rate'] == .0002
@@ -184,11 +184,12 @@ async def test_backward_height_page_and_cache_exclude_newer_records(env):
     service, item, client, _, calls = env(payload)
     async with client:
         latest = await service.get(item.id, refresh=True, limit=1)
-        assert latest['summary']['next_before_height'] == 1233
+        assert latest['summary']['next_before_height'] is None
+        assert latest['summary']['pagination_incomplete']
         payload['historicalFunding'] = [row(effectiveAtHeight='1200', effectiveAt='2025-12-31T23:00:00Z')]
         older = await service.get(item.id, refresh=True, limit=1, before_height=1233)
         assert calls[-1].url.params['effectiveBeforeOrAtHeight'] == '1233'
-        assert older['summary']['next_before_height'] == 1199
+        assert older['summary']['next_before_height'] is None
         assert [r['native_block_height'] for r in older['records']] == ['1200']
         cached = await service.get(item.id, before_height=1233)
         assert len(calls) == 2 and [r['native_block_height'] for r in cached['records']] == ['1200']
@@ -241,3 +242,62 @@ async def test_http_backward_query_is_forwarded_and_does_not_call_other_venues(e
         service.collector.instruments[item.id] = item.model_copy(update={'venue': 'other'})
         response = await client.get(f'/api/funding/history/{item.id}', params={'refresh': 'true', 'before_height': 1234})
         assert response.status_code == 422 and len(calls) == 1
+
+
+async def test_since_with_old_cache_returns_each_actual_refreshed_page(env):
+    payload = {'historicalFunding': [row(effectiveAtHeight='100')]}
+    service, item, client, _, _ = env(payload)
+    async with client:
+        await service.get(item.id, refresh=True)
+        for height, stamp in [('300', '2026-01-01T02:00:00Z'), ('200', '2026-01-01T01:00:00Z'),
+                              ('100', '2026-01-01T00:00:00Z')]:
+            payload['historicalFunding'] = [row(effectiveAtHeight=height, effectiveAt=stamp)]
+            report = await service.get(item.id, refresh=True, limit=1, since=1767225600000,
+                                       before_height=int(height))
+            assert [r['native_block_height'] for r in report['records']] == [height]
+            assert report['summary']['records_scope'] == 'accepted_current_response_page'
+            assert report['summary']['next_before_height'] is None
+            assert report['summary']['pagination_incomplete']
+        cached = await service.get(item.id, since=1767225600000, limit=1)
+        assert cached['records'][0]['native_block_height'] == '100'
+        assert cached['summary']['records_scope'] == 'local_cache_query'
+
+
+@pytest.mark.parametrize('same_time', [False, True])
+@pytest.mark.parametrize('reverse', [False, True])
+async def test_multiple_events_at_same_height_never_become_order_dependent_revisions(env, same_time, reverse):
+    import sqlite3
+    rows = [row(rate='.0001'), row(rate='.0002', effectiveAt='2026-01-01T00:00:00Z' if same_time
+                                 else '2026-01-01T01:00:00Z')]
+    service, item, client, _, _ = env({'historicalFunding': rows[::-1] if reverse else rows})
+    async with client:
+        report = await service.get(item.id, refresh=True)
+        assert report['records'] == [] and report['summary']['accepted_count'] == 0
+        assert report['summary']['rejected_count'] == 2
+        assert report['summary']['next_before_height'] is None
+        assert 'ambiguous_native_event_identity' in ' '.join(report['summary']['issues'])
+    with sqlite3.connect(service.path) as db:
+        assert db.execute('SELECT COUNT(*) FROM funding_revisions').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM funding_records').fetchone()[0] == 0
+
+
+async def test_conflicting_page_does_not_modify_existing_observation(env):
+    import sqlite3
+    payload = {'historicalFunding': [row()]}
+    service, item, client, _, _ = env(payload)
+    async with client:
+        saved = (await service.get(item.id, refresh=True))['records'][0]
+        payload['historicalFunding'] = [row(rate='.1'), row(rate='.2')]
+        result = await service.get(item.id, refresh=True)
+        assert result['records'] == []  # Do not present the older cache as the refreshed page.
+        assert (await service.get(item.id))['records'] == [saved]
+    with sqlite3.connect(service.path) as db:
+        assert db.execute('SELECT COUNT(*) FROM funding_revisions').fetchone()[0] == 0
+
+
+async def test_equivalent_height_spellings_cannot_bypass_ambiguity(env):
+    service, item, client, _, _ = env({'historicalFunding': [row(),
+        row(effectiveAtHeight='01234', effectiveAt='2026-01-01T01:00:00Z')]})
+    async with client:
+        report = await service.get(item.id, refresh=True)
+    assert report['records'] == [] and report['summary']['rejected_count'] == 2

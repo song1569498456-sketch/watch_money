@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections import Counter
 from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
@@ -87,9 +88,10 @@ class FundingHistoryService:
         records = [json.loads(row[0]) for row in rows]
         return sorted(records, key=lambda row: (row["settlement_at"], row["event_type"])), count
 
-    def _save(self, records: list[dict]) -> None:
+    def _save(self, records: list[dict]) -> list[dict]:
         with self._db_lock, closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
+            saved = []
             for record in records:
                 key = (record["instrument_id"], record["settlement_at"], record["event_type"])
                 prior_row = db.execute("SELECT record FROM funding_records WHERE instrument_id=? AND settlement_at=? AND event_type=?", key).fetchone()
@@ -110,7 +112,9 @@ class FundingHistoryService:
                         record["first_received_at"] = prior["first_received_at"]
                 db.execute("INSERT INTO funding_records VALUES(?,?,?,?) ON CONFLICT(instrument_id,settlement_at,event_type) DO UPDATE SET record=excluded.record",
                            (*key, json.dumps(record, allow_nan=False)))
+                saved.append(record)
             db.commit()
+            return saved
 
     async def get(self, instrument_id: str, *, refresh: bool = False,
                   since: int | None = None, limit: int = 100, before_height: int | None = None) -> dict:
@@ -143,15 +147,21 @@ class FundingHistoryService:
                         summary.update(await self._refresh(instrument, since, limit, before_height=before_height))
             except TimeoutError:
                 raise HTTPException(504, "Public funding history request timed out") from None
+        page_records = summary.pop("_page_records", None)
         records, count = await asyncio.to_thread(self._read, instrument_id, since, limit, before_height)
+        if page_records is not None:
+            records = sorted(page_records, key=lambda row: (row["settlement_at"], row["event_type"]))
+            summary["records_scope"] = "accepted_current_response_page"
+        else:
+            summary["records_scope"] = "local_cache_query"
         summary.update(count=len(records), cached_matching_count=count,
                        earliest_settlement_at=records[0]["settlement_at"] if records else None,
                        latest_settlement_at=records[-1]["settlement_at"] if records else None)
-        summary["truncated"] = summary["truncated"] or count > limit
+        summary["truncated"] = summary["truncated"] or (page_records is None and count > limit)
         return {"instrument_id": instrument_id, "records": records, "summary": summary,
                 "coverage": {"kind": "exchange_settled_funding_history", "all_history": False,
                              "background_backfill": False, "pagination": "one_manual_page",
-                             "cursor_semantics": "dydx_backward_height_hint_not_gap_proof" if instrument.venue == "dydx"
+                             "cursor_semantics": "dydx_manual_height_filter_no_safe_continuation" if instrument.venue == "dydx"
                                                  else "forward_since_hint_only_not_gap_proof",
                              "direction": "positive_longs_pay_shorts_negative_shorts_pay_longs"}}
 
@@ -228,17 +238,27 @@ class FundingHistoryService:
                 "source": endpoint, "source_docs": "https://docs.dydx.xyz/indexer-client/http#get-historical-funding",
                 "event_type": "regular", "received_at": received, "first_received_at": received,
                 "last_seen_at": received, "revision": 1, "is_demo": False})
-        await asyncio.to_thread(self._save, records)
-        lowest = min((int(row["native_block_height"]) for row in records), default=0)
-        # Rejected rows may conceal an earlier boundary; do not skip over them.
-        next_height = lowest - 1 if lowest > 1 and not reasons else None
-        return {"refreshed": True, "next_before_height": next_height,
+        # The endpoint omits eventId. Height and settlement time are not
+        # sufficient to distinguish multiple native events in a single page.
+        heights = Counter(str(row.get("effectiveAtHeight")).lstrip("0") or "0"
+                          for row in rows if isinstance(row, dict))
+        times = Counter(row["settlement_at"] for row in records)
+        unambiguous = []
+        for record in records:
+            if heights[record["native_block_height"].lstrip("0") or "0"] > 1 or times[record["settlement_at"]] > 1:
+                reasons["ambiguous_native_event_identity"] = reasons.get("ambiguous_native_event_identity", 0) + 1
+            else:
+                unambiguous.append(record)
+        records = await asyncio.to_thread(self._save, unambiguous)
+        return {"refreshed": True, "next_before_height": None,
+                "_page_records": records, "pagination_incomplete": True,
                 "pages": 1, "page_limit": page_limit,
                 "fetched_count": len(rows), "accepted_count": len(records),
                 "rejected_count": sum(reasons.values()), "next_since": None, "has_more": None,
                 "truncated": len(rows) >= page_limit or limit > page_limit,
                 "issues": [f"rejected_{reason}:{count}" for reason, count in sorted(reasons.items())] + [
-                    "One descending page; before_height is inclusive, since filters locally; cursor does not prove gap-free history",
+                    "Pagination stopped: height is not unique and the public response omits eventId; manual before_height may omit boundary events",
+                    "Refreshed records are this response page, not a mixed cached window; cached reads remain separate",
                     "Historical funding epoch duration is unknown; governance can change the default hourly interval"]}
 
     async def _refresh_hyperliquid(self, instrument, adapter, since, limit):
