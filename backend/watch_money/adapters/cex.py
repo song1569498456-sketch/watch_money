@@ -869,6 +869,8 @@ class CexAdapter:
                     issues.append(f"{field}: not provided")
         if any(timestamp is None for timestamp in times.values()):
             issues.append("One or more field event timestamps unavailable; receipt time is not source time")
+        if client_id == "gate" and instrument.kind == "spot" and ticker_time is None:
+            issues.append("Gate REST spot ticker has no book update timestamp; timed spot.book_ticker required for ranking")
         valid = any(fields.get(key) for key in ("bid", "ask", "last", "mark", "index"))
         return MarketSnapshot(instrument_id=instrument.id, venue=self.venue, source=source,
                               source_at=ticker_time, received_at=received, field_sources=sources,
@@ -982,6 +984,8 @@ def _light_ticker_patch(instrument: Instrument, client_id: str, ticker: dict,
     issues = ["REST timestamps describe unified ticker events; constituent field timing may differ"]
     if event_time is None:
         issues.append("REST ticker event time unavailable; receipt time is not source time")
+        if client_id == "gate" and instrument.kind == "spot":
+            issues.append("Gate REST spot ticker has no book update timestamp; timed spot.book_ticker required for ranking")
     if crossed:
         issues.append("crossed orderbook: bid exceeds ask")
     return MarketSnapshot(

@@ -1,0 +1,44 @@
+{
+  "provenance": "SYNTHETIC official-schema frames; no exchange connection or production mappings",
+  "recorded_at": 1793827921263,
+  "native_result_t": 1793827920253,
+  "envelope_time_ms": 1793827920753,
+  "stages": [
+    {
+      "stage": "REST missing time",
+      "bid": 200.0,
+      "ask": 201.0,
+      "bid_source_at": null,
+      "bid_received_at": 1793827920253,
+      "reliable_price_directions": 0
+    },
+    {
+      "stage": "native WS BBO",
+      "bid": 100.0,
+      "ask": 101.0,
+      "bid_source_at": 1793827920253,
+      "bid_received_at": 1793827920253,
+      "reliable_price_directions": 2
+    },
+    {
+      "stage": "later untimed REST",
+      "bid": 100.0,
+      "ask": 101.0,
+      "bid_source_at": 1793827920253,
+      "bid_received_at": 1793827920253,
+      "reliable_price_directions": 2
+    },
+    {
+      "stage": "expired despite REST receipt",
+      "bid": 100.0,
+      "ask": 101.0,
+      "bid_source_at": 1793827920253,
+      "bid_received_at": 1793827920253,
+      "reliable_price_directions": 0
+    }
+  ],
+  "limits": [
+    "Does not establish live Gate subscription acceptance, full coverage or 24h stability.",
+    "Independent real identity rehearsal is parent-reported separately in GATE_QUOTES.md."
+  ]
+}

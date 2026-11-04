@@ -230,6 +230,17 @@ class Collector:
                 continue
             stamp = snapshot.field_timestamps.get(field, snapshot.source_at)
             previous = timestamps.get(field)
+            # Gate REST tickers have no order-book event clock. They remain
+            # visible before a timed book arrives, but cannot replace a proven
+            # WS BBO (or its clear barrier) using a later local receipt alone.
+            # Keep the original age, even after expiry; only a new timed book
+            # can make it fresh again. Other REST metrics still merge normally.
+            if (snapshot.venue == 'gate' and field in ('bid', 'ask') and stamp is None
+                    and snapshot.source.startswith('ccxt:gate:fetch_ticker')
+                    and sources.get(field, '').startswith('gate:spot.book_ticker:')
+                    and previous is not None and previous <= received.get(field, old.received_at)):
+                patch.pop(field, None)
+                continue
             tombstone = getattr(old, field) is None and sources.get(field, '').endswith(':explicit_unavailable')
             has_previous = getattr(old, field) is not None or tombstone
             older = (stamp is not None and previous is not None and previous <= min(now_ms(), received.get(field, old.received_at))
@@ -292,6 +303,9 @@ class Collector:
             selected = sorted((i for i in tuple(self.instruments.values()) if i.venue == name and i.active
                                and (broad or i.base.upper() in watched)), key=lambda i: i.id)
             status.stream_requested_markets = len(selected)
+            supports = getattr(streamer, 'supports_instrument', None)
+            if supports is not None:
+                selected = [item for item in selected if supports(item)]
             cap = getattr(streamer, 'max_catalog_markets', None)
             if cap is not None:
                 selected = selected[:cap]
