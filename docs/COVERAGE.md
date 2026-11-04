@@ -193,3 +193,7 @@ dYdX历史新增显式before_height向前查询，与本地缓存高度筛选一
 ## R53 Binance原生历史复核
 
 USDⓈ-M/COIN-M历史加强原生symbol/fundingTime/fundingRate校验、单位和来源记录；USDⓈ-M Special独立保存，COIN-M未知特殊类型拒收。同页冲突不修订，满页与拒收停止时间游标，历史周期未知、完整性不承诺。只做离线验证，无实网/生产身份变更；dYdX R52限制不变。详见FUNDING_VIEW R53。
+
+## R54 MEXC/KuCoin周期依据
+
+MEXC历史collectCycle经官方核实为小时，仅有效正整数保留，原始周期另存；KuCoin Classic无逐条周期依据，保持未知。两平台原生symbol/结算时钟/率交叉校验，明确MEXC最新page1与KuCoin from/to窗口，不发完整继续提示，不访问私有账单/UTA替代。仅离线，dYdX R52及24小时限制不变。来源与测试见FUNDING_VIEW R54。

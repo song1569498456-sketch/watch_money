@@ -1,5 +1,7 @@
 # 验证记录
 
+2026-11-04 R54：MEXC/KuCoin Classic历史新增原生合约、毫秒结算时间、费率与单位核验。MEXC仅采用原始collectCycle有效整数小时，KuCoin缺逐记录周期依据保持null；两者不发无法证明安全的继续游标，同页费率/周期冲突拒收。**1292项完整后端（53.62秒）、173项历史专项（5.03秒）、CI范围Ruff/diff通过**；新增21项离线回归含安装版公共路由和参数。只读官方文档及离线替身，未访问行情主机、私有接口或受阻OKX连接；无前端变更，远端CI未确认。dYdX不完整分页、生产身份/真实覆盖和24小时验收仍开放。详见FUNDING_VIEW/AUDIT_BACKLOG R54。
+
 2026-11-04 R53：Binance USDⓈ-M/COIN-M历史新增原生symbol/fundingTime/fundingRate核验与来源单位记录；USDⓈ-M Regular/Special独立，COIN-M未核实特殊类型拒收，同页冲突不按顺序修订，满页/拒收停止时间游标。**1271项全量后端（53.38秒）、152项历史专项、CI范围Ruff/diff通过**；新16项回归含安装版公共fapi/dapi路由与无凭证。仅文档/离线，不扩交易或访问受阻连接；未知历史周期、dYdX不完整分页、生产身份/实网/24小时限制保持。下一项为MEXC/KuCoin原生历史字段与周期依据，详见FUNDING_VIEW/AUDIT_BACKLOG R53。
 
 2026-11-04 R52：修复dYdX刷新页与缓存窗口混用；刷新仅返回本次有效保存页面，缓存查询明确分开。官方公开响应不能区分同高度eventId，撤回自动height-1游标，next_before_height恒null并标pagination_incomplete；同页高度/时间冲突拒收、不产生顺序依赖修订。**1255项全量后端（51.79秒）、136项历史专项、CI范围Ruff/diff通过**，新增7项混合缓存/since/多页/冲突与顺序回归。R50自动翻页步骤已撤回，仅保留有风险提示的人工高度筛选；完整回填待可证明的官方事件分页能力。本批仅离线，未请求行情主机或受阻连接，24小时仍未完成。详见FUNDING_VIEW/AUDIT_BACKLOG R52。

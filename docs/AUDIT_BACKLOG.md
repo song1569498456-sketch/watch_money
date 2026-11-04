@@ -460,3 +460,14 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 只读官方文档和离线替身，未请求行情主机、受阻OKX连接或私有接口；dYdX R52分页不可证明完整的限制继续保留。下一项优先核查MEXC/KuCoin历史原生字段及历史周期依据；没有公开可证语义就保持未知。生产身份、跨平台真实覆盖和24小时仍开放。
 
 - 最终验证：1271项完整后端（53.38秒，1条上游TestClient弃用警告）、152项历史专项、CI范围Ruff/diff通过；无前端/浏览器或实网验证，远端CI未确认。
+
+### R54 MEXC/KuCoin历史字段与周期（2026-11-04）
+
+- 官方[MEXC历史](https://www.mexc.com/api-docs/futures/market-endpoints/get-funding-rate-history)明确symbol/fundingRate/settleTime以及collectCycle为整数小时。保存原生ID/结算时间/原始周期；仅有效正整数且安全范围内周期进入funding_interval_hours，缺失、布尔、非有限、非正或小数保持null，费率本身可独立保留。不套8h或当前市场周期。
+- 官方[KuCoin Classic公共历史](https://www.kucoin.com/docs-new/rest/futures-trading/funding-fees/get-public-funding-history)给出symbol/fundingRate/timepoint及from/to；没有逐记录周期依据，继续null，即使额外字段恰名collectCycle也不套MEXC语义。强制uta=false，显式until转to，安装版公共futures路由核验；不访问私人资金费账单，也不将UTA视作替代源。
+- 两平台要求准确已发现swap原生id/symbol/settle，原始合约/毫秒时间与统一字段一致、原始率存在；不靠统一率补缺。保存单位、原始时间与费率字段。超本服务单页100拒绝；这是保守本地边界，不宣称官方MEXC最大仅100（官方当前上限1000）。
+- MEXC显式page_num=1，since只在库/本地筛选，next_since=null；KuCoin只表示一次from/to窗口，排序/保留范围不足以证明无缺口继续，同样不发安全继续提示。无自动回填或完整历史承诺。同页同一结算的率/周期冲突拒收，不按响应顺序修订。
+- 新21项离线回归含安装版原生公共端点/参数、时间与小数费率不乘合约面值、错ID/时间/缺率、7种无效MEXC周期、KuCoin不继承周期、同页费率/周期冲突。既有MEXC周期fixture补原生字段，保留原断言。
+- 没有行情主机请求、受限OKX WebSocket重试、账户设置或交易变更；dYdX R52分页不可证明完整、全平台实网/身份覆盖和24小时仍开放。下一项优先继续平台原生数据时效与身份缺口，新增接口须先有官方可证语义；未知仍保持未知。
+
+- 最终验证：1292项完整后端（53.62秒，1条上游TestClient弃用警告）、173项历史专项（5.03秒）、CI范围Ruff/diff通过；无前端或实网验证，远端CI未确认。复测：`.venv/bin/pytest -q tests/test_mexc_kucoin_history.py`（21项）；无网络替身覆盖公共路由/原始字段/周期/冲突。

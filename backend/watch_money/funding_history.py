@@ -36,6 +36,10 @@ SETTLED_ENDPOINTS = {
 }
 
 
+NATIVE_HISTORY_TIME_KEYS = {"okx": "fundingTime", "bybit": "fundingRateTimestamp",
+                            "binanceusdm": "fundingTime", "binancecoinm": "fundingTime",
+                            "mexc": "settleTime", "kucoinfutures": "timepoint"}
+
 HTX_LINEAR_HISTORY_PATH = "linear-swap-api/v1/swap_historical_funding_rate"
 HTX_LINEAR_HISTORY_DOCS = "https://huobiapi.github.io/docs/usdt_swap/v1/en/#general-query-historical-funding-rate"
 
@@ -356,7 +360,7 @@ class FundingHistoryService:
             raise HTTPException(409, "Discover this market before refreshing funding history") from None
         if client_id not in SETTLED_ENDPOINTS:
             raise HTTPException(501, "Historical settled-rate endpoint semantics not yet reviewed for this service")
-        if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"}:
+        if client_id in NATIVE_HISTORY_TIME_KEYS:
             if (not _market.get("id") or _market.get("swap") is not True
                     or _market.get("symbol") != instrument.native_symbol
                     or _market.get("settle") != instrument.settle):
@@ -414,7 +418,9 @@ class FundingHistoryService:
         if client_id == "bitget":
             params.update(uta=False, pageNo=1)
         if client_id == "kucoinfutures":
-            params["uta"] = False
+            params.update(uta=False, until=now_ms())
+        if client_id == "mexc":
+            params["page_num"] = 1
         if client_id == "bybit" and since is not None:
             # Do not let CCXT estimate a historical query window from today's
             # catalog funding interval; this is only a request boundary.
@@ -460,7 +466,7 @@ class FundingHistoryService:
         check_scope()
         if not isinstance(payloads, list):
             raise HTTPException(502, "Malformed public funding history response")
-        if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"} and len(payloads) > page_limit:
+        if client_id in NATIVE_HISTORY_TIME_KEYS and len(payloads) > page_limit:
             raise HTTPException(502, "Oversized public history page; no partial cursor inferred")
         records = []
         rejected = 0
@@ -478,8 +484,8 @@ class FundingHistoryService:
             # OKX fundingRate is predicted even in history; only realizedRate
             # proves the actual charged rate. Guard against parser regressions.
             value = raw.get("realizedRate") if client_id == "okx" else raw.get("fundingRate", payload.get("fundingRate"))
-            if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"}:
-                native_time = raw.get("fundingRateTimestamp" if client_id == "bybit" else "fundingTime")
+            if client_id in NATIVE_HISTORY_TIME_KEYS:
+                native_time = raw.get(NATIVE_HISTORY_TIME_KEYS[client_id])
                 native_id = raw.get("instId" if client_id == "okx" else "symbol")
                 if native_id != _market["id"]:
                     reason = reason or "wrong_native_market"
@@ -527,6 +533,8 @@ class FundingHistoryService:
                 reasons[reason] = reasons.get(reason, 0) + 1
                 continue
             period = _number(raw.get("collectCycle"), positive=True) if client_id == "mexc" else None
+            if period is not None and (not period.is_integer() or period > 2**53 - 1):
+                period = None  # Published hours are integer; do not infer from today's catalog.
             event_type = raw.get("rateType", "regular") if client_id.startswith("binance") else "regular"
             event_type = event_type.lower() if isinstance(event_type, str) else "unknown"
             event_type = event_type if event_type in {"regular", "special"} else "unknown"
@@ -542,11 +550,13 @@ class FundingHistoryService:
                             "source_docs": HTX_LINEAR_HISTORY_DOCS if htx_linear else SETTLED_ENDPOINTS[client_id][1], "event_type": event_type,
                             "received_at": received, "first_received_at": received, "last_seen_at": received,
                             "revision": 1, "is_demo": False,
+                            **({"raw_funding_interval": str(raw["collectCycle"]) if "collectCycle" in raw else None}
+                               if client_id == "mexc" else {}),
                             **({"native_market_id": _market["id"], "settle": instrument.settle,
                                 "rate_unit": "decimal_ratio_per_settlement", "native_time_unit": "milliseconds",
-                                "native_settlement_time": raw.get("fundingRateTimestamp" if client_id == "bybit" else "fundingTime"),
+                                "native_settlement_time": raw.get(NATIVE_HISTORY_TIME_KEYS[client_id]),
                                 "rate_field": "realizedRate" if client_id == "okx" else "fundingRate"}
-                               if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"} else {}),
+                               if client_id in NATIVE_HISTORY_TIME_KEYS else {}),
                             **({"native_market_id": _market["id"], "settle": instrument.settle,
                                 "rate_unit": "decimal_ratio_per_settlement",
                                 "native_settlement_time": raw.get("t" if client_id == "gate" else "fundingTime"),
@@ -559,13 +569,13 @@ class FundingHistoryService:
                                 "advertised_funding_rate": str(raw["funding_rate"])
                                     if _number(raw.get("funding_rate")) is not None else None}
                                if client_id == "htx" else {})})
-        if client_id.startswith("binance"):
+        if client_id.startswith("binance") or client_id in {"mexc", "kucoinfutures"}:
             groups = {}
             for row in records:
                 groups.setdefault((row["settlement_at"], row["event_type"]), []).append(row)
             records = []
             for group in groups.values():
-                if len({row["raw_funding_rate"] for row in group}) > 1:
+                if len({(row["raw_funding_rate"], row["funding_interval_hours"]) for row in group}) > 1:
                     rejected += len(group)
                     reasons["conflicting_native_event"] = reasons.get("conflicting_native_event", 0) + len(group)
                 else:
@@ -574,7 +584,7 @@ class FundingHistoryService:
         latest = max((row["settlement_at"] for row in records), default=None)
         next_since = latest + 1 if latest is not None and latest < received else None
         issues = [f"rejected_{reason}:{count}" for reason, count in sorted(reasons.items())]
-        if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"} and rejected:
+        if client_id in NATIVE_HISTORY_TIME_KEYS and rejected:
             next_since = None
             issues.append("Rejected native records prevent a safe continuation hint")
         if client_id.startswith("binance") and len(payloads) >= page_limit:
@@ -582,9 +592,12 @@ class FundingHistoryService:
             issues.append("Full page may split same-time events; no safe time-only continuation hint")
         if since is not None and next_since is None:
             issues.append("no_forward_cursor_progress")
-        if client_id in {"bitget", "htx"}:
+        if client_id in {"bitget", "htx", "mexc"}:
             issues.append(f"{client_id} latest page 1 only; since filters locally and does not fetch older pages")
             next_since = None
+        if client_id == "kucoinfutures":
+            next_since = None
+            issues.append("Classic public from/to window only; returned ordering and retention do not prove a safe continuation")
         issues.append("One manual page only; exchange retention and missing earlier records remain unknown")
         return {"refreshed": True, "pages": 1, "page_limit": page_limit,
                 "fetched_count": len(payloads), "accepted_count": len(records), "rejected_count": rejected,

@@ -167,3 +167,12 @@ PYTEST
 - 同页相同结算时间/类型但原始率冲突的全部拒收，不按顺序选择；重复相同记录仍去重。任何拒收停止next_since；满页也停止时间+1提示，防止边界同时间另一个事件被跳过。每次一页，无自动回填，不保证完整事件历史。
 - 新16项离线回归覆盖安装版fapi/dapi公共路由、startTime及无凭证、正反合约原生单位/符号、错ID/时间/率、未知类型、COIN-M Special、冲突顺序与满页边界；既有普通/特殊同刻独立记录及修订测试保留。旧默认fixture补原生字段，不放宽验证。
 - 只读官方文档和离线替身，未请求行情主机、受阻OKX连接或私有接口；dYdX R52分页不可证明完整的限制继续保留。下一项优先核查MEXC/KuCoin历史原生字段及历史周期依据；没有公开可证语义就保持未知。生产身份、跨平台真实覆盖和24小时仍开放。
+
+### R54 MEXC/KuCoin历史字段与周期（2026-11-04）
+
+- 官方[MEXC历史](https://www.mexc.com/api-docs/futures/market-endpoints/get-funding-rate-history)明确symbol/fundingRate/settleTime以及collectCycle为整数小时。保存原生ID/结算时间/原始周期；仅有效正整数且安全范围内周期进入funding_interval_hours，缺失、布尔、非有限、非正或小数保持null，费率本身可独立保留。不套8h或当前市场周期。
+- 官方[KuCoin Classic公共历史](https://www.kucoin.com/docs-new/rest/futures-trading/funding-fees/get-public-funding-history)给出symbol/fundingRate/timepoint及from/to；没有逐记录周期依据，继续null，即使额外字段恰名collectCycle也不套MEXC语义。强制uta=false，显式until转to，安装版公共futures路由核验；不访问私人资金费账单，也不将UTA视作替代源。
+- 两平台要求准确已发现swap原生id/symbol/settle，原始合约/毫秒时间与统一字段一致、原始率存在；不靠统一率补缺。保存单位、原始时间与费率字段。超本服务单页100拒绝；这是保守本地边界，不宣称官方MEXC最大仅100（官方当前上限1000）。
+- MEXC显式page_num=1，since只在库/本地筛选，next_since=null；KuCoin只表示一次from/to窗口，排序/保留范围不足以证明无缺口继续，同样不发安全继续提示。无自动回填或完整历史承诺。同页同一结算的率/周期冲突拒收，不按响应顺序修订。
+- 新21项离线回归含安装版原生公共端点/参数、时间与小数费率不乘合约面值、错ID/时间/缺率、7种无效MEXC周期、KuCoin不继承周期、同页费率/周期冲突。既有MEXC周期fixture补原生字段，保留原断言。
+- 没有行情主机请求、受限OKX WebSocket重试、账户设置或交易变更；dYdX R52分页不可证明完整、全平台实网/身份覆盖和24小时仍开放。下一项优先继续平台原生数据时效与身份缺口，新增接口须先有官方可证语义；未知仍保持未知。

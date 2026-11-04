@@ -50,7 +50,7 @@ def setup_history(tmp_path, monkeypatch):
         adapter = CexAdapter(venue, client_factory=lambda _: client)
         adapter._markets[item.id] = (client_id, {"symbol": item.native_symbol,
                                                "info": {"fundingIntervalHours": 8}})
-        if client_id in {'okx', 'bybit', 'binanceusdm', 'binancecoinm'}:
+        if client_id in {'okx', 'bybit', 'binanceusdm', 'binancecoinm', 'mexc', 'kucoinfutures'}:
             adapter._markets[item.id][1].update(id='PEPE-USDT-SWAP' if client_id == 'okx' else 'PEPEUSDT',
                                                 swap=True, settle='USDT')
         collector = SimpleNamespace(instruments={item.id: item}, adapters={venue: adapter})
@@ -151,8 +151,8 @@ async def test_okx_only_actual_realized_rate_is_accepted(setup_history):
 @pytest.mark.asyncio
 async def test_mexc_only_history_specific_period_can_fill_period(setup_history):
     service, item, client, _ = setup_history("mexc", venue="mexc")
-    client.response = [entry(info={"fundingRate": "0.0001", "collectCycle": "4"}),
-                       entry(EVENT + 1000, info={"fundingRate": "0.0001"})]
+    client.response = [entry(info={"symbol": "PEPEUSDT", "settleTime": EVENT, "fundingRate": "0.0001", "collectCycle": "4"}),
+                       entry(EVENT + 1000, info={"symbol": "PEPEUSDT", "settleTime": EVENT + 1000, "fundingRate": "0.0001"})]
     records = (await service.get(item.id, refresh=True))["records"]
     assert records[0]["funding_interval_hours"] == 4
     assert records[0]["period_source"] == "history.info.collectCycle"
