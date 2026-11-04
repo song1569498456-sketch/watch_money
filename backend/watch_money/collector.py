@@ -5,7 +5,9 @@ import asyncio
 import math
 import random
 from contextlib import suppress
+from threading import Lock
 from time import monotonic
+from uuid import uuid4
 
 from .models import MarketSnapshot, VenueStatus, now_ms
 
@@ -129,6 +131,9 @@ def sanitize_legacy_volume(snapshot, instrument):
 
 class Collector:
     def __init__(self, store, adapters, notifications=None):
+        self.server_instance = str(uuid4())
+        self._view_seq = 0
+        self._view_lock = Lock()
         self.store = store
         self.adapters = adapters
         self.notifications = notifications
@@ -786,13 +791,24 @@ class Collector:
                 await self.pause(delay)
 
     def markets(self):
+        # Ordering describes when a view STARTED building, not when its worker
+        # happened to finish or when any market field was received.
+        with self._view_lock:
+            self._view_seq += 1
+            view_seq = self._view_seq
         settings = self.store.settings()
+        metadata = {'server_instance': self.server_instance, 'view_seq': view_seq,
+                    'view_context': {'enabled_venues': sorted(set(settings.enabled_venues)),
+                        'demo_mode': settings.demo_mode,
+                        'broad_collection_enabled': settings.broad_collection_enabled,
+                        'watch_assets': sorted({asset.upper() for asset in settings.watch_assets}),
+                        'stale_seconds': settings.stale_seconds}}
         allowed = set(settings.enabled_venues)
         if settings.demo_mode:
             from .demo import demo_markets
             instruments, snapshots = demo_markets()
             return {'instruments': [i.model_dump() for i in instruments],
-                    'snapshots': [enrich(s, settings.stale_seconds) for s in snapshots], 'mode': 'demo'}
+                    'snapshots': [enrich(s, settings.stale_seconds) for s in snapshots], 'mode': 'demo', **metadata}
         # Worker-built API/WS views may overlap discovery and patch ingestion.
         # Freeze membership once; never iterate a mutating collector dictionary.
         watched = {s.upper() for s in settings.watch_assets}
@@ -801,4 +817,4 @@ class Collector:
         snapshots = tuple(self.snapshots.items())
         return {'instruments': [selected[key].model_dump() for key in sorted(selected)],
                 'snapshots': [enrich(s, settings.stale_seconds) for key, s in snapshots if key in selected],
-                'mode': 'live'}
+                'mode': 'live', **metadata}

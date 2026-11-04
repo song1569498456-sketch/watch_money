@@ -29,6 +29,7 @@ jobs:
       - run: python scripts/browser_navigation.py
       - run: python scripts/browser_funding_matrix.py
       - run: python scripts/browser_overview_freshness.py
+      - run: python scripts/browser_market_view_order.py
       - run: python scripts/browser_asset_verification.py
       - uses: actions/upload-artifact@v4
         if: always()

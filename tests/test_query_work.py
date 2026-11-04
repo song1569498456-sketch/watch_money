@@ -165,6 +165,9 @@ async def test_ws_skips_under_http_pressure_and_keeps_last_sent_baseline(tmp_pat
         return {}
 
     class Socket:
+        async def receive(self):
+            await asyncio.Event().wait()
+
         frames = []
 
         async def accept(self):
@@ -212,3 +215,44 @@ async def test_full_app_lifespan_closes_sampler_and_worker(tmp_path):
         await work.json_response('markets', lambda: {'source_at': 123})
     assert work.closed and work.sampler.done() and not work.jobs
     assert all(not thread.is_alive() for thread in work.executor._threads)
+
+
+@pytest.mark.asyncio
+async def test_disconnected_socket_stops_even_while_readonly_worker_is_still_running(tmp_path, monkeypatch):
+    app = create_app(tmp_path, start_collector=False, adapters={})
+    work = app.state.query_work
+    started, release = threading.Event(), threading.Event()
+    disconnected = asyncio.Event()
+    calls = []
+
+    def build():
+        calls.append('build')
+        started.set()
+        release.wait(3)
+        return {'instruments': [], 'snapshots': [], 'mode': 'live'}
+
+    monkeypatch.setattr(app.state.collector, 'markets', build)
+
+    class Socket:
+        async def accept(self):
+            pass
+
+        async def receive(self):
+            await disconnected.wait()
+            return {'type': 'websocket.disconnect', 'code': 1000}
+
+        async def send_text(self, frame):
+            pytest.fail('Closed subscription must never publish a late frame')
+
+    endpoint = next(route.endpoint for route in app.routes if getattr(route, 'path', None) == '/ws')
+    task = asyncio.create_task(endpoint(Socket()))
+    try:
+        await until(started.is_set)
+        disconnected.set()
+        await asyncio.wait_for(task, .5)
+        assert work.active == 1  # CPU work cannot be killed; do not release its slot early.
+    finally:
+        release.set()
+        await work.close()
+        await app.state.asset_verification.close()
+    assert calls == ['build'] and not work.jobs

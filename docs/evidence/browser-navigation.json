@@ -14,7 +14,7 @@
     "cached scanner ages without auto-refresh, removes reliable claims and handoff, and rechecks on return",
     "390px primary destinations and funding matrix have no document overflow; no external/account/trading requests or JS errors"
   ],
-  "at": 1793820724276,
+  "at": 1793821587985,
   "account_api_used": false,
   "data_mode": "isolated synthetic navigation fixtures, no live exchange data"
 }

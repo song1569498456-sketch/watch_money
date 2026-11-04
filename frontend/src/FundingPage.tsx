@@ -3,6 +3,7 @@ import { Clock, Database, Globe, Loader2, RefreshCw, Search, ShieldCheck, X } fr
 import { api, num, pct, time } from "./api";
 import { fundingComparison, fundingFieldFresh, fundingGroups, fundingMarketState } from "./fundingMatrix";
 import type { FundingMarket, FundingResult } from "./fundingMatrix";
+import { QueryGeneration } from "./queryGeneration";
 import "./funding.css";
 
 type HistoryRecord = { settlement_at: number; funding_rate: number; funding_interval_hours: number | null;
@@ -42,6 +43,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
   active?: boolean; refreshKey?: number; onSelectCandidate?: (candidate: FundingCandidate) => void;
 }) {
   const [data, setData] = useState<FundingResult | null>(null);
+  const [dataVersion, setDataVersion] = useState(-1);
   const [venues, setVenues] = useState<string[]>([]);
   const [selectedVenues, setSelectedVenues] = useState<string[] | null>(null);
   const [rankingVenue, setRankingVenue] = useState("");
@@ -59,8 +61,8 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
   const [history, setHistory] = useState<HistoryResult | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
-  const historyRequest = useRef(0);
-  const previousQuery = useRef("");
+  const requests = useRef(new QueryGeneration());
+  const historyRequests = useRef(new QueryGeneration());
   const activeVenues = useMemo(() => selectedVenues === null ? venues : venues.filter((venue) => selectedVenues.includes(venue)), [venues, selectedVenues]);
   const platformsKey = selectedVenues === null ? "*" : [...selectedVenues].sort().join(",");
   const requestQuery = useMemo(() => {
@@ -69,33 +71,40 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
     if (view === "matrix" && platformsKey !== "*") params.set("platforms", platformsKey);
     return params.toString();
   }, [sort, view, basis, limit, query, rankingVenue, platformsKey]);
+  const requestVersion = requests.current.update(JSON.stringify([requestQuery, search.trim(), refreshKey]), active, reload);
+  const currentResults = dataVersion === requestVersion && search.trim() === query;
+  const historyVersion = historyRequests.current.update(JSON.stringify([requestVersion, selected?.row.instrument_id]), active);
   useEffect(() => {
     if (!active) return;
     setClock(Date.now());
     const timer = setInterval(() => setClock(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [active]);
-  useEffect(() => () => { historyRequest.current += 1; }, []);
+  useEffect(() => {
+    setHistoryLoading(false);
+    const gate = historyRequests.current;
+    return () => gate.cancelCurrent();
+  }, [historyVersion]);
   useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 250); return () => clearTimeout(timer); }, [search]);
   useEffect(() => {
-    let current = true;
-    if (previousQuery.current !== requestQuery) setData(null);
-    previousQuery.current = requestQuery;
+    if (!active || search.trim() !== query) { setLoading(false); return; }
+    const gate = requests.current;
+    const token = gate.begin();
     setLoading(true); setError("");
-    void api<FundingResult>(`/api/funding?${requestQuery}`).then((result) => {
-      if (!current) return;
-      setData(result); setClock(Date.now());
+    void api<FundingResult>(`/api/funding?${requestQuery}`, "GET", undefined, { signal: token.controller.signal }).then((result) => {
+      if (!gate.accepts(token)) return;
+      setData(result); setDataVersion(token.version); setClock(Date.now());
       setVenues(result.venues ?? [...new Set([...result.rows.map((row) => row.venue), ...result.groups.flatMap((group) => group.venues)])].sort());
-    }).catch((caught) => { if (current) setError((caught as Error).message); })
-      .finally(() => { if (current) setLoading(false); });
-    return () => { current = false; };
-  }, [requestQuery, reload, refreshKey]);
+    }).catch((caught) => { if (gate.accepts(token)) setError((caught as Error).message); })
+      .finally(() => { if (gate.accepts(token)) setLoading(false); });
+    return () => gate.cancel(token);
+  }, [requestVersion]);
   const groups = useMemo(() => data ? fundingGroups(data) : [], [data]);
   const marketMap = useMemo(() => new Map([...groups.flatMap((group) => group.cells), ...(data?.rows ?? [])].map((row) => [row.instrument_id, row])), [data, groups]);
   useEffect(() => {
-    if (!data) return;
+    if (!data || !currentResults) return;
     setSelected((old) => old && marketMap.has(old.row.instrument_id) ? { row: marketMap.get(old.row.instrument_id)!, asOf: data.as_of } : old);
-  }, [data, marketMap]);
+  }, [data, marketMap, currentResults]);
   const matrix = useMemo(() => groups.map((group) => ({ group, comparison: fundingComparison(group, activeVenues, data?.as_of ?? clock, clock) }))
     .sort((left, right) => sort === "asset" ? left.group.symbols.join().localeCompare(right.group.symbols.join()) :
       Number(left.comparison.spread == null) - Number(right.comparison.spread == null) ||
@@ -112,21 +121,27 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
   const stats = data?.stats;
   const selectedGroup = selected ? groups.find((group) => group.cells.some((row) => row.instrument_id === selected.row.instrument_id)) : null;
   const selectedPair = selectedGroup ? fundingComparison(selectedGroup, activeVenues, data?.as_of ?? clock, clock) : null;
+  const selectedCompatible = !!selected && currentResults && active && marketMap.has(selected.row.instrument_id)
+    && activeVenues.includes(selected.row.venue);
+  const canSelect = selectedCompatible && !loading && !error;
   const showRanking = (venue?: string) => { setRankingVenue(venue ?? activeVenues[0] ?? venues[0] ?? ""); setSort("rate"); setView("ranking"); };
   const openMarket = (row: FundingMarket) => {
-    historyRequest.current += 1; setHistory(null); setHistoryError(""); setHistoryLoading(false);
+    if (!active || !currentResults) return;
+    historyRequests.current.cancelCurrent(); setHistory(null); setHistoryError(""); setHistoryLoading(false);
     setSelected({ row: marketMap.get(row.instrument_id) ?? row, asOf: data?.as_of ?? clock });
   };
-  const closeMarket = () => { historyRequest.current += 1; setSelected(null); setHistoryLoading(false); };
+  const closeMarket = () => { historyRequests.current.cancelCurrent(); setSelected(null); setHistoryLoading(false); };
   const loadHistory = async (refresh: boolean) => {
-    if (!selected) return;
-    const requestId = ++historyRequest.current;
+    if (!selected || !selectedCompatible) return;
+    const gate = historyRequests.current;
+    const token = gate.begin();
     setHistory(null); setHistoryError(""); setHistoryLoading(true);
     try {
-      const result = await api<HistoryResult>(`/api/funding/history/${encodeURIComponent(selected.row.instrument_id)}?refresh=${refresh}&limit=100`);
-      if (requestId === historyRequest.current) setHistory(result);
-    } catch (caught) { if (requestId === historyRequest.current) setHistoryError((caught as Error).message); }
-    finally { if (requestId === historyRequest.current) setHistoryLoading(false); }
+      const result = await api<HistoryResult>(`/api/funding/history/${encodeURIComponent(selected.row.instrument_id)}?refresh=${refresh}&limit=100`,
+        "GET", undefined, { signal: token.controller.signal });
+      if (gate.accepts(token)) setHistory(result);
+    } catch (caught) { if (gate.accepts(token)) setHistoryError((caught as Error).message); }
+    finally { if (gate.accepts(token)) setHistoryLoading(false); }
   };
   const toggleVenue = (venue: string) => setSelectedVenues((old) => {
     const current = old ?? venues;
@@ -135,7 +150,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
   const marketButton = (row: FundingMarket, symbol: string) => {
     const state = fundingMarketState(row, data?.as_of ?? clock, clock);
     return <button type="button" className={`funding-market-cell funding-${state.tone}`} key={row.instrument_id}
-      aria-label={`查看 ${symbol} · ${row.venue} · ${row.native_symbol} 详情`} onClick={() => openMarket(row)}>
+      disabled={!currentResults || !active} aria-label={`查看 ${symbol} · ${row.venue} · ${row.native_symbol} 详情`} onClick={() => openMarket(row)}>
       <span className={`funding-state funding-${state.tone}`}>{state.label}</span>
       <strong className="mono">{state.code === "fresh" ? rate(row.normalized_8h_rate) : "—"}<small> / 8h 比较</small></strong>
       <span className="funding-raw">{state.code === "stale" ? "最后原始" : "原始"} {rate(row.raw_rate ?? row.observed?.funding_rate)} / {period(row.interval_hours ?? row.observed?.funding_interval_hours)}</span>
@@ -166,6 +181,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
         <select aria-label="资金费率返回条数" value={limit} onChange={(event) => setLimit(Number(event.target.value))}>{[100, 500, 1000, 5000].map((count) => <option key={count} value={count}>最多 {count} 项</option>)}</select>
       </div>
       <div className="funding-caption" role="status">数据检查时间 {time(data?.as_of)}。有效性随字段TTL变为过期，页面计时不会刷新源时间。<span>“无市场”仅指当前已发现目录与可确认身份范围内未列出市场，不证明平台不存在该资产；未核验身份不计算跨平台费差。</span></div>
+      {!error && (loading || !currentResults) && <div className="notice" role="status">{data ? "正在核验当前筛选与设置；以下保留上次查询结果，暂不可发起组合测算。" : "正在读取当前资金费目录。"}</div>}
       {error && <div className="notice error" role="alert">资金费视图获取失败：{error}{data ? "；保留上次检查结果。" : ""}</div>}
       {data?.enabled === false && <div className="notice">演示模式下不展示真实资金费视图。</div>}
       {(stats?.rows_truncated || stats?.matrix_groups_truncated) && <div className="notice">本次返回已截断：市场 {stats.rows_returned}/{stats.rows_total}，矩阵资产 {stats.matrix_groups_returned}/{stats.matrix_groups_total}。当前排序仅展示本次返回范围；可增加条数或搜索资产，不能据此判断全部市场最优。</div>}
@@ -184,20 +200,21 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
           return <tr key={row.instrument_id}><td><strong>{row.base} · {row.venue}</strong><small>{row.native_symbol} · {row.quote}</small><small className={row.identity_status === "verified" ? "muted" : "warning"}>{identityLabel[row.identity_status ?? "unverified"]}</small></td>
             <td><span className={`funding-state funding-${state.tone}`}>{state.label}</span></td><td className="mono">{rate(row.raw_rate ?? row.observed?.funding_rate)}<small>{period(row.interval_hours ?? row.observed?.funding_interval_hours)}{state.code === "stale" ? " · 最后观测" : ""}</small></td>
             <td className="mono">{state.code === "fresh" ? rate(row.normalized_8h_rate) : "—"}</td><td>{kindLabel[row.kind ?? row.observed?.funding_kind ?? ""] ?? "类型未知"}<small>{countdown(row.next_funding_at ?? row.observed?.next_funding_at, clock)}</small></td>
-            <td><small>源事件 {time(row.field_validity?.funding_rate?.source_at)}</small><small>本地接收 {time(row.field_validity?.funding_rate?.received_at)}</small><button type="button" className="text-button" onClick={() => openMarket(row)}>查看详情</button></td></tr>;
+            <td><small>源事件 {time(row.field_validity?.funding_rate?.source_at)}</small><small>本地接收 {time(row.field_validity?.funding_rate?.received_at)}</small><button type="button" className="text-button" disabled={!currentResults || !active} onClick={() => openMarket(row)}>查看详情</button></td></tr>;
         })}</tbody></table></div>}
       {(!data || (view === "matrix" ? !matrix.length : !ranking.length)) && <div className="empty"><Database size={25} /><h3>{loading ? "正在读取资金费目录" : view === "matrix" && !activeVenues.length ? "请选择平台" : "本次范围暂无永续市场"}</h3><p>可调整平台、搜索词或返回条数。缺少行情与确定没有市场分别展示。</p></div>}
       <div className="panel-foot">8h仅用于同口径比较；实际周期、类型、结算时点与持仓规模不同，费用和执行条件另行核对。</div>
     </section>
     {selected && <aside className="funding-detail panel" aria-label="资金费详情">
       <div className="panel-heading"><div><h2>资金费详情 · {selected.row.base ?? selected.row.native_symbol} · {selected.row.venue}</h2><p>{selected.row.native_symbol} · {selected.row.quote} 报价</p></div><button type="button" className="icon-button" aria-label="关闭资金费详情" onClick={closeMarket}><X size={18} /></button></div>
+      {!selectedCompatible && <div className="notice warning" role="status">此详情保留自上次查询；当前筛选与设置下尚未核验，不可带入测算。</div>}
       <div className="funding-detail-scroll"><div className="form-content"><span className={`funding-state funding-${fundingMarketState(selected.row, selected.asOf, clock).tone}`}>{fundingMarketState(selected.row, selected.asOf, clock).label}</span>
         <p>原始 {rate(selected.row.raw_rate ?? selected.row.observed?.funding_rate)} / {period(selected.row.interval_hours ?? selected.row.observed?.funding_interval_hours)}</p>
         <p>{kindLabel[selected.row.kind ?? selected.row.observed?.funding_kind ?? ""] ?? "类型未知"} · 8h比较 {fundingMarketState(selected.row, selected.asOf, clock).code === "fresh" ? rate(selected.row.normalized_8h_rate) : "不可用"}</p>
         <p>下次结算 {time(selected.row.next_funding_at ?? selected.row.observed?.next_funding_at)}<br /><span className="muted">{countdown(selected.row.next_funding_at ?? selected.row.observed?.next_funding_at, clock)}</span></p>
         <small className="muted">本行数据检查时间 {time(selected.asOf)}；源事件时间不因页面计时更新。</small>
         {selectedPair?.low && selectedPair.high && onSelectCandidate && <p>
-          <button type="button" className="button primary" onClick={() => onSelectCandidate({
+          <button type="button" className="button primary" disabled={!canSelect} onClick={() => canSelect && onSelectCandidate({
             buy_instrument_id: selectedPair.low!.instrument_id, sell_instrument_id: selectedPair.high!.instrument_id,
             strategy: "perp_spread",
           })}>测算此组合</button><small className="muted"> 低费率 {selectedPair.low.venue} / 高费率 {selectedPair.high.venue}；组合类型：{kindLabel[selectedPair.low.kind ?? ""] ?? "类型未知"}。其余类型独立比较；仅带入市场，不自动计算。</small>
@@ -208,7 +225,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
         <span className={fundingFieldFresh(selected.row, field, selected.asOf, clock) ? "muted" : "warning"}>{fundingFieldFresh(selected.row, field, selected.asOf, clock) ? "字段有效" : explain(validity.reason ?? (validity.rankable === false ? "来源或源事件时间未核验" : "字段已过期"))}</span>
         <small>源事件 {time(validity.source_at)} · 本地接收 {time(validity.received_at)}</small>{validity.metadata_observation && <small>周期按元数据观察时间检查，不是交易所事件时间</small>}<small className="break">{validity.source ?? "来源未提供"}</small></div>)}</div>
       <section aria-labelledby="funding-history-heading" className="funding-history-section"><h3 id="funding-history-heading">已结算公共历史</h3><p>按当前市场手动读取；本地行情快照不当作结算历史，未知历史周期不回填。</p>
-        <div className="funding-history-actions"><button type="button" className="button secondary" disabled={historyLoading} onClick={() => void loadHistory(false)}>读取已保存历史</button><button type="button" className="button secondary" disabled={historyLoading} onClick={() => void loadHistory(true)}>{historyLoading ? <Loader2 size={13} className="spin" /> : <Database size={13} />}获取已结算历史</button></div>
+        <div className="funding-history-actions"><button type="button" className="button secondary" disabled={historyLoading || !selectedCompatible} onClick={() => void loadHistory(false)}>读取已保存历史</button><button type="button" className="button secondary" disabled={historyLoading || !selectedCompatible} onClick={() => void loadHistory(true)}>{historyLoading ? <Loader2 size={13} className="spin" /> : <Database size={13} />}获取已结算历史</button></div>
         {historyError && <div className="notice error" role="alert">已结算历史获取失败：{historyError}</div>}{history?.summary.issues?.map((issue, index) => <p className="muted break" key={index}>{issue}</p>)}
         {!!history?.records.length && <div className="funding-table-wrap"><table className="funding-history-table"><thead><tr><th>实际结算时间</th><th>已结算原始费率</th><th>实际历史周期</th></tr></thead><tbody>{history.records.map((record, index) => <tr key={`${record.settlement_at}:${index}`}>
           <td>{time(record.settlement_at)}<small>{record.event_type === "regular" ? "常规结算" : record.event_type === "special" ? "特殊结算" : "事件类型未提供"}</small></td><td className="mono">{rate(record.funding_rate)}<small className="break">{record.source}</small><small>本地接收 {time(record.received_at)}</small></td><td>{period(record.funding_interval_hours)}{record.funding_interval_hours == null && <small>不使用当前周期回填历史</small>}</td></tr>)}</tbody></table></div>}

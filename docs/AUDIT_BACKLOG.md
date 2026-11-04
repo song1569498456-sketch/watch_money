@@ -164,4 +164,14 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - R22 已实现、本地完整验收通过：enrich的stale按显示价格字段计算，新增price_valid/price_fresh/price_source_known/price_fields；结构valid不用于冒充所有字段可用。未来到达时间、无价格、未知源时间或过期价格不计为新鲜；字段级资金费/成交量状态保留。前端总览绿点、有效行情计数和详情价格状态统一使用按字段判断且随本地时钟老化的逻辑，不能被新消息envelope续期；价格范围也拒绝source晚于原receipt。
 - R18/R19 追加父线程4372805实网反例：Bitget已921/928可比较，但markets曾27.16秒，funding/scanner约12秒；随后OKX0/540、HL约98秒ApplicationPongTimeout，覆盖320→21→12。此前合成优化不是实网稳定性验收；轻负载新对照尚待反馈。继续分析CPU/loop/查询并发，不预设唯一原因。
 - R23 已实现、本地验收通过，实网稳定性待验证：重HTTP查询/浏览器WS视图共用有界单worker准入；超载明确503，旧数据保持原时间，WS忙时跳帧不排队。安全诊断包括排队/构建/编码耗时、线程与进程CPU、响应大小、本地loop延迟，供下一次实网对照。详见本批后续验证记录；Lighter地区限制及24小时、身份覆盖继续开放。
-- R24 待修复（独立浏览器复现、既有视图切换问题）：修改启用平台后，较旧WS缓存可短暂覆盖刚返回的HTTP目录/价格视图，下一目标WS帧会恢复；未修改source/receipt。见browser-overview-freshness.json的known_limitations。当前浏览器截图等目标WS帧再保存，不能把该等待当作产品修复。
+- R24 历史复现（现已修复，见下方验收记录）：修改启用平台后，较旧WS缓存可短暂覆盖刚返回的HTTP目录/价格视图，下一目标WS帧会恢复；未修改source/receipt。见browser-overview-freshness.json的historical_regressions。当前浏览器截图等目标WS帧再保存，不能把该等待当作产品修复。
+
+### R24 验收记录（2026-11-04）
+
+- 状态：实现与本地回归完成；不代表真实交易所运行稳定性验收。
+- 实现：`collector.py` 在视图构建开始分配服务实例/单调序号，实际筛选设置作为上下文；`market_stream.py` 标明完整帧及增量基线；`app.py` 及时清理断开的订阅。`marketView.ts` 与 `main.tsx` 统一 HTTP/WS 排序，平台切换取消旧 HTTP、清空旧范围、关闭旧 WS；错误增量要求完整重同步，服务重启使用新实例且旧实例不能复活。
+- 页面：`queryGeneration.ts`、`ScannerPage.tsx`、`FundingPage.tsx` 隔离筛选、离开/返回、失败重试的响应与错误；返回会重新请求，缓存明确标记且禁止旧组合测算。保留用户筛选、排序、展开和滚动。
+- 测试：`test_market_view_version.py`、`test_market_stream.py`、`test_query_work.py` 覆盖构建开始排序、上下文、断开连接及工作线程容量；前端新增 10 项时序测试，完整 44 项通过。`browser_market_view_order.py` 5 组通过，旧真实本地 WS 完整帧/增量晚到、HTTP 晚到、范围切换、错误基线重连、返回 503 后重试均覆盖；导航 12 组、新鲜度 5 组及其他本轮浏览器 25 组通过（合计 47）。
+- 证据：`docs/evidence/browser-market-view-order.json`、`browser-navigation.json`、`browser-overview-freshness.json` 与截图；行情为本地合成，未访问账户或执行交易。原始 source/receipt 时间不变，未放宽有效性门槛。实网超时、资金费空窗、24 小时和其他未完成清单仍开放。
+
+- 最终完整验证：851 项后端测试（31.02 秒）、44 项前端测试、生产构建、Ruff 与 diff 检查通过。后端仅一条上游 TestClient 弃用警告。

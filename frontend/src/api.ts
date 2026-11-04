@@ -4,9 +4,11 @@ export async function api<T>(
   path: string,
   method = "GET",
   body?: unknown,
+  options?: { signal?: AbortSignal },
 ): Promise<T> {
   const response = await fetch(path, {
     method,
+    signal: options?.signal,
     headers:
       body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),

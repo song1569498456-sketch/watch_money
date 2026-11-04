@@ -43,7 +43,12 @@ async def test_worker_json_matches_previous_framework_encoding_for_nonempty_publ
         prior_encoding = await client.get(path)
     assert optimized.status_code == prior_encoding.status_code == 200
     assert optimized.headers["content-type"] == prior_encoding.headers["content-type"] == "application/json"
-    assert optimized.json() == prior_encoding.json()
+    optimized_data, prior_data = optimized.json(), prior_encoding.json()
+    if path == '/api/markets':
+        # View revisions intentionally advance per build; payload encoding and
+        # quote clocks must still be identical across the two encoders.
+        assert prior_data.pop('view_seq') > optimized_data.pop('view_seq')
+    assert optimized_data == prior_data
     data = optimized.json()
     if path == "/api/markets":
         assert len(data["instruments"]) == len(data["snapshots"]) == 2
@@ -74,6 +79,9 @@ async def test_cancelling_websocket_during_worker_build_never_sends_late_frame_o
             loop.call_soon_threadsafe(finished.set)
 
     class Socket:
+        async def receive(self):
+            await asyncio.Event().wait()
+
         async def accept(self):
             pass
 

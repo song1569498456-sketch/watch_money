@@ -47,6 +47,7 @@ import {
   fieldTimestamp,
 } from "./api";
 import { priceOverviewState } from "./marketData";
+import { MarketViewGuard, applyMarketDelta, contextKey, type VersionedView } from "./marketView";
 import type {
   Asset,
   Book,
@@ -223,116 +224,167 @@ function App() {
   }, [navigate]);
   const [toast, setToast] = useState("");
   const latest = useRef<MarketData | null>(null);
+  const viewGuard = useRef(new MarketViewGuard());
+  const loadVersion = useRef(0);
+  const marketRequest = useRef(0);
+  const marketAbort = useRef<AbortController | null>(null);
+  const restartStream = useRef<(() => void) | null>(null);
   const refresh = useRef(1000);
   refresh.current = settings?.refresh_ms ?? 1000;
   const error = (key: string, value: string) =>
     setErrors((old) => ({ ...old, [key]: value }));
-  const load = async () => {
+  const applySettings = (data: Settings) => {
+    const changed = viewGuard.current.configure(data);
+    setSettings(data);
+    if (changed) {
+      marketAbort.current?.abort();
+      marketRequest.current++;
+      latest.current = null;
+      setMarkets({ instruments: [], snapshots: [] });
+      setQueryRefresh((value) => value + 1);
+      restartStream.current?.();
+    }
+    return changed;
+  };
+  const loadMarkets = async () => {
+    marketAbort.current?.abort();
+    const controller = new AbortController();
+    marketAbort.current = controller;
+    const request = ++marketRequest.current;
+    const token = viewGuard.current.token();
+    try {
+      const data = await api<MarketData>("/api/markets", "GET", undefined, { signal: controller.signal });
+      if (request === marketRequest.current && viewGuard.current.accept(data, token)) {
+        // Discard any older socket view waiting for the display timer.
+        latest.current = null;
+        setMarkets(data);
+        error("行情", "");
+      }
+    } catch (caught) {
+      const current = viewGuard.current.token();
+      if (request === marketRequest.current && current.epoch === token.epoch &&
+          current.server === token.server && current.sequence === token.sequence)
+        error("行情", (caught as Error).message);
+    }
+  };
+  const load = async (knownSettings?: Settings) => {
+    const generation = ++loadVersion.current;
     setLoading(true);
-    const resources: [string, string, (value: any) => void][] = [
-      ["行情", "/api/markets", setMarkets],
-      [
-        "状态",
-        "/api/status",
-        (value) => {
-          setStatuses(value.venues ?? []);
-          setCoverage(value.coverage ?? []);
-        },
-      ],
-      ["配置", "/api/settings", setSettings],
-      [
-        "收藏",
-        "/api/favorites",
-        (value) => setFavorites(value.instrument_ids ?? []),
-      ],
-      [
-        "资产",
-        "/api/assets",
-        (value) =>
-          setAssets(Array.isArray(value) ? value : (value.assets ?? [])),
-      ],
-    ];
-    await Promise.allSettled(
-      resources.map(async ([key, path, set]) => {
-        try {
-          set(await api(path));
-          error(key, "");
-        } catch (e) {
-          error(key, String(e instanceof Error ? e.message : e));
-        }
-      }),
-    );
-    setLoading(false);
+    try {
+      const config = knownSettings ?? await api<Settings>("/api/settings");
+      if (generation !== loadVersion.current) return;
+      applySettings(config);
+      error("配置", "");
+      const resources: [string, string, (value: any) => void][] = [
+        ["状态", "/api/status", (value) => { setStatuses(value.venues ?? []); setCoverage(value.coverage ?? []); }],
+        ["收藏", "/api/favorites", (value) => setFavorites(value.instrument_ids ?? [])],
+        ["资产", "/api/assets", (value) => setAssets(Array.isArray(value) ? value : (value.assets ?? []))],
+      ];
+      await Promise.allSettled([
+        loadMarkets(),
+        ...resources.map(async ([key, path, set]) => {
+          try {
+            const data = await api(path);
+            if (generation === loadVersion.current) { set(data); error(key, ""); }
+          } catch (caught) {
+            if (generation === loadVersion.current) error(key, (caught as Error).message);
+          }
+        }),
+      ]);
+    } catch (caught) {
+      if (generation === loadVersion.current) error("配置", (caught as Error).message);
+    } finally {
+      if (generation === loadVersion.current) setLoading(false);
+    }
   };
   useEffect(() => {
-    void load();
     let stopped = false;
+    let connection = 0;
     let reconnect: ReturnType<typeof setTimeout>;
-    let socket: WebSocket;
-    let streamData: MarketData | null = null;
+    let socket: WebSocket | undefined;
     const connect = () => {
+      if (stopped) return;
+      const identity = ++connection;
+      const token = viewGuard.current.token();
+      let streamData: VersionedView | null = null;
+      let initial = true;
       setWsState("connecting");
-      socket = new WebSocket(
-        `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`,
-      );
-      socket.onopen = () => setWsState("connected");
-      socket.onmessage = (e) => {
+      const currentSocket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+      socket = currentSocket;
+      const live = () => !stopped && identity === connection && token.epoch === viewGuard.current.epoch;
+      currentSocket.onopen = () => { if (live()) setWsState("connected"); };
+      currentSocket.onmessage = (event) => {
+        if (!live()) return;
         try {
-          const data = JSON.parse(e.data);
-          if (data.type === "markets") {
-            streamData = data.data ?? data.payload ?? data;
+          const message = JSON.parse(event.data);
+          if (message.type === "markets") {
+            const data = message.data ?? message.payload ?? message;
+            if (!viewGuard.current.matches(data, token.epoch)) return;
+            // A delayed full frame cannot rewind this socket's own delta chain.
+            if (streamData && (streamData.server_instance !== data.server_instance || data.view_seq <= streamData.view_seq)) return;
+            streamData = data;
+          } else if (message.type === "markets_delta") {
+            const next = applyMarketDelta(streamData, message);
+            if (!next || !viewGuard.current.matches(next, token.epoch)) {
+              currentSocket.close(); // Missing/mismatched baseline: reconnect for a full view.
+              return;
+            }
+            streamData = next;
+          } else return;
+          if (viewGuard.current.accept(streamData!, token, initial)) {
             latest.current = streamData;
-          } else if (data.type === "markets_delta" && streamData) {
-            const instruments = new Map(streamData.instruments.map(i => [i.id, i]));
-            const snapshots = new Map(streamData.snapshots.map(s => [s.instrument_id, s]));
-            for (const id of data.removed_instruments ?? []) instruments.delete(id);
-            for (const id of data.removed_snapshots ?? []) snapshots.delete(id);
-            for (const item of data.instruments ?? []) instruments.set(item.id, item);
-            for (const item of data.snapshots ?? []) snapshots.set(item.instrument_id, item);
-            streamData = {...streamData, mode: data.mode,
-              instruments: Array.from(instruments.values()), snapshots: Array.from(snapshots.values())};
-            latest.current = streamData;
+            error("行情", "");
           }
-        } catch {
-          /* Invalid messages never replace current market data. */
-        }
+          initial = false;
+        } catch { currentSocket.close(); }
       };
-      socket.onerror = () => setWsState("disconnected");
-      socket.onclose = () => {
+      currentSocket.onerror = () => { if (live()) setWsState("disconnected"); };
+      currentSocket.onclose = () => {
+        if (!live()) return;
         setWsState("disconnected");
-        if (!stopped) reconnect = setTimeout(connect, 5000);
+        reconnect = setTimeout(connect, 5000);
       };
     };
+    restartStream.current = () => {
+      clearTimeout(reconnect);
+      const old = socket;
+      connect(); // Increment identity before old close callbacks can fire.
+      old?.close();
+    };
     connect();
+    void load();
     let last = 0;
     const timer = setInterval(() => {
       const timestamp = Date.now();
       setNow(timestamp);
       if (latest.current && timestamp - last >= refresh.current) {
-        setMarkets(latest.current);
+        if (viewGuard.current.isCurrent(latest.current)) setMarkets(latest.current);
         latest.current = null;
         last = timestamp;
       }
     }, 500);
     const poll = setInterval(() => {
-      void api<{ venues: VenueStatus[]; coverage: Coverage[] }>("/api/status")
-        .then((data) => {
-          setStatuses(data.venues);
-          setCoverage(data.coverage);
-          error("状态", "");
-        })
-        .catch((e) => error("状态", e.message));
       if (stopped) return;
-      if (socket?.readyState !== WebSocket.OPEN)
-        void api<MarketData>("/api/markets")
-          .then((data) => {
-            setMarkets(data);
-            error("行情", "");
-          })
-          .catch((e) => error("行情", e.message));
+      const generation = loadVersion.current;
+      const epoch = viewGuard.current.epoch;
+      const current = () => !stopped && generation === loadVersion.current && epoch === viewGuard.current.epoch;
+      void api<{ venues: VenueStatus[]; coverage: Coverage[] }>("/api/status")
+        .then((data) => { if (current()) { setStatuses(data.venues); setCoverage(data.coverage); error("状态", ""); } })
+        .catch((caught) => { if (current()) error("状态", caught.message); });
+      // Synchronize externally changed settings without resetting an unchanged draft.
+      void api<Settings>("/api/settings").then((config) => {
+        if (current() && contextKey(config) !== viewGuard.current.context) void load(config);
+      }).catch((caught) => { if (current()) error("配置", caught.message); });
+      if (socket?.readyState !== WebSocket.OPEN) void loadMarkets();
     }, 15000);
     return () => {
       stopped = true;
+      connection++;
+      loadVersion.current++;
+      marketRequest.current++;
+      marketAbort.current?.abort();
+      restartStream.current = null;
+      latest.current = null;
       clearInterval(timer);
       clearInterval(poll);
       clearTimeout(reconnect);
@@ -572,7 +624,9 @@ function App() {
                 settings={settings}
                 coverage={coverage}
                 onSave={(data) => {
-                  setSettings(data);
+                  loadVersion.current++; // Invalidate an older settings GET before applying the saved scope.
+                  if (!applySettings(data)) setQueryRefresh((value) => value + 1);
+                  void load(data);
                   setToast("配置已保存");
                 }}
               />

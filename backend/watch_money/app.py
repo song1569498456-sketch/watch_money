@@ -247,18 +247,39 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
             return current, json.dumps(market_delta(previous, current), ensure_ascii=False,
                                        allow_nan=False, separators=(',', ':'))
 
+        async def wait_disconnect():
+            try:
+                while (await ws.receive()).get('type') != 'websocket.disconnect':
+                    pass
+            except (WebSocketDisconnect, RuntimeError, OSError):
+                return
+
+        disconnected = asyncio.create_task(wait_disconnect())
+        pending = None
         try:
-            while True:
+            while not disconnected.done():
+                pending = asyncio.create_task(query_work.run('ws', collector.markets, render_frame, wait=False))
+                await asyncio.wait((pending, disconnected), return_when=asyncio.FIRST_COMPLETED)
+                if disconnected.done():
+                    break
                 try:
-                    current, frame = await query_work.run('ws', collector.markets, render_frame, wait=False)
+                    current, frame = await pending
                 except QueryOverloaded:
-                    await asyncio.sleep(store.settings().refresh_ms / 1000)
+                    await asyncio.wait((disconnected,), timeout=store.settings().refresh_ms / 1000)
                     continue
+                finally:
+                    pending = None
                 await ws.send_text(frame)
                 previous = current
-                await asyncio.sleep(store.settings().refresh_ms / 1000)
+                await asyncio.wait((disconnected,), timeout=store.settings().refresh_ms / 1000)
         except (WebSocketDisconnect, RuntimeError, OSError):
             return
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            disconnected.cancel()
+            await asyncio.gather(disconnected, return_exceptions=True)
 
     # An editable checkout has backend/watch_money/app.py; installed deployments may override.
     frontend = Path(os.getenv('WATCH_MONEY_FRONTEND_DIR', str(Path(__file__).resolve().parents[2] / 'frontend' / 'dist')))

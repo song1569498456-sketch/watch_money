@@ -1,6 +1,8 @@
 from copy import deepcopy
 import json
 
+import pytest
+
 from watch_money.market_stream import market_delta
 
 
@@ -68,3 +70,47 @@ def test_legacy_derivative_volume_is_not_relabelled_or_revived_after_restart(tmp
     updated = collector.merge_patch(MarketSnapshot(instrument_id='old', venue='okx', last=101,
                                                    source='ccxt:okx:fetch_ticker'))
     assert updated.volume is None  # Missing fresh volume cannot revive an incorrectly labelled cached amount.
+
+
+def versioned(seq=1, instance='server-a'):
+    return {**data(), 'server_instance': instance, 'view_seq': seq,
+            'view_context': {'enabled_venues': ['alpha'], 'demo_mode': False,
+                             'broad_collection_enabled': True, 'watch_assets': ['BTC'], 'stale_seconds': 60}}
+
+
+def test_versioned_delta_names_actual_ws_base_despite_intervening_http_builds():
+    old, current = versioned(2), versioned(5)
+    current['snapshots'][0].update(bid=2, source_at=123, received_at=456)
+    delta = market_delta(old, current)
+    assert delta['type'] == 'markets_delta'
+    assert delta['base_view_seq'] == 2 and delta['view_seq'] == 5
+    assert delta['server_instance'] == 'server-a' and delta['view_context'] == current['view_context']
+    assert delta['snapshots'][0]['source_at'] == 123 and delta['snapshots'][0]['received_at'] == 456
+
+
+@pytest.mark.parametrize('change', [
+    {'server_instance': 'server-b'}, {'view_seq': 2}, {'view_seq': 1},
+    {'view_seq': True}, {'view_seq': None}, {'view_context': None},
+])
+def test_incompatible_or_non_increasing_version_requires_full_frame(change):
+    old, current = versioned(2), versioned(3)
+    current.update(change)
+    frame = market_delta(old, current)
+    assert frame == {'type': 'markets', **current, 'base_view_seq': None}
+
+
+@pytest.mark.parametrize(('field', 'value'), [
+    ('enabled_venues', ['beta']), ('demo_mode', True), ('broad_collection_enabled', False),
+    ('watch_assets', ['ETH']), ('stale_seconds', 30),
+])
+def test_each_settings_context_change_requires_full_frame(field, value):
+    old, current = versioned(1), versioned(2)
+    current['view_context'][field] = value
+    frame = market_delta(old, current)
+    assert frame['type'] == 'markets' and frame['base_view_seq'] is None
+    assert frame['view_context'][field] == value
+
+
+def test_legacy_to_versioned_and_versioned_to_legacy_require_full_frames():
+    assert market_delta(data(), versioned()) == {'type': 'markets', **versioned(), 'base_view_seq': None}
+    assert market_delta(versioned(), data()) == {'type': 'markets', **data()}

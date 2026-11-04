@@ -4,6 +4,7 @@ import { api, num, pct, time } from "./api";
 import type { Instrument } from "./types";
 import "./ScannerPage.css";
 import { scanDeadline, scanElapsed } from "./scanFreshness";
+import { QueryGeneration } from "./queryGeneration";
 
 type CandidateReference = { buy_instrument_id: string; sell_instrument_id: string; strategy: string };
 type FieldState = { valid: boolean; issue: string | null; source: string | null;
@@ -123,41 +124,37 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [reload, setReload] = useState(0);
   const [data, setData] = useState<ScanResult | null>(null);
-  const [dataKey, setDataKey] = useState("");
+  const [dataVersion, setDataVersion] = useState(-1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const activeRef = useRef(active);
-  const hasRequested = useRef(false);
-  activeRef.current = active;
+  const requests = useRef(new QueryGeneration());
   const requestKey = JSON.stringify([sort, marketType, query, platforms, refreshKey]);
-  const currentResults = dataKey === requestKey && search.trim() === query;
+  const requestVersion = requests.current.update(JSON.stringify([requestKey, search.trim()]), active, reload);
+  const currentResults = dataVersion === requestVersion && search.trim() === query;
   const expired = !!data && Math.max(clock, Date.now()) > scanDeadline(data, staleSeconds);
   const elapsed = data ? scanElapsed(data.as_of, Math.max(clock, Date.now())) : 0;
   const canSelect = !expired && active && !!data && currentResults && !loading && !error;
   const marketNames = useMemo(() => new Map(instruments.map((item) => [item.id, item.native_symbol])), [instruments]);
   useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 250); return () => clearTimeout(timer); }, [search]);
   useEffect(() => {
-    if (!activeRef.current) return;
-    hasRequested.current = true;
-    let current = true;
-    let pending = false;
+    if (!active || search.trim() !== query) { setLoading(false); return; }
+    const gate = requests.current;
+    const token = gate.begin();
     const load = async () => {
-      if (pending) return;
-      pending = true; setLoading(true); setError("");
+      setLoading(true); setError("");
       try {
         const result = await api<ScanResult>("/api/scanner?sort=" + sort + "&limit=1000&max_candidates=10000&q=" +
-          encodeURIComponent(query) + "&platforms=" + encodeURIComponent(platforms.join(",")) + "&market_type=" + marketType);
-        if (current) { setData(result); setDataKey(requestKey); }
-      } catch (e) { if (current) setError((e as Error).message); }
-      finally { pending = false; if (current) setLoading(false); }
+          encodeURIComponent(query) + "&platforms=" + encodeURIComponent(platforms.join(",")) + "&market_type=" + marketType,
+          "GET", undefined, { signal: token.controller.signal });
+        if (gate.accepts(token)) { setData(result); setDataVersion(token.version); }
+      } catch (e) { if (gate.accepts(token)) setError((e as Error).message); }
+      finally { if (gate.accepts(token)) setLoading(false); }
     };
     void load();
-    return () => { current = false; };
-  }, [sort, marketType, reload, query, platforms, refreshKey]);
+    return () => gate.cancel(token);
+  }, [requestVersion]);
   useEffect(() => {
-    if (!active) return;
-    if (!hasRequested.current || dataKey !== requestKey || (data && Date.now() > scanDeadline(data, staleSeconds))) setReload((previous) => previous + 1);
-    if (!autoRefresh) return;
+    if (!active || !autoRefresh) return;
     const timer = setInterval(() => setReload((previous) => previous + 1), 30000);
     return () => clearInterval(timer);
   }, [active, autoRefresh]);

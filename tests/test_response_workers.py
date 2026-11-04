@@ -51,6 +51,9 @@ async def test_browser_ws_builds_in_worker_sends_on_loop_and_preserves_delta(tmp
     monkeypatch.setattr(app.state.collector, 'markets', markets)
 
     class Socket:
+        async def receive(self):
+            await asyncio.Event().wait()
+
         async def accept(self):
             assert threading.get_ident() == loop_thread
 

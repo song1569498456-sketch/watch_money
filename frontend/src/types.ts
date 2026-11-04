@@ -58,6 +58,12 @@ export interface Snapshot {
   stale?: boolean;
 }
 export interface MarketData {
+  base_view_seq?: number | null;
+  removed_instruments?: string[];
+  removed_snapshots?: string[];
+  server_instance?: string;
+  view_seq?: number;
+  view_context?: Pick<Settings, "enabled_venues" | "demo_mode" | "broad_collection_enabled" | "watch_assets" | "stale_seconds">;
   mode?: string;
   instruments: Instrument[];
   snapshots: Snapshot[];

@@ -1,0 +1,23 @@
+{
+  "fixture": "Actual isolated local API/WS synthetic data. Playwright delays/replays delivery and corrupts one delta base. Query failure is an explicit synthetic 503; no live exchange or account operations.",
+  "checks": [
+    "actual older WS full and changed-price delta delivered after a newer HTTP view cannot roll 200.5 back to 100.5/150.5",
+    "saving platform scope clears old rows and reconnects; held old HTTP and old-context WS cannot repopulate them before the correct-scope response",
+    "a deliberately mismatched delta base revision triggers a new connection and actual full-view recovery instead of applying the delta",
+    "scanner delayed old filter response is rejected; return revalidates; failed return keeps search/sort/expanded rows but disables handoff, and same-query retry restores it",
+    "funding hidden response cannot commit or refetch; return failure preserves search and disables cached detail actions; current-query retry enables a compatible pair"
+  ],
+  "version_sequences": [
+    {
+      "old_full": 3,
+      "old_delta": 4,
+      "new_http": 5
+    }
+  ],
+  "connections": 5,
+  "page_errors": [],
+  "external_requests": [],
+  "browser_writes": [
+    "http://127.0.0.1:34753/api/settings"
+  ]
+}

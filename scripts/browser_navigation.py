@@ -10,9 +10,8 @@ import time
 from pathlib import Path
 
 import httpx
-from playwright.sync_api import expect, sync_playwright
-
 from browser_followup import seed
+from playwright.sync_api import expect, sync_playwright
 from watch_money.models import Instrument, MarketSnapshot, now_ms
 from watch_money.storage import Storage
 
@@ -104,7 +103,8 @@ def main():
                         funding_detail.get_by_role("button", name="测算此组合", exact=True).click()
                         expect(page.get_by_label("买入 / 做多市场", exact=False)).to_have_value("browser-fixture:okx-perp:PEPE")
                         expect(page.get_by_label("卖出 / 做空市场", exact=False)).to_have_value("browser-fixture:bybit:PEPE")
-                        page.get_by_role("button", name="返回发现页面", exact=True).click()
+                        with page.expect_response(lambda response: "/api/funding?" in response.url and "search=PEPE" in response.url):
+                            page.get_by_role("button", name="返回发现页面", exact=True).click()
                         expect(page.get_by_role("button", name="资金费", exact=True)).to_have_attribute("aria-current", "page")
                         expect(page.get_by_label("资金费资产搜索")).to_have_value("PEPE")
                         expect(funding_detail).to_be_visible()
@@ -137,7 +137,8 @@ def main():
                         expect(page.get_by_label("买入 / 做多市场", exact=False)).to_have_value("navigation:okx:NAV08")
                         expect(page.get_by_label("卖出 / 做空市场", exact=False)).to_have_value("navigation:bybit:NAV08")
                         assert not calculations, "Opening a candidate must not submit any calculation"
-                        page.get_by_role("button", name="返回发现页面", exact=True).click()
+                        with page.expect_response(lambda response: "/api/scanner?" in response.url and "q=NAV" in response.url):
+                            page.get_by_role("button", name="返回发现页面", exact=True).click()
                         expect(search).to_have_value("NAV")
                         expect(page.get_by_label("扫描排序")).to_have_value("funding")
                         expect(page.get_by_label("扫描市场类型")).to_have_value("perpetual")
@@ -146,7 +147,7 @@ def main():
                         page.wait_for_function("previous => Math.abs(window.scrollY - previous) < 32", arg=before_y)
                         after_y = page.evaluate("window.scrollY")
                         page.wait_for_timeout(300)
-                        assert len(scanner_requests) == scanned_before_handoff, "Unchanged return must preserve data without rescanning"
+                        assert len(scanner_requests) > scanned_before_handoff, "Returning must revalidate while preserving controls and position"
                         checks.append(f"candidate calculator returns search/platforms/market type/sort/expanded asset and scroll position ({before_y}px -> {after_y}px), without submitting")
                         page.screenshot(path=str(screenshots / "navigation-return-synthetic.png"))
                         search.fill("NAV08")

@@ -171,8 +171,8 @@ def main():
                         api.put("/api/settings", json=settings).raise_for_status()
                         with page.expect_response(lambda response: response.url.endswith("/api/markets")):
                             page.get_by_role("button", name="刷新全部数据", exact=True).click()
-                        # HTTP can finish before the previous WS state is painted.
-                        # Wait for the source stream to observe the new platform scope.
+                        # Synchronize evidence with the source stream's new platform scope.
+                        # R24's delayed/replayed ordering is tested separately and deterministically.
                         for _ in range(100):
                             if any(any(item["id"] == "freshness-fixture:FRESH" for item in frame.get("instruments", []))
                                    for frame in ws_frames):
@@ -235,10 +235,11 @@ def main():
                         "fixture": "Synthetic observations only; actual isolated local API, WebSocket and query-worker overload; no live exchange verification",
                         "backend_as_of": stamp + 1000, "checks": checks, "api_evidence": api_evidence,
                         "page_errors": errors, "external_requests": external, "private_requests": private_requests,
-                        "known_limitations": [{
-                            "id": "R24", "scope": "Existing HTTP/WebSocket view overlap during enabled-platform changes",
+                        "historical_regressions": [{
+                            "id": "R24", "scope": "Former HTTP/WebSocket view overlap during enabled-platform changes",
+                            "status": "Resolved by the application's version/context guards; deterministic delayed/replayed-response coverage is recorded in browser-market-view-order.json.",
                             "reproduction": "Start with only okx/FUTURE enabled; enable bybit/FRESH through PUT /api/settings and immediately refresh all data. HTTP can show two markets/count 1 before a queued old WebSocket state briefly restores one market/count 0; the next scoped WebSocket frame restores two/count 1.",
-                            "verification_boundary": "The desktop comparison screenshot waits for the actual WebSocket frame containing FRESH. API future-at-arrival, per-field freshness, zero/one count and overload age assertions remain unchanged. The overlap itself is not fixed by this regression script.",
+                            "verification_boundary": "The desktop comparison screenshot waits for the actual WebSocket frame containing FRESH. API future-at-arrival, per-field freshness, zero/one count and overload age assertions remain unchanged. The independent R24 browser script proves old HTTP/WS views cannot replace newer or differently scoped data.",
                         }],
                     }, ensure_ascii=False, indent=2))
             finally:
