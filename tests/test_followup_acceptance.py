@@ -782,10 +782,10 @@ async def test_settled_history_one_page_is_separate_persistent_and_correctable(t
         calls = 0
         rows = []
 
-        async def fetch_funding_rate_history(self, symbol, since, limit, params):
+        async def publicGetPublicFundingRateHistory(self, params):
             self.calls += 1
-            assert symbol == native["symbol"] and params["paginate"] is False and limit == 100
-            return self.rows
+            assert params == {"instId": native["id"], "limit": 100}
+            return {"code": "0", "data": [row["info"] for row in self.rows]}
 
     client = HistoryClient([native])
     client.has["fetchFundingRateHistory"] = True
@@ -843,10 +843,11 @@ async def test_public_funding_history_api_cache_survives_restart_without_snapsho
     class HistoryClient(FakeClient):
         calls = 0
 
-        async def fetch_funding_rate_history(self, symbol, since, limit, params):
+        async def publicGetV5MarketFundingHistory(self, params):
             self.calls += 1
-            return [{"symbol": symbol, "timestamp": at - 3_600_000, "fundingRate": .0001,
-                     "info": {"symbol": native["id"], "fundingRateTimestamp": str(at - 3_600_000), "fundingRate": ".0001"}}]
+            assert params == {"symbol": native["id"], "category": "linear", "limit": 100}
+            return {"retCode": 0, "result": {"list": [{"symbol": native["id"],
+                     "fundingRateTimestamp": str(at - 3_600_000), "fundingRate": ".0001"}]}}
 
     source = HistoryClient([native])
     source.has["fetchFundingRateHistory"] = True

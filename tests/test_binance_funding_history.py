@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from test_funding_history import EVENT, entry, setup_history as _setup_history
+from test_funding_history import EVENT, NOW, entry, setup_history as _setup_history
 
 setup_history = _setup_history
 
@@ -54,7 +54,7 @@ async def test_installed_public_routes_preserve_native_contract_rate_and_time(se
 
 @pytest.mark.parametrize('client_id', ['binanceusdm', 'binancecoinm'])
 @pytest.mark.parametrize('change', [{'symbol': 'OTHER'}, {'fundingTime': EVENT // 1000},
-    {'fundingTime': EVENT + 1}, {'fundingRate': None}, {'rateType': 'Unknown'}])
+    {'fundingTime': NOW + 1}, {'fundingRate': None}, {'rateType': 'Unknown'}])
 async def test_native_mismatch_and_unknown_event_refuse_unified_fallback(setup_history, client_id, change):
     service, item, client, _, _, raw = prepare(setup_history, client_id)
     client.response = [entry(info=raw | change)]

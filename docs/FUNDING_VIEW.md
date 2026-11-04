@@ -186,3 +186,24 @@ PYTEST
 - MEXC周期仍仅原始有效整数小时，KuCoin缺周期依据仍null；合约面值不乘费率。以前保存的历史/修订不自动清除或改写，若曾遇真实冲突需要原始证据再审，本批没有这种实网证据。
 - 新增24项离线回归（该文件共45项）：真实安装解析器limit=1×两平台×两顺序、超大页整页拒收、输出小于原生页仍全部校验/单位、非法原生信封、SDK公共HTTP路由/正权重限流调用、超时/权限/限流错误单次调用、旧缓存不修订。原21项及共享fixture改为原生信封；原“统一时间错配”样本改测原始未来时间，因为新路径不再有SDK统一时间层。
 - 复测`.venv/bin/pytest -q tests/test_mexc_kucoin_history.py tests/test_funding_history.py`：132 passed（5.52秒）；CI范围Ruff通过。未访问交易所行情主机、受阻OKX WS、账户或独立环境。全市场身份/实时覆盖及24小时限制仍开放。
+
+### R57 其余CEX原生页的SDK前置截断审计（2026-11-04）
+
+- 逐个检查安装CCXT 4.5.91：Binance USDⓈ-M/COIN-M最终parse_funding_rate_histories，OKX/Bybit/Gate/Bitget/HTX inverse最终filter_by_symbol_since_limit，均可能在应用前过滤原始行。7个client×正反两序的真实解析器离线用例均复现同刻冲突2行在limit=1变1行；不是实际平台出现冲突的证据。HTX linear已经是原生HTTP路径，Hyperliquid/dYdX也直接接收原生页，不存在本次SDK预截取路径；它们原有完整性限制仍保留。
+- 修复：新增adapters/history_pages.py，只调用现有同client公共原生方法，保留SDK请求权重/限流、固定产品与原生合约参数，不切换账户/UTA/地区服务、不修改client设置。请求参数、原生成功信封及返回数组先核对，方法返回即记录receipt；应用在完整有界页上验证、分组，再保存/输出。用户limit仍影响服务器请求数量，但意外多返回且未超本地cap的行也全部校验；超过cap整页502不保存，不让SDK截断隐藏超大页。
+
+| 路径 | 直接公共方法/参数 | 本地完整页cap与单位 |
+| --- | --- | --- |
+| Binance USDⓈ-M | fapiPublicGetFundingRate，symbol/startTime/limit | 1000；fundingTime毫秒；Regular/Special独立事件 |
+| Binance COIN-M | dapiPublicGetFundingRate，同上 | 1000；毫秒；未核实Special拒收 |
+| OKX | publicGetPublicFundingRateHistory，instId/before=max(since-1,0)/limit | 本地100（不是声称官方最大100）；fundingTime毫秒、仅realizedRate |
+| Bybit | publicGetV5MarketFundingHistory，symbol/category/limit；有since时同时传startTime/endTime=当前观测时刻 | 200；fundingRateTimestamp毫秒；不用当前周期估历史窗口 |
+| Gate | publicFuturesGetSettleFundingRate，settle/contract/limit/from=floor(since/1000) | 本地100；t整数秒转毫秒，r小数比例；since再按毫秒过滤 |
+| Bitget Classic | publicMixGetV2MixMarketHistoryFundRate，symbol/productType/pageNo=1/pageSize | 本地100；fundingTime毫秒；不切UTA |
+| HTX inverse | contractPublicGetSwapApiV1SwapHistoricalFundingRate，contract_code/page_index=1/page_size | 50；funding_time毫秒；仅realized_rate，funding_rate只作原始参考 |
+
+- 官方依据继续对应SETTLED_ENDPOINTS中的逐平台链接，复核[Bybit](https://bybit-exchange.github.io/docs/v5/market/history-fund-rate)、[OKX](https://www.okx.com/docs-v5/en/#public-data-rest-api-get-funding-rate-history)、[Bitget Classic](https://www.bitget.com/docs/catalog/classic-contract-market/classic-contract-market#get-historical-funding-rates)、[HTX inverse](https://huobiapi.github.io/docs/coin_margined_swap/v1/en/#query-historical-funding-rate)，以及已登记Binance/Gate原生时间/参数。上表cap是保守应用验收边界，不证明所有官方保留范围/服务可用。
+- 所有CEX同页相同结算/事件类型都检查冲突，不再限Binance/MEXC/KuCoin。比较全部待持久化内容，HTX“相同实际率、不同原始advertised率”和MEXC“相同未知周期、不同原始周期”也不能按响应顺序制造修订。完全相同重复行仍去重；先前缓存、last_seen/revision不被冲突页覆盖。原始整数时间不作小数舍入；未来/缺时/缺实际率/原生身份错误仍拒收。
+- 所有满页及存在拒收的响应停止next_since，避免同刻边界被时间+1跳过。Bitget/HTX/MEXC本就仅最新第一页，KuCoin窗口无安全继续游标；短非满页上的旧hint仍不是完整回填证明。未增加自动翻页/历史平台/后台采集；未知周期不套8h，合约面值不乘率。
+- 新54项离线回归：14组安装解析器前置截断+两序无修订，7平台超cap、原生单位/缓存保护、实际安装公共HTTP路由及正权重限流调用、错误信封、访问拒绝单次请求；Gate/HTX小数原生时钟拒收、原始元数据冲突。旧fixtures改为原生信封；不再存在的“SDK统一时间错配”测试改测原始未来时间，原边界与缓存/重启断言保留。2项HTTP/重启验收单测复跑通过。
+- 当前专项命令`.venv/bin/pytest -q tests/test_native_history_pages.py tests/test_funding_history.py tests/test_binance_funding_history.py tests/test_mexc_kucoin_history.py`：202 passed（12.02秒）；CI范围Ruff通过。所有HTTP由本地替身拦截，无行情请求/受阻OKX WS重试/账户设置变更。真实同页冲突、全目录实时覆盖、生产身份和24小时仍未验收。

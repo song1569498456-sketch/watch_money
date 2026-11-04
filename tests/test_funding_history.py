@@ -38,6 +38,40 @@ class HistoryClient:
         return deepcopy(self.response)
 
 
+    async def _raw_rows(self, symbol, since, limit, params):
+        rows = await self.fetch_funding_rate_history(symbol, since, limit, params)
+        return [row.get('info', row) if isinstance(row, dict) else row for row in rows]
+
+    async def fapiPublicGetFundingRate(self, query):
+        return await self._raw_rows(query['symbol'], query.get('startTime'), query['limit'],
+                                    {'paginate': False, 'subType': 'linear'})
+
+    async def dapiPublicGetFundingRate(self, query):
+        return await self._raw_rows(query['symbol'], query.get('startTime'), query['limit'],
+                                    {'paginate': False, 'subType': 'inverse'})
+
+    async def publicGetPublicFundingRateHistory(self, query):
+        rows = await self._raw_rows(query['instId'], query.get('before'), query['limit'], {'paginate': False})
+        return {'code': '0', 'data': rows}
+
+    async def publicGetV5MarketFundingHistory(self, query):
+        rows = await self._raw_rows(query['symbol'], query.get('startTime'), query['limit'], {'paginate': False})
+        return {'retCode': 0, 'result': {'category': query['category'], 'list': rows}}
+
+    async def publicFuturesGetSettleFundingRate(self, query):
+        return await self._raw_rows(query['contract'], query.get('from'), query['limit'],
+                                    {'paginate': False, 'settle': query['settle']})
+
+    async def publicMixGetV2MixMarketHistoryFundRate(self, query):
+        rows = await self._raw_rows(query['symbol'], None, query['pageSize'],
+                                    {'paginate': False, 'uta': False, 'pageNo': 1})
+        return {'code': '00000', 'data': rows}
+
+    async def contractPublicGetSwapApiV1SwapHistoricalFundingRate(self, query):
+        rows = await self._raw_rows(query['contract_code'], None, query['page_size'],
+                                    {'paginate': False, 'page_index': 1})
+        return {'status': 'ok', 'data': {'current_page': 1, 'data': rows}}
+
     async def contractPublicGetFundingRateHistory(self, params):
         rows = await self.fetch_funding_rate_history(params['symbol'], None, params['page_size'], params)
         return {"success": True, "code": 0, "data": {"currentPage": 1,
@@ -103,7 +137,7 @@ async def test_settled_positive_negative_zero_signs_and_unknown_historical_perio
     assert all(row["funding_kind"] == "settled" and row["funding_interval_hours"] is None for row in records)
     assert all(row["settlement_at"] < row["received_at"] == NOW for row in records)
     assert records[0]["raw_funding_rate"] == "0.0001"
-    assert "fetch_funding_rate_history" in records[0]["source"]
+    assert "native_public_funding_history" in records[0]["source"]
     assert client.calls[0][3] == {"paginate": False, "subType": "linear"}
 
 
@@ -139,7 +173,7 @@ async def test_same_timestamp_special_and_regular_events_are_not_mutual_revision
 async def test_rejects_missing_timestamp_predictions_future_wrong_market_and_nonfinite(setup_history):
     service, item, client, _ = setup_history()
     client.response = [entry(None), entry(NOW + 1000), entry(EVENT, "NaN"),
-                       entry(EVENT, "0.01", symbol="OTHER/USDT"),
+                       entry(EVENT, "0.01", info={"symbol": "OTHER", "fundingTime": EVENT, "fundingRate": "0.01"}),
                        {"timestamp": EVENT, "nextFundingRate": "0.01"}, entry(12345)]
     result = await service.get(item.id, refresh=True)
     assert result["records"] == [] and result["summary"]["rejected_count"] == 6
@@ -176,7 +210,7 @@ async def test_one_page_endpoint_cap_and_cursor_no_endless_loop(setup_history):
     first = await service.get(item.id, refresh=True, since=EVENT, limit=1000)
     assert len(client.calls) == 1 and client.calls[0][2] == 200
     assert first["summary"]["truncated"] and first["summary"]["has_more"] is None
-    assert first["summary"]["next_since"] == EVENT + 1
+    assert first["summary"]["next_since"] is None
     second = await service.get(item.id, refresh=True, since=EVENT + 1, limit=1000)
     assert len(client.calls) == 2 and second["summary"]["next_since"] is None
     assert "no_forward_cursor_progress" in second["summary"]["issues"]
@@ -387,7 +421,7 @@ async def test_new_history_rejects_wrong_native_clocks_rates_and_scope(setup_his
     service, item, client, _, market = configure_reviewed_history(setup_history, venue)
     raw = {'t': EVENT // 1000, 'r': '.0001'} if venue == 'gate' else {
         'fundingTime': str(EVENT), 'fundingRate': '.0001', 'symbol': market['id']}
-    client.response = [entry(info={}), entry(EVENT + 1, info=raw),
+    client.response = [entry(info={}), entry(info=raw | ({'t': (NOW + 1000) // 1000} if venue == 'gate' else {'fundingTime': str(NOW + 1)})),
                        entry(info=raw | ({'r': 'NaN'} if venue == 'gate' else {'fundingRate': 'NaN'}))]
     result = await service.get(item.id, refresh=True)
     assert result['records'] == [] and result['summary']['rejected_count'] == 3
@@ -473,7 +507,7 @@ async def test_htx_inverse_uses_realized_not_advertised_rate(setup_history, rate
 
 
 @pytest.mark.parametrize('changes', [{'realized_rate': None}, {'realized_rate': 'NaN'},
-    {'funding_time': str(EVENT // 1000)}, {'funding_time': str(EVENT + 1)},
+    {'funding_time': str(EVENT // 1000)}, {'funding_time': str(NOW + 1)},
     {'fee_asset': 'ETH'}, {'symbol': 'OTHER'}, {'contract_code': 'OTHER-USD'}])
 async def test_htx_inverse_missing_realized_or_native_mismatch_is_not_settled(setup_history, changes):
     service, item, client, _, _ = htx_inverse_history(setup_history)
@@ -713,7 +747,7 @@ async def test_reviewed_history_native_contract_time_and_rate_cannot_be_inferred
     elif case == 'seconds':
         raw[time_key] = str(EVENT // 1000)
     elif case == 'shift':
-        raw[time_key] = str(EVENT + 1)
+        raw[time_key] = str(NOW + 1)
     elif case == 'fraction':
         raw[time_key] = str(EVENT) + '.5'
     else:
