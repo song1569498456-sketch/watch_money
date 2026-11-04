@@ -159,3 +159,9 @@ dYdX v4公共historicalFunding新增已结算历史，准确ticker、带时区ef
 ### R45 历史来源真实性
 
 dYdX/Hyperliquid历史保留观察者前HTTP响应receipt，来源字段变化有完整旧记录修订。仅合成回归，无新增平台、身份批准或实网覆盖；未知周期不变，24小时仍未完成。详见FUNDING_VIEW R45。
+
+## R46 HTX线性历史补齐与下一项
+
+新增官方USDT v1公开已结算历史，固定文档主机api.hbdm.com，严格USDT永续/realized_rate/原生身份和毫秒时间，最多50条最新页、历史周期未知，不使用未审阅的v5替代。14项新离线回归、99项联合历史专项；当前接口实网可用性仍未知，没有生产身份批准。官方来源、边界及复测见FUNDING_VIEW R46。R38/R40中“线性未接”描述的是当时状态；目前v1已实现但未实网验收，v5仍未审阅。
+
+下一项为Coinbase Exchange公开目录与现有身份资料的client范围衔接；需要单独验证行情时间，不向Advanced Trade或永续继承身份。已拒绝OKX WS及Lighter连接不重试，24小时未完成。

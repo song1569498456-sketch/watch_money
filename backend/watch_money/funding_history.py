@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -33,6 +33,10 @@ SETTLED_ENDPOINTS = {
     "mexc": (100, "https://www.mexc.com/api-docs/futures/market-endpoints/get-funding-rate-history"),
     "kucoinfutures": (100, "https://www.kucoin.com/docs-new/rest/futures-trading/funding-fees/get-public-funding-history"),
 }
+
+
+HTX_LINEAR_HISTORY_PATH = "linear-swap-api/v1/swap_historical_funding_rate"
+HTX_LINEAR_HISTORY_DOCS = "https://huobiapi.github.io/docs/usdt_swap/v1/en/#general-query-historical-funding-rate"
 
 
 class FundingHistoryService:
@@ -315,13 +319,19 @@ class FundingHistoryService:
                     or _market.get("symbol") != instrument.native_symbol
                     or _market.get("settle") != instrument.settle or instrument.settle not in allowed):
                 raise HTTPException(409, "Historical market native ID, product or settlement scope is unresolved")
+        htx_linear = client_id == "htx" and _market.get("linear") is True and _market.get("inverse") is False
         if client_id == "htx":
-            if _market.get("inverse") is not True or _market.get("linear") is not False:
-                raise HTTPException(501, "HTX linear historical settlement semantics not reviewed; inverse only")
+            inverse = _market.get("inverse") is True and _market.get("linear") is False
+            if not htx_linear and not inverse:
+                raise HTTPException(501, "HTX historical contract type is unresolved")
             if (not _market.get("id") or _market.get("swap") is not True
                     or _market.get("symbol") != instrument.native_symbol
-                    or _market.get("settle") != instrument.settle or instrument.settle != instrument.base):
-                raise HTTPException(409, "HTX inverse native contract and fee currency scope is unresolved")
+                    or _market.get("settle") != instrument.settle
+                    or (htx_linear and (instrument.settle != "USDT" or instrument.quote != "USDT"
+                                        or instrument.linear is not True
+                                        or _market.get("id") != f"{instrument.base}-USDT"))
+                    or (inverse and instrument.settle != instrument.base)):
+                raise HTTPException(409, "HTX native contract and fee currency scope is unresolved")
         # Snapshot the interpretation, not mutable metadata shared with discovery.
         scope_fields = ("id", "symbol", "base", "quote", "settle", "swap", "linear", "inverse", "contractSize", "active")
         market_scope = {key: deepcopy(_market.get(key)) for key in scope_fields}
@@ -366,7 +376,28 @@ class FundingHistoryService:
             async with asyncio.timeout(self.timeout_seconds):
                 async with adapter._semaphore:
                     check_scope()
-                    payloads = await client.fetch_funding_rate_history(instrument.native_symbol, since, page_limit, params)
+                    if htx_linear:
+                        # Deliberate documented v1 public endpoint. CCXT's unified
+                        # linear method now uses v5 with a different rate schema.
+                        query = urlencode({"contract_code": _market["id"], "page_index": 1, "page_size": page_limit})
+                        # Pin the documented host; never mutate the shared client
+                        # or inherit a library hostname substitution.
+                        if getattr(client, "enableRateLimit", False):
+                            await client.throttle(1)
+                        check_scope()
+                        response = await client.fetch(f"https://api.hbdm.com/{HTX_LINEAR_HISTORY_PATH}?{query}", "GET")
+                        received = now_ms()
+                        data = response.get("data") if isinstance(response, dict) else None
+                        rows = data.get("data") if isinstance(data, dict) else None
+                        if (not isinstance(response, dict) or response.get("status") != "ok"
+                                or not isinstance(data, dict) or data.get("current_page") != 1
+                                or not isinstance(rows, list) or len(rows) > page_limit):
+                            raise HTTPException(502, "Malformed or oversized HTX public history response")
+                        payloads = [{"symbol": instrument.native_symbol, "timestamp": row.get("funding_time"),
+                                     "info": row} if isinstance(row, dict) else row for row in rows]
+                    else:
+                        payloads = await client.fetch_funding_rate_history(instrument.native_symbol, since, page_limit, params)
+                        received = now_ms()
         except HTTPException:
             raise
         except Exception as exc:
@@ -378,7 +409,6 @@ class FundingHistoryService:
             if name == "NotSupported":
                 raise HTTPException(501, "Public funding history endpoint unavailable") from None
             raise HTTPException(502, {"error": "Public funding history request failed", "type": name}) from None
-        received = now_ms()
         check_scope()
         if not isinstance(payloads, list):
             raise HTTPException(502, "Malformed public funding history response")
@@ -440,8 +470,9 @@ class FundingHistoryService:
                             "short_cashflow_sign": 1 if rate > 0 else -1 if rate < 0 else 0,
                             "funding_kind": "settled", "funding_interval_hours": period,
                             "period_source": "history.info.collectCycle" if period is not None else None,
-                            "source": f"ccxt:{client_id}:fetch_funding_rate_history:{instrument.native_symbol}",
-                            "source_docs": SETTLED_ENDPOINTS[client_id][1], "event_type": event_type,
+                            "source": (f"ccxt:htx:public:{HTX_LINEAR_HISTORY_PATH}:{_market['id']}" if htx_linear
+                                       else f"ccxt:{client_id}:fetch_funding_rate_history:{instrument.native_symbol}"),
+                            "source_docs": HTX_LINEAR_HISTORY_DOCS if htx_linear else SETTLED_ENDPOINTS[client_id][1], "event_type": event_type,
                             "received_at": received, "first_received_at": received, "last_seen_at": received,
                             "revision": 1, "is_demo": False,
                             **({"native_market_id": _market["id"], "settle": instrument.settle,

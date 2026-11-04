@@ -121,3 +121,13 @@ PYTEST
 - 历史修订比较全部持久化内容（排除received_at/first_received_at/last_seen_at/revision四项观察字段），包括区块高度、原生时间表示及来源。来源变化会追加旧完整记录到funding_revisions，当前记录revision递增并保留first_received；真正相同记录仅更新last_seen。不把原生高度当作链上最终性证明。
 - 新5项合成回归：未来10ms/过去10ms+观察者40ms、取消后无写入且下一请求新receipt、同费率区块高度修订并重复去重、Hyperliquid延迟receipt；85项历史专项通过。已有原生fixture统一冻结两个模块的时钟，保持原断言。
 - 未访问受阻OKX WS、未改独立环境或账户，无实网/浏览器验收；24小时、生产广泛身份覆盖仍开放。
+
+### R46 HTX线性永续公开已结算历史（2026-11-04）
+
+- [官方USDT文档](https://huobiapi.github.io/docs/usdt_swap/v1/en/#general-query-historical-funding-rate)此次可读，提供GET `/linear-swap-api/v1/swap_historical_funding_rate`、`realized_rate`及原生`contract_code/symbol/fee_asset/funding_time`。显式接该v1端点；安装版CCXT统一线性历史已走v5，字段不同，本批未审核v5、不混用或失败后降级。
+- 请求固定文档主机`https://api.hbdm.com`，使用现有无凭证客户端公共fetch及throttle(1)、适配器并发上限、总超时；不修改其urls/options，不继承库默认`api.hbdm.vn`，不重试/切主机。当前v1实网可用性未知，文档可读不证明接口仍可用。
+- 范围仅准确原生base-USDT、linear=true/inverse=false、quote/settle=USDT永续。只保存realized_rate，保留advertised funding_rate供审计；错contract/base/fee资产、非有限/缺失率、未来/秒级时间拒绝。历史周期保持null，原生资金费是每次结算的小数比例，不乘合约乘数，不是账户账单。
+- 单请求page_index=1、最多50行；要求status=ok/current_page=1/有界数组，since本地过滤、next_since=null、不宣称完整回填。目录在限流及网络等待后变化则拒绝。该路径新增14项离线回归，含安装版CCXT底层公共fetch的准确URL/参数/无鉴权和共享配置不变；99项联合历史专项通过。
+- 身份资料复核：Coinbase官方Exchange products/currencies与Advanced Trade仍为不同client，未因同ticker合并；HTX公开币种元数据尚无充分合约地址证据，未新增生产身份批准。本批没有任何行情主机请求，不触发受阻OKX WS，不修改独立环境。
+- 独立复测：在临时data目录构建CexAdapter('htx')并discover，选准确USDT永续后调用FundingHistoryService.get(id,refresh=True,limit=50)，核对原始realized_rate/fee_asset/funding_time。出现拒绝立即停止，不换域名；保留返回状态/时间，不记录凭证。此步骤尚未执行，24小时验收仍开放。
+- 下一项：核对Coinbase Exchange公开目录与现有同client身份证据的衔接，先确认产品和报价时间语义，再决定是否增加行情client；不会直接扩张Advanced Trade身份白名单。

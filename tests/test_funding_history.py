@@ -461,12 +461,12 @@ async def test_htx_inverse_missing_realized_or_native_mismatch_is_not_settled(se
     assert result['records'] == [] and result['summary']['rejected_count'] == 1
 
 
-async def test_htx_linear_and_credentials_rejected_without_requests(setup_history):
+async def test_htx_inconsistent_linear_scope_and_credentials_rejected_without_requests(setup_history):
     service, item, client, _, market = htx_inverse_history(setup_history)
     market.update(linear=True, inverse=False)
     with pytest.raises(HTTPException) as error:
         await service.get(item.id, refresh=True)
-    assert error.value.status_code == 501 and not client.calls
+    assert error.value.status_code == 409 and not client.calls
     market.update(linear=False, inverse=True)
     client.apiKey = 'synthetic-marker'
     with pytest.raises(HTTPException) as error:
@@ -555,3 +555,115 @@ async def test_history_allows_unrelated_metadata_refresh(setup_history):
     result = await service.get(item.id, refresh=True)
     assert result["summary"]["accepted_count"] == 1
     assert result["records"][0]["funding_interval_hours"] is None
+
+
+def htx_linear_history(setup_history):
+    service, item, client, adapter, market = htx_inverse_history(setup_history)
+    item = item.model_copy(update={'quote': 'USDT', 'settle': 'USDT', 'linear': True,
+                                  'native_symbol': 'BTC/USDT:USDT'})
+    service.collector.instruments[item.id] = item
+    market.update(id='BTC-USDT', symbol=item.native_symbol, quote='USDT', settle='USDT', linear=True, inverse=False)
+    return service, item, client, adapter, market
+
+
+def htx_linear_response(**changes):
+    return {'status': 'ok', 'data': {'current_page': 1, 'data': [
+        htx_raw(contract_code='BTC-USDT', fee_asset='USDT', **changes)]}}
+
+
+async def test_htx_linear_installed_client_uses_exact_public_v1_route(setup_history):
+    import ccxt.async_support as ccxt
+    from urllib.parse import urlsplit, parse_qs
+    service, item, _, adapter, _ = htx_linear_history(setup_history)
+    client = ccxt.htx()
+    original_urls = deepcopy(client.urls)
+    calls = []
+    async def fetch(url, method='GET', headers=None, body=None):
+        calls.append(url)
+        parsed = urlsplit(url)
+        assert parsed.scheme == 'https' and parsed.hostname == 'api.hbdm.com'
+        assert parsed.path == '/linear-swap-api/v1/swap_historical_funding_rate'
+        assert parse_qs(parsed.query) == {'contract_code': ['BTC-USDT'], 'page_index': ['1'], 'page_size': ['50']}
+        assert method == 'GET' and body is None
+        assert not any('auth' in key.lower() for key in (headers or {}))
+        return htx_linear_response(realized_rate='-.0002')
+    async def forbidden(*args, **kwargs):
+        pytest.fail('unreviewed unified/v5 route must not be used')
+    client.fetch = fetch
+    client.fetch_funding_rate_history = forbidden
+    adapter._clients['htx'] = client
+    try:
+        report = await service.get(item.id, refresh=True, since=EVENT, limit=1000)
+        record = report['records'][0]
+        assert record['funding_rate'] == -.0002 and record['advertised_funding_rate'] == '.009'
+        assert record['long_cashflow_sign'] == 1 and record['settle'] == 'USDT'
+        assert record['funding_interval_hours'] is None and record['native_settlement_time'] == str(EVENT)
+        assert '/usdt_swap/' in record['source_docs'] and 'linear-swap-api/v1' in record['source']
+        assert report['summary']['next_since'] is None and report['summary']['page_limit'] == 50
+        assert len(calls) == 1 and client.urls == original_urls
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.parametrize('changes', [dict(realized_rate=None), dict(realized_rate='NaN'),
+    dict(funding_time=str(EVENT // 1000)), dict(funding_time=str(NOW + 1)),
+    dict(symbol='OTHER')])
+async def test_htx_linear_invalid_native_records_remain_unknown(setup_history, changes):
+    service, item, client, _, _ = htx_linear_history(setup_history)
+    async def request(*args):
+        return htx_linear_response(**changes)
+    client.fetch = request
+    result = await service.get(item.id, refresh=True)
+    assert result['records'] == [] and result['summary']['rejected_count'] == 1
+    assert not client.calls
+
+
+@pytest.mark.parametrize('payload', [{'status': 'error'}, {'status': 'ok', 'data': []},
+    {'status': 'ok', 'data': {'current_page': 2, 'data': []}},
+    {'status': 'ok', 'data': {'current_page': 1, 'data': [{}] * 51}}])
+async def test_htx_linear_invalid_page_not_saved(setup_history, payload):
+    service, item, client, _, _ = htx_linear_history(setup_history)
+    async def request(*args):
+        return payload
+    client.fetch = request
+    with pytest.raises(HTTPException) as exc:
+        await service.get(item.id, refresh=True)
+    assert exc.value.status_code == 502
+    assert service._read(item.id, None, 100) == ([], 0)
+
+
+async def test_htx_linear_rejection_never_falls_back(setup_history):
+    import ccxt.async_support as ccxt
+    service, item, client, _, _ = htx_linear_history(setup_history)
+    calls = []
+    async def request(*args):
+        calls.append(args)
+        raise ccxt.PermissionDenied('synthetic denial')
+    client.fetch = request
+    with pytest.raises(HTTPException) as exc:
+        await service.get(item.id, refresh=True)
+    assert exc.value.status_code == 401 and len(calls) == 1 and not client.calls
+
+
+@pytest.mark.parametrize('field,value', [('contract_code', 'OTHER-USDT'), ('fee_asset', 'BTC')])
+async def test_htx_linear_exact_contract_and_fee_currency(setup_history, field, value):
+    service, item, client, _, _ = htx_linear_history(setup_history)
+    payload = htx_linear_response()
+    payload['data']['data'][0][field] = value
+    async def request(*args):
+        return payload
+    client.fetch = request
+    result = await service.get(item.id, refresh=True)
+    assert result['records'] == [] and result['summary']['rejected_count'] == 1
+
+
+async def test_htx_linear_catalog_change_during_response_never_saved(setup_history):
+    service, item, client, _, market = htx_linear_history(setup_history)
+    async def request(*args):
+        market['settle'] = 'USDC'
+        return htx_linear_response()
+    client.fetch = request
+    with pytest.raises(HTTPException) as exc:
+        await service.get(item.id, refresh=True)
+    assert exc.value.status_code == 409
+    assert service._read(item.id, None, 100) == ([], 0)
