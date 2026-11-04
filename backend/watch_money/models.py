@@ -157,6 +157,9 @@ class VenueStatus(Model):
     stream_last_error_type: str | None = None
     stream_last_error_at: int | None = None
     funding_state: str = 'idle'
+    funding_observation_state: str = 'not_observed'
+    funding_comparison_max_age_seconds: float | None = None
+    funding_observation_checked_at: int | None = None
     funding_subscriptions: int = 0
     funding_last_received_at: int | None = None
     funding_retries: int = 0

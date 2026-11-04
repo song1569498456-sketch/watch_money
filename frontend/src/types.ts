@@ -97,6 +97,9 @@ export interface VenueStatus {
   stream_state: string;
   funding_effective_poll_seconds?: number | null;
   funding_schedule_reason?: string | null;
+  funding_observation_state?: string;
+  funding_comparison_max_age_seconds?: number | null;
+  funding_observation_checked_at?: number | null;
   funding_arrival_source_age_p90_seconds?: number | null;
   funding_arrival_source_age_max_seconds?: number | null;
   funding_arrival_source_age_samples?: number;

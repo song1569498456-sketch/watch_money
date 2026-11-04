@@ -381,6 +381,11 @@ class AssetVerificationService:
     def preview(self, evidence_ids: list[str] | None = None) -> dict:
         catalog, now = self.store.instruments(), self.clock()
         all_records = self._records()
+        return self._preview(catalog, all_records, now, evidence_ids)
+
+    @staticmethod
+    def _preview(catalog, all_records, now, evidence_ids=None) -> dict:
+        """Build proposals/token from exactly the caller's captured inputs."""
         selected = set(evidence_ids) if evidence_ids is not None else {row["id"] for row in all_records if row["status"] == "active"}
         records = [row for row in all_records if row["id"] in selected]
         if len(records) != len(selected):
@@ -486,6 +491,51 @@ class AssetVerificationService:
         return {"revoked_evidence": len(set(evidence_ids)), "affected_instrument_ids": affected,
                 "audit": self.store.audit()}
 
+    def review_packet(self, *, offset=0, limit=100) -> dict:
+        """Read-only review export; proposals never count as confirmed coverage.
+
+        Ready selection is limited to this page and must still pass the existing
+        atomic apply revalidation. No mappings or evidence are created here.
+        """
+        if offset < 0 or not 1 <= limit <= 200:
+            raise ValueError("Review packet requires nonnegative offset and limit 1..200")
+        catalog = self.store.instruments()
+        now = self.clock()
+        records = self._records()
+        preview = self._preview(catalog, records, now)
+        facts = {row["id"]: row for row in records}
+        rows = preview["proposals"][offset:offset + limit]
+        packets = []
+        for row in rows:
+            members = [catalog[identity] for identity in row["instrument_ids"] if identity in catalog]
+            packets.append({**row, "review_state": "awaiting_review" if row["status"] == "ready" else "blocked",
+                "markets": [{"instrument_id": item.id, "venue": item.venue, "active": item.active,
+                    "native_symbol": item.native_symbol, "native_asset_id": item.native_asset_id or item.asset_id,
+                    "native_currency_id": item.native_currency_id, "kind": item.kind,
+                    "base": item.base, "quote": item.quote, "chain": item.chain,
+                    "contract_size": item.contract_size, "linear": item.linear,
+                    "current_asset_id": item.asset_id, "mapping_verified": item.mapping_verified,
+                    "catalog_fingerprint": catalog_fingerprint(item)} for item in members],
+                "evidence": [facts[identity] for identity in row["evidence_ids"] if identity in facts]})
+        ready_ids = sorted({identity for row in rows if row["status"] == "ready" for identity in row["evidence_ids"]})
+        ready_preview = self._preview(catalog, records, now, ready_ids) if ready_ids else None
+        actual = [row for row in identity_candidates((item for item in catalog.values() if item.active), as_of=now)
+                  if row["kind"] == "identity" and row["comparison_ready"] and len(row["venues"]) > 1]
+        return {"as_of": now, "read_only": True, "coverage_scope": "active_catalog_identity_gate_only",
+            "actual_comparable_cross_venue_groups": len(actual),
+            "actual_comparable_cross_venue_markets": len({identity for row in actual for identity in row["instrument_ids"]}),
+            "actual_groups": [{key: row[key] for key in ("id", "asset_ids", "venues", "instrument_ids")}
+                              for row in actual[:limit]],
+            "actual_groups_truncated": len(actual) > limit,
+            "proposal_groups": len(preview["proposals"]), "ready_proposal_groups": preview["ready"],
+            "blocked_proposal_groups": preview["blocked"], "offset": offset, "limit": limit,
+            "next_offset": offset + limit if offset + limit < len(preview["proposals"]) else None,
+            "packets": packets, "page_ready_selection": {"evidence_ids": ready_ids,
+                "preview_token": ready_preview["preview_token"] if ready_preview else None},
+            "review_note": "Ready means eligible for explicit review, not approved or profitable. Verify exact "
+                           "native currency/client/product, chain/address, units, source and expiry. "
+                           "Prices, quote FX, depth and costs require independent checks."}
+
     def status(self, limit=200) -> dict:
         catalog = self.store.instruments()
         records = self._records()
@@ -566,6 +616,11 @@ def _service(request):
 @router.get("")
 def verification_status(request: Request, limit: int = Query(200, ge=1, le=2000)):
     return _service(request).status(limit)
+
+
+@router.get("/review-packet")
+def review_packet(request: Request, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200)):
+    return _service(request).review_packet(offset=offset, limit=limit)
 
 
 @router.post("/public-refresh")

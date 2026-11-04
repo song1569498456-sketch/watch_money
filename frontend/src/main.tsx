@@ -1759,6 +1759,8 @@ function Status({
                     <small className="muted" title={time(s.funding_last_received_at)}>最近 {age(s.funding_last_received_at, now)}</small>
                     <CollectionCoverage status={s} prefix="funding" />
                     {s.funding_effective_poll_seconds != null && <small>当前目标重查 {num(s.funding_effective_poll_seconds, 1)} 秒 · 不代表源端更新周期</small>}
+                    <small>统计时费率字段状态：{({not_observed: "尚未采集", fields_ready: "费率字段均符合门槛", partially_ready: "部分费率字段符合门槛", source_stale: "已收到，但源时间超过比较门槛", source_time_unknown: "源时间未知", source_time_future: "源时间异常", incomplete_or_mixed: "数据不完整或状态混合"} as Record<string, string>)[s.funding_observation_state ?? "not_observed"] ?? "未知"} · 比较门槛 {s.funding_comparison_max_age_seconds == null ? "未提供" : `${s.funding_comparison_max_age_seconds} 秒`} · {age(s.funding_observation_checked_at, now)}</small>
+                    {s.venue === "okx" && <small>OKX ts 表示数据返回时间；请求成功不代表源数据仍新鲜，旧观测保留展示但不进入可靠比较。</small>}
                     {s.funding_arrival_source_age_p90_seconds != null && <small>最近响应到达时源年龄 P90 / 最大 {num(s.funding_arrival_source_age_p90_seconds, 1)} / {num(s.funding_arrival_source_age_max_seconds, 1)} 秒 · {s.funding_arrival_source_age_samples ?? 0} 样本 · {age(s.funding_arrival_checked_at, now)}</small>}
                     <small>已收到费率中：源时间过期 {s.funding_source_stale_markets ?? 0} · 缺失 {s.funding_source_missing_markets ?? 0} · 未来时间 {s.funding_source_future_markets ?? 0} 市场</small>
                   </td>

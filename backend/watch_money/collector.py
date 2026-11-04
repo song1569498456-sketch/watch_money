@@ -468,6 +468,10 @@ class Collector:
                 for prefix in ('light', 'funding'):
                     count = values[f'{prefix}_subscriptions']
                     setattr(status, f'{prefix}_coverage_ratio', values[f'{prefix}_fresh_markets'] / count if count else 0)
+                from .funding_status import observation_state
+                status.funding_observation_state = observation_state(status)
+                status.funding_comparison_max_age_seconds = settings.stale_seconds
+                status.funding_observation_checked_at = as_of
                 adapter = self.adapters.get(name)
                 if not hasattr(adapter, 'plan_light') or not getattr(adapter, 'layered_light', True):
                     status.light_mode = 'legacy_bounded_public_fetch'

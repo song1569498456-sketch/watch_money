@@ -247,3 +247,21 @@ HL 仅 >=8KiB 的 JSON 帧交给每连接一个解码线程；小帧保持快速
 CPU 工作开始后，超时/重复取消只标记调用方取消；每次等待都保护工作 future，等线程实际结束后再传播 CancelledError。CEX 解析锁与 pending、HL 解码锁与 future 在此期间保留。关闭由共享内部任务完成，多个 close 调用及 close 调用方被取消不会提前结束客户端/子连接清理。关闭中不允许新会话；清理完成后可以重连。
 
 这不是强制杀线程：若解析永久不返回，容量和 shutdown 也不会伪报完成。超时清理可能超过请求原定超时。当前解析输入有既有帧/目录边界，不通过额外无限线程掩盖阻塞。测试用可控阻塞线程验证重复取消与实际结束的先后，不触碰实网或账户。
+
+### R29 OKX 直接/批量时间取证及状态解释
+
+2026-11-04 官方资料交叉核对：REST `ts` 是数据返回时间，结算时间是另一个字段；[资金费页面](https://www.okx.com/en-us/trade-market/funding/swap)说明按分钟计算，[WS 文档](https://www.okx.com/docs-v5/en/#public-data-websocket-funding-rate-channel)推送30–90秒。这些并非每次REST请求小于60秒源年龄的承诺。父线程实测p90=70.663秒无重试仍0/540，尚缺同一环境直接/ANY响应配对，不能认定是批量缓存、网络、客户端排队或服务器时钟中的单一原因。
+
+在允许访问 OKX 的运行环境，可运行（仅固定公开 `/api/v5/public/time` 与 `/api/v5/public/funding-rate`）：
+
+```bash
+python scripts/probe_okx_funding_timing.py --live --samples 18 --interval 10 --symbols BTC-USDT-SWAP --output /tmp/watch-money-okx-timing.json
+```
+
+每周期配对直接合约和 `instId=ANY`，最多两并发、五个诊断合约、60周期；周期之间至少5秒。记录完整收包时间与JSON解码完成时间、单调请求耗时、原始ts/结算时间、相邻ts变化、整批源年龄p90/最大、60秒外数量、选定合约的直接/批量差值。诊断选样不是采集白名单。服务器时间给出相对本地时钟的偏移区间，不自动校时或改source。保留仅Date/Age两个公开HTTP诊断头，不保存认证、cookie、正文错误或账户字段。响应上限4MiB/2000行；失败周期后停止，无自动重试，不通过换域名绕过限制。
+
+判读时比较：直接和批量ts是否同时停更、直接是否持续比批量新、变化是否跨相同计算周期，以及时钟区间/请求与解码耗时。两次请求非原子同刻，单次不同ts不能证明缓存缺陷；相同ts也不能证明服务器没在正常按周期发布。`http_cache_age_seconds`不存在时表示未知。需保存足够连续样本，再决定是否调整平台观测期望；本次不扩大可靠比较门槛。
+
+`funding_state` 保持传输/轮询状态；新增 `funding_observation_state` 单独表示费率字段门槛状态，`source_stale`表示“已收到但源时间超限”，不是断连。`fields_ready/partially_ready`只描述所需费率字段，不证明资产身份、报价币或成本可比较；身份仍需独立门槛。旧费率保留可查看，但不进入可靠排序。源码期望周期与严格机会比较有效期不能混为一谈。
+
+`evidence/okx-funding-probe-synthetic.json` 仅为MockTransport构造的不同直接/批量ts样本，证明取证格式与旧时间不续期，不代表真实OKX行为。本云环境无法直接访问公开交易所，实网配对尚未执行。

@@ -554,3 +554,107 @@ async def test_bulk_small_asset_catalog_verifies_distinct_contracts_without_tick
     assert all(len(row["instrument_ids"]) == 2 for row in comparable)
     assert not any("CLASH" in row["symbols"] for row in comparable)
     assert env.service.status()["coverage"]["traceable_verified_markets"] >= 400
+
+
+def test_review_packet_distinguishes_preview_from_actual_and_supports_audited_apply(env):
+    imported = env.service.add_evidence([manual(env, 'gate-spot', canonical='asset:reviewed-pepe'),
+                                         manual(env, 'bitget-spot', canonical='asset:reviewed-pepe')])
+    before = env.store.audit()
+    packet = env.service.review_packet()
+    assert packet['read_only'] and packet['actual_comparable_cross_venue_groups'] == 0
+    assert packet['ready_proposal_groups'] == 1
+    assert env.store.audit() == before
+    row = packet['packets'][0]
+    assert row['review_state'] == 'awaiting_review'
+    assert {item['native_currency_id'] for item in row['markets']} == {'PEPE'}
+    assert {item['venue'] for item in row['markets']} == {'gate', 'bitget'}
+    assert all(item['catalog_fingerprint'] for item in row['markets'])
+    assert {item['id'] for item in row['evidence']} == set(imported['evidence_ids'])
+    selection = packet['page_ready_selection']
+    env.service.apply(selection['evidence_ids'], selection['preview_token'])
+    after = env.service.review_packet()
+    assert after['actual_comparable_cross_venue_groups'] == 1
+    assert after['actual_comparable_cross_venue_markets'] == 2
+    env.clock.at += 86400001
+    expired = env.service.review_packet()
+    assert expired['actual_comparable_cross_venue_groups'] == 0
+    assert expired['page_ready_selection']['evidence_ids'] == []
+
+
+def test_review_packet_pages_and_conflicts_never_become_approved(env):
+    env.service.add_evidence([manual(env, 'gate-spot'), manual(env, 'gate-perp', canonical=f'ethereum:{OTHER_ADDRESS}')])
+    first = env.service.review_packet(limit=1)
+    second = env.service.review_packet(offset=1, limit=1)
+    assert first['proposal_groups'] == 2 and first['next_offset'] == 1
+    assert second['next_offset'] is None
+    assert first['packets'][0]['id'] != second['packets'][0]['id']
+    selection = first['page_ready_selection']
+    assert len(selection['evidence_ids']) == 1
+    assert selection['preview_token'] == env.service.preview(selection['evidence_ids'])['preview_token']
+    env.service.add_evidence([manual(env, 'gate-spot', canonical=f'ethereum:{OTHER_ADDRESS}')])
+    conflict = env.service.review_packet()
+    assert conflict['actual_comparable_cross_venue_groups'] == 0
+    assert conflict['page_ready_selection']['evidence_ids'] == []
+    assert all(row['review_state'] == 'blocked' for row in conflict['packets'])
+    with pytest.raises(ValueError, match='Preview changed'):
+        env.service.apply(selection['evidence_ids'], selection['preview_token'])
+
+
+def test_review_packet_endpoint_is_read_only_and_bounded(env):
+    app = FastAPI()
+    app.state.asset_verification = env.service
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.get('/api/assets/verification/review-packet?limit=1')
+        assert response.status_code == 200 and response.json()['read_only']
+        assert client.get('/api/assets/verification/review-packet?limit=201').status_code == 422
+        assert client.get('/api/assets/verification/review-packet?offset=-1').status_code == 422
+    assert env.store.audit() == []
+
+
+def test_review_packet_token_is_bound_to_displayed_catalog_and_evidence_snapshot(env, monkeypatch):
+    env.service.add_evidence([manual(env, 'gate-spot', canonical='asset:reviewed-pepe'),
+                             manual(env, 'bitget-spot', canonical='asset:reviewed-pepe')])
+    old_catalog = env.store.instruments()
+    old_records = env.service._records()
+    expected = env.service._preview(old_catalog, old_records, env.clock())
+    catalog_reads, evidence_reads = [], []
+    real_catalog, real_records = env.store.instruments, env.service._records
+
+    def capture_catalog():
+        catalog_reads.append(True)
+        assert len(catalog_reads) == 1, 'packet reread catalog after showing earlier snapshot'
+        return old_catalog
+
+    def capture_then_change():
+        evidence_reads.append(True)
+        assert len(evidence_reads) == 1, 'packet reread evidence after showing earlier snapshot'
+        # Another writer commits a different catalog and matching new proof after
+        # this read. These changes must never become the displayed page's token.
+        changed = old_catalog['gate-spot'].model_copy(update={'contract_size': 2})
+        env.store.save_instruments([changed])
+        with env.store.connect() as db:
+            import json
+            for fact in old_records:
+                if fact['instrument_id'] == 'gate-spot':
+                    new = {**fact, 'catalog_fingerprint': module.catalog_fingerprint(changed),
+                           'note': 'new unseen review note'}
+                    db.execute('UPDATE asset_identity_evidence SET record=? WHERE id=?',
+                               (json.dumps(new), fact['id']))
+        return old_records
+
+    with monkeypatch.context() as patch:
+        patch.setattr(env.store, 'instruments', capture_catalog)
+        patch.setattr(env.service, '_records', capture_then_change)
+        packet = env.service.review_packet()
+    assert len(catalog_reads) == len(evidence_reads) == 1
+    selected = packet['page_ready_selection']
+    assert selected['preview_token'] == expected['preview_token']
+    displayed = next(row for row in packet['packets'][0]['markets'] if row['instrument_id'] == 'gate-spot')
+    assert displayed['contract_size'] == 1
+    assert all(row['note'] != 'new unseen review note' for row in packet['packets'][0]['evidence'])
+    assert real_catalog()['gate-spot'].contract_size == 2
+    assert any(row['note'] == 'new unseen review note' for row in real_records())
+    with pytest.raises(ValueError, match='Preview changed'):
+        env.service.apply(selected['evidence_ids'], selected['preview_token'])
+    assert not any(row['action'] == 'asset_verification_apply' for row in env.store.audit())
