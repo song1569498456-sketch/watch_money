@@ -6,6 +6,7 @@ import json
 import os
 import ssl
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from typing import Any
@@ -19,6 +20,96 @@ ENDPOINTS = {
     "dydx": "wss://indexer.dydx.trade/v4/ws",
     "lighter": "wss://mainnet.zklighter.elliot.ai/stream",
 }
+
+
+class ConnectionOpenTimeout(TimeoutError):
+    pass
+
+
+class SubscriptionSendTimeout(TimeoutError):
+    pass
+
+
+class HeartbeatSendTimeout(TimeoutError):
+    pass
+
+
+class ApplicationPongTimeout(TimeoutError):
+    pass
+
+
+class ConnectedHandshakeTimeout(TimeoutError):
+    pass
+
+
+class InitialSnapshotTimeout(TimeoutError):
+    pass
+
+
+class SourceReadTimeout(TimeoutError):
+    pass
+
+
+class _HyperliquidInbox:
+    """Bounded snapshot backlog; compact only on pressure, never block pong reads."""
+
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.pending = deque()
+        self.changed = asyncio.Event()
+        self.error = None
+        self.coalesced = 0
+
+    @staticmethod
+    def key(message):
+        data = message["data"]
+        # Context fields may be sparse; never overwrite a different field set.
+        shape = tuple(sorted(data.get("ctx", {}))) if message["channel"] == "activeAssetCtx" else ()
+        return message["channel"], data["coin"], shape
+
+    @staticmethod
+    def newer(previous, current):
+        old_message, old_received = previous
+        new_message, new_received = current
+        if new_message["channel"] == "activeAssetCtx":
+            return current  # Untimed contexts remain untimed, including after coalescing.
+        old, new = number(old_message["data"].get("time")), number(new_message["data"].get("time"))
+
+        def trustworthy(value, received):
+            return value is not None and 100_000_000_000 <= value <= received
+
+        if trustworthy(old, old_received) and (not trustworthy(new, new_received) or new < old):
+            return previous
+        return current
+
+    def put(self, message, received_at=None):
+        entry = (message, now_ms() if received_at is None else received_at)
+        if len(self.pending) >= self.capacity:
+            latest = {}
+            for pending in (*self.pending, entry):
+                key = self.key(pending[0])
+                latest[key] = self.newer(latest[key], pending) if key in latest else pending
+            if len(latest) > self.capacity:
+                raise StreamUnavailable("hyperliquid: snapshot_buffer capacity exceeded; field shapes changed")
+            self.coalesced += len(self.pending) + 1 - len(latest)
+            self.pending = deque(latest.values())
+        else:
+            self.pending.append(entry)
+        self.changed.set()
+
+    async def get(self):
+        while not self.pending:
+            if self.error is not None:
+                raise self.error
+            self.changed.clear()
+            await self.changed.wait()
+        if self.error is not None:
+            raise self.error
+        return self.pending.popleft()
+
+    def fail(self, error):
+        self.error = error
+        self.changed.set()
 
 
 class _SubscriptionWindow:
@@ -73,7 +164,7 @@ def _connection_factory(endpoint: str):
 def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
            *, source_at: int | None = None, funding_kind: str = "current",
            protocol_metrics: dict | None = None, cleared_fields: tuple = (),
-           cleared_protocol_metrics: tuple = ()) -> MarketSnapshot | None:
+           cleared_protocol_metrics: tuple = (), received_at: int | None = None) -> MarketSnapshot | None:
     values, sources, times = {}, {}, {}
     source = f"{ENDPOINTS[instrument.venue]}#{channel}:{instrument.native_symbol}"
     for field, native, mode in mappings:
@@ -102,7 +193,7 @@ def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
     issues = ["source_event_time_unavailable; receipt time is not source time"] if source_at is None else []
     if crossed:
         issues.append("crossed orderbook: bid exceeds ask")
-    received = now_ms()
+    received = now_ms() if received_at is None else received_at
     return MarketSnapshot(instrument_id=instrument.id, venue=instrument.venue, source=source,
                           source_at=source_at, received_at=received, field_sources=sources,
                           field_timestamps=times, field_received_at={field: received for field in times},
@@ -111,7 +202,7 @@ def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,
                           **({"protocol_metrics": protocol_metrics} if protocol_metrics else {}), **values)
 
 
-def hyperliquid_patch(instrument: Instrument, message: dict) -> MarketSnapshot | None:
+def hyperliquid_patch(instrument: Instrument, message: dict, *, received_at: int | None = None) -> MarketSnapshot | None:
     """BBO has block time; asset context has no documented source timestamp."""
     row = message.get("data")
     if not isinstance(row, dict) or row.get("coin") != instrument.native_symbol:
@@ -136,7 +227,7 @@ def hyperliquid_patch(instrument: Instrument, message: dict) -> MarketSnapshot |
         source_at = int(event_time) if event_time is not None and event_time >= 100_000_000_000 else None
         return _patch(instrument, channel, prices,
                       (("bid", "bid", "positive"), ("ask", "ask", "positive")), source_at=source_at,
-                      cleared_fields=tuple(field for field in ("bid", "ask") if field not in prices))
+                      cleared_fields=tuple(field for field in ("bid", "ask") if field not in prices), received_at=received_at)
     if channel == "activeAssetCtx":
         ctx = row.get("ctx")
         if not isinstance(ctx, dict):
@@ -145,7 +236,7 @@ def hyperliquid_patch(instrument: Instrument, message: dict) -> MarketSnapshot |
             ("mark", "markPx", "positive"), ("index", "oraclePx", "positive"),
             ("volume", "dayNtlVlm", "nonnegative"), ("open_interest", "openInterest", "nonnegative"),
             ("funding_rate", "funding", "finite"),
-        ))
+        ), received_at=received_at)
     return None
 
 
@@ -274,6 +365,68 @@ class DexStreamAdapter:
         self._socket: Any = None
         self._tasks: list[asyncio.Task] = []
         self._subscriptions_sent = asyncio.Event()
+        self._inbox: _HyperliquidInbox | None = None
+        self._payload_observer_dropped = 0
+        self._observer_queue: asyncio.Queue | None = None
+
+    async def _bounded(self, awaitable, seconds, stage):
+        try:
+            return await asyncio.wait_for(awaitable, seconds)
+        except TimeoutError as exc:
+            error_class = {"subscription_send": SubscriptionSendTimeout, "heartbeat_send": HeartbeatSendTimeout,
+                           "application_pong": ApplicationPongTimeout, "connected_handshake": ConnectedHandshakeTimeout,
+                           "initial_snapshot": InitialSnapshotTimeout}[stage]
+            raise error_class(f"{self.venue}: {stage} timed out after {seconds}s") from exc
+
+    async def _observe_payloads(self):
+        while True:
+            payload = await self._observer_queue.get()
+            try:
+                with suppress(Exception):
+                    await self.on_payload(self.venue, f"websocket:{self.venue}", payload)
+            except asyncio.CancelledError:
+                # The callback may already have written before cancellation;
+                # conservatively report a potentially skipped diagnostic frame.
+                self._payload_observer_dropped += 1
+                raise
+
+    @property
+    def payload_observer_dropped(self):
+        """Skipped/potentially skipped callbacks, including queue overflow and close."""
+        return self._payload_observer_dropped
+
+    async def _read_hyperliquid(self, socket, selected, pong, inbox):
+        try:
+            frames = 0
+            while True:
+                try:
+                    message = await self._receive(socket, observe=False)
+                except TimeoutError as exc:
+                    raise SourceReadTimeout("hyperliquid: source_read timed out") from exc
+                received_at = now_ms()
+                if self._observer_queue is not None:
+                    try:
+                        self._observer_queue.put_nowait(message)
+                    except asyncio.QueueFull:
+                        self._payload_observer_dropped += 1
+                channel = message.get("channel")
+                if channel == "pong":
+                    pong.set()
+                elif channel == "error" or message.get("type") == "error":
+                    raise ConnectionError("hyperliquid: source rejected public subscription")
+                elif channel in {"bbo", "l2Book", "activeAssetCtx"}:
+                    data = message.get("data")
+                    if isinstance(data, dict) and data.get("coin") in selected:
+                        inbox.put(message, received_at)
+                frames += 1
+                if frames % 64 == 0:
+                    # A full library receive buffer may resolve recv immediately;
+                    # still let heartbeat and downstream tasks make progress.
+                    await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - propagate reader failure to the owning consumer
+            inbox.fail(exc)
 
     @property
     def catalog_stream(self):
@@ -284,7 +437,7 @@ class DexStreamAdapter:
         # Lighter uses one all-market topic, not one subscription per market.
         return 5000 if self.venue == "lighter" else 100 if self.venue == "hyperliquid" else None
 
-    async def _receive(self, socket) -> dict:
+    async def _receive(self, socket, *, observe=True) -> dict:
         raw = await socket.recv()
         # The official HL SDK also accepts this initial non-JSON greeting.
         if raw == "Websocket connection established." and self.venue == "hyperliquid":
@@ -292,7 +445,7 @@ class DexStreamAdapter:
         message = json.loads(raw)
         if not isinstance(message, dict):
             raise TypeError(f"{self.venue}: expected WebSocket object")
-        if self.on_payload is not None:
+        if observe and self.on_payload is not None:
             with suppress(Exception):
                 await self.on_payload(self.venue, f"websocket:{self.venue}", message)
         return message
@@ -301,8 +454,8 @@ class DexStreamAdapter:
         while True:
             await asyncio.sleep(self._heartbeat_seconds)
             pong.clear()
-            await socket.send(json.dumps({"method": "ping"}))
-            await asyncio.wait_for(pong.wait(), self._heartbeat_timeout)
+            await self._bounded(socket.send(json.dumps({"method": "ping"})), self._heartbeat_timeout, "heartbeat_send")
+            await self._bounded(pong.wait(), self._heartbeat_timeout, "application_pong")
 
     def _selection(self, instruments: list[Instrument]) -> dict[str, Instrument]:
         selected = {}
@@ -335,29 +488,40 @@ class DexStreamAdapter:
         # Deduplication is session-local. A fresh subscription can emit its initial snapshot.
         previous: dict[tuple, tuple] = {}
         last_times: dict[tuple, int] = {}
+        opened = False
         try:
             async with self._factory(ENDPOINTS[self.venue]) as socket:
+                opened = True
                 self._socket = socket
                 pong = asyncio.Event()
                 heartbeat = None
                 connection_id, last_sequence, subscribed = None, -1, False
                 if self.venue == "hyperliquid":
+                    self._inbox = _HyperliquidInbox(max(16, len(selected) * 4))
+                    self._observer_queue = None
+                    if self.on_payload is not None:
+                        self._observer_queue = asyncio.Queue(maxsize=64)
+                        self._tasks.append(asyncio.create_task(self._observe_payloads()))
+                    # Drain source frames before the first subscription send. A
+                    # slow downstream consumer must never hold application pongs.
+                    self._tasks.append(asyncio.create_task(self._read_hyperliquid(socket, selected, pong, self._inbox)))
                     for symbol in selected:
                         for channel in (self._book_channel, "activeAssetCtx"):
                             options = {"fast": True} if channel == "l2Book" else {}
-                            await socket.send(json.dumps({"method": "subscribe",
-                                                          "subscription": {"type": channel, "coin": symbol, **options}}))
+                            await self._bounded(socket.send(json.dumps({"method": "subscribe",
+                                                          "subscription": {"type": channel, "coin": symbol, **options}})),
+                                                self._handshake_timeout, "subscription_send")
                     self.subscription_count = len(selected) * 2
                     heartbeat = asyncio.create_task(self._heartbeat(socket, pong))
                     self._tasks.append(heartbeat)
                 elif self.venue == "lighter":
-                    message = await asyncio.wait_for(self._receive(socket), self._handshake_timeout)
+                    message = await self._bounded(self._receive(socket), self._handshake_timeout, "connected_handshake")
                     if message.get("type") != "connected":
                         raise ConnectionError("lighter: expected connected handshake")
                     await socket.send(json.dumps({"type": "subscribe", "channel": "market_stats/all"}))
                     self.subscription_count = 1
                 else:
-                    message = await asyncio.wait_for(self._receive(socket), self._handshake_timeout)
+                    message = await self._bounded(self._receive(socket), self._handshake_timeout, "connected_handshake")
                     if message.get("type") != "connected":
                         raise ConnectionError("dydx: expected connected handshake")
                     connection_id = message.get("connection_id")
@@ -365,16 +529,19 @@ class DexStreamAdapter:
                     self.subscription_count = 1
                 self._subscriptions_sent.set()
                 while True:
-                    receive = asyncio.create_task(self._receive(socket))
+                    receive = asyncio.create_task(self._inbox.get() if self.venue == "hyperliquid" else self._receive(socket))
                     self._tasks.append(receive)
                     if heartbeat is not None:
                         done, _ = await asyncio.wait((receive, heartbeat), return_when=asyncio.FIRST_COMPLETED)
                         if heartbeat in done:
                             heartbeat.result()
+                    received_at = None
                     if self.venue in {"dydx", "lighter"} and not subscribed:
-                        message = await asyncio.wait_for(receive, self._handshake_timeout)
+                        message = await self._bounded(receive, self._handshake_timeout, "initial_snapshot")
                     else:
                         message = await receive
+                        if self.venue == "hyperliquid":
+                            message, received_at = message
                     self._tasks.remove(receive)
                     if message.get("type") == "error" or message.get("channel") == "error":
                         raise ConnectionError(f"{self.venue}: source rejected public subscription")
@@ -392,7 +559,7 @@ class DexStreamAdapter:
                         data = message.get("data")
                         item = selected.get(data.get("coin")) if isinstance(data, dict) else None
                         if item is not None:
-                            patch = hyperliquid_patch(item, message)
+                            patch = hyperliquid_patch(item, message, received_at=received_at)
                             patches = [patch] if patch is not None else []
                     elif self.venue == "lighter":
                         patches = lighter_patches(selected, message)
@@ -435,11 +602,18 @@ class DexStreamAdapter:
                         if patch.source_at is not None and patch.source_at <= min(now_ms(), patch.received_at):
                             last_times[key] = patch.source_at
                         yield patch
+        except TimeoutError as exc:
+            if not opened:
+                raise ConnectionOpenTimeout(f"{self.venue}: connection_open timed out") from exc
+            raise
         finally:
             await self.close()
             self._running = False
 
     async def close(self):
+        observer_queue, self._observer_queue = self._observer_queue, None
+        if observer_queue is not None:
+            self._payload_observer_dropped += observer_queue.qsize()
         tasks, self._tasks = self._tasks, []
         for task in tasks:
             task.cancel()
@@ -474,6 +648,10 @@ class HyperliquidCatalogStream(DexStreamAdapter):
     @property
     def max_catalog_markets(self):
         return 500
+
+    @property
+    def payload_observer_dropped(self):
+        return self._payload_observer_dropped + sum(child.payload_observer_dropped for child in self._streams)
 
     async def stream(self, instruments: list[Instrument]) -> AsyncIterator[MarketSnapshot]:
         if self._running:
@@ -525,3 +703,4 @@ class HyperliquidCatalogStream(DexStreamAdapter):
         await super().close()
         streams, self._streams = self._streams, []
         await asyncio.gather(*(stream.close() for stream in streams), return_exceptions=True)
+        self._payload_observer_dropped += sum(stream.payload_observer_dropped for stream in streams)

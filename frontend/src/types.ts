@@ -113,6 +113,7 @@ export interface VenueStatus {
   stream_selected_markets?: number;
   stream_truncated?: boolean;
   stream_received_patches?: number;
+  stream_observer_dropped?: number;
   stream_last_patch_at?: number | null;
   stream_last_gap_seconds?: number | null;
   stream_max_gap_seconds?: number | null;

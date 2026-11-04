@@ -184,3 +184,23 @@ async def test_stream_gap_and_error_diagnostics_are_local_and_sanitized(tmp_path
     assert status.stream_last_patch_at is not None
     assert status.stream_last_error_type == 'ConnectionError' and status.stream_last_error_at is not None
     assert 'do-not-expose' not in status.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_observer_drops_remain_visible_after_stream_cleanup(tmp_path):
+    collector, _, items = setup(tmp_path, 1)
+
+    class Stream:
+        catalog_stream = True
+        payload_observer_dropped = 3
+
+        async def stream(self, selected):
+            collector.stopping.set()
+            yield MarketSnapshot(instrument_id=items[0].id, venue='alpha', bid=1, ask=2,
+                                 source='synthetic', source_at=now_ms())
+
+        async def close(self):
+            self.payload_observer_dropped = 5
+
+    await asyncio.wait_for(collector.run_stream('alpha', Stream()), 2)
+    assert collector.statuses['alpha'].stream_observer_dropped == 5

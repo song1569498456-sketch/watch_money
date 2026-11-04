@@ -1694,6 +1694,7 @@ function Status({
                     </small>
                     <small className={s.stream_truncated ? "warning" : "muted"}>源流选取 {s.stream_selected_markets ?? 0}/{s.stream_requested_markets ?? 0} 市场{s.stream_truncated ? " · 订阅预算截断，其余等待REST" : ""} · 不等于已收到有效盘口</small>
                     <small>源流累计处理 {s.stream_received_patches ?? 0} 帧 · 最近处理 {age(s.stream_last_patch_at, now)}</small>
+                    {!!s.stream_observer_dropped && <small className="warning">诊断回调丢弃 {s.stream_observer_dropped} 帧；若已启用原始录制，该录制存在缺口。</small>}
                     <small>相邻帧处理间隔 / 最大 {num(s.stream_last_gap_seconds, 3)} / {num(s.stream_max_gap_seconds, 3)} 秒（非网络延迟）</small>
                     {s.stream_last_error_type && <small className="warning">最近源流错误 {s.stream_last_error_type} · {time(s.stream_last_error_at)}</small>}
                     <small>全目录：{s.light_state ?? "未提供"} · {s.light_subscriptions ?? 0} 市场 · 最近 {age(s.light_last_received_at, now)}</small>

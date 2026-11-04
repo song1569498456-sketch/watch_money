@@ -151,3 +151,5 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 
 - R18 响应编码已改进、本地验证：三个大HTTP查询在同步工作线程直接编码JSONResponse；浏览器WS视图/delta/JSON构建移至工作线程，成员快照避免并发迭代目录。字段时间、60秒有效性和JSON结构不变。新增线程归属/WS增量回归；相同合成10000市场诊断，markets约1.387→0.451秒，loop最大迟到1179→109ms，并行scanner约2.104→1.003秒、1307→107ms。见COLLECTION与api-blocking-after.json；单次共享机器样本，不是实网验收或完全消除阻塞。
 - R13/R14 追加父线程轻查询实网证据：133秒仅轻量status，HL曾347/347，约84秒TimeoutError后152并恢复，最大patch间隔约20秒；OKX50秒后采样均540。不能将大响应认定为唯一根因。24小时、真实身份覆盖、OKX短窗同步轨迹和Lighter地区限制保持开放。
+- R19 已实现、等待实网：HL独立reader在订阅前开始读取，应用pong与下游消费/录制解耦；最新快照有界压力合并保留原始receipt、可信源顺序与明确清除，超时细分安全错误类型，原始诊断回调丢弃/未完成计数可见。定向测试及限制见DEX_STREAMING；此修复仅证实本地背压问题，不将父线程真实TimeoutError归为单一根因。
+- R20 独立复审补充修复：到达时source_at晚于字段received_at的记录，不能在墙钟追上后自动变为可靠。扫描/资金费共享门槛、测算的新鲜度与字段过期标记均拒绝该顺序；原始时间不改，正常后续观测可恢复。`tests/test_future_at_arrival.py`覆盖盘口、费率、周期、类型及恢复。

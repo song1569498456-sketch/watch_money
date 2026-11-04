@@ -150,6 +150,7 @@ class VenueStatus(Model):
     stream_selected_markets: int = 0
     stream_truncated: bool = False
     stream_received_patches: int = 0
+    stream_observer_dropped: int = 0
     stream_last_patch_at: int | None = None
     stream_last_gap_seconds: float | None = None
     stream_max_gap_seconds: float | None = None

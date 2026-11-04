@@ -229,3 +229,15 @@ Hyperliquid `l2Book` replaces the complete two-sided quote snapshot. An empty or
 The [Lighter official market-data guide](https://docs.lighter.xyz/developers/integration-guides/market-data) distinguishes `subscribed/order_book` (full book) from `update/order_book` (changed levels, nonce continuity). This integration consumes `market_stats`, not that order-book delta stream. The available reference does not establish that every stats message must contain every quote field. Therefore omission is preserved as a sparse no-op with the old field time; an explicitly null/zero/unusable best quote invalidates that side conservatively. Missing markets or fields never clear unrelated quotes or rejuvenate them. Full native order-book delta reconstruction remains outside this implementation.
 
 Regression: `tests/test_empty_book_snapshots.py` checks both empty, each single empty side, per-direction ranking exclusion, recovery, stale data, persistence, out-of-order/equal-time frames, untimed removal and Lighter omission versus explicit unavailability. These are synthetic protocol fixtures, not a new live recording.
+
+## Hyperliquid 消费背压与心跳复审
+
+父线程轻查询实网仍有TimeoutError，说明大响应不是唯一解释。本批将HL socket读取移至独立协程，先启动读取再发送订阅，应用pong不再等待下游patch消费者/保存任务。每子连接缓冲最多max(16,4×市场数)条，只有压力达到上限时按通道、市场及context字段集合合并完整快照；不合并不同稀疏字段集合。保留可信较新的book、明确空侧及原始接收时间；无法容纳异常多字段形状时显式失败，不无限增长。该通道是最新状态监控，不承诺保留所有中间快照。
+
+连接建立、订阅发送、心跳发送、应用pong、连接握手、首快照、底层读取分别使用具体TimeoutError子类；现有状态只展示安全错误类名，不记录任意错误文本。仍有真实网络/服务器无pong、事件循环CPU争用、IP共享订阅预算等限制；重连不会续期缓存字段，订阅预算跨重连保留。
+
+原始诊断回调独立单worker，每子连接队列64条，避免录制阻塞心跳。`payload_observer_dropped`聚合至`stream_observer_dropped`并在诊断页显示；计数不为零且启用录制时，不能称原始流完整。关闭时未完成回调也保守计入；底层写线程可能仍收尾，因此计数表示丢弃或未确认完成的回调，不是精确缺失磁盘记录数。
+
+离线测试见`tests/test_dex_stream_backpressure.py`，覆盖背压pong、真实超时、订阅阶段读取、合并/空book/乱序、字段时间、回调阻塞及清理。官方心跳语义来源：https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/timeouts-and-heartbeats 。未进行受限交易所实网访问，不宣称解决全部线上断流；24小时验收保持开放。
+
+独立复审另确认：仅保留receipt不足以阻止未来帧在墙钟追上后被排行接受。共享扫描/资金费门槛和测算现拒绝源事件时间晚于字段接收时间的记录；字段过期状态也保守标记。已过期记录仍优先显示stale，避免改变既有提示优先级。正常后续帧可以恢复，未将本地时间写回为源时间。

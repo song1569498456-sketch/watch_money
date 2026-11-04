@@ -39,6 +39,10 @@ def field_time(snapshot, field):
 
 
 def field_stale(snapshot: MarketSnapshot, field: str, stale_seconds: float) -> bool:
+    source = snapshot.field_timestamps.get(field, snapshot.source_at)
+    received = snapshot.field_received_at.get(field, snapshot.received_at)
+    if source is not None and source > received:
+        return True
     if (field == 'funding_interval_hours' and snapshot.field_timestamps.get(field) is None
             and snapshot.field_sources.get(field, '').endswith(
                 (':catalog_metadata_observed_at', ':public_metadata_observed_at'))):
@@ -289,6 +293,7 @@ class Collector:
                     last_patch_clock = clock
                     status.stream_last_patch_at = now_ms()
                     status.stream_received_patches += 1
+                    status.stream_observer_dropped = getattr(streamer, 'payload_observer_dropped', 0)
                     status.last_received_at = incoming.received_at
                     status.stream_state = 'online'
                     status.transport = 'WebSocket + REST metadata/funding'
@@ -314,6 +319,7 @@ class Collector:
                     await iterator.aclose()
                 with suppress(Exception):
                     await streamer.close()
+                status.stream_observer_dropped = getattr(streamer, 'payload_observer_dropped', 0)
             if failures:
                 await self.pause(min(300, 5 * 2 ** min(failures - 1, 6)))
 

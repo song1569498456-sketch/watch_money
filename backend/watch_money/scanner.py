@@ -61,6 +61,8 @@ def _field(snapshot: MarketSnapshot | None, instrument: Instrument, field: str,
     ttl_ms = 6 * 3600000 if metadata_interval else stale_seconds * 1000
     if as_of - effective > ttl_ms:
         return None, f"{field}_stale"
+    if source is not None and source > received:
+        return None, f"{field}_timestamp_in_future"
     if not isinstance(value, (int, float)) or not math.isfinite(value):
         return None, f"{field}_invalid"
     if field != "funding_rate" and value <= 0:

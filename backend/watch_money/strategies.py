@@ -161,6 +161,8 @@ SPOT_STRATEGIES = {"spot_spread", "cex_dex_spot", "dex_pool_spread"}
 
 
 def _fresh(source_at: int | None, received_at: int, req: CalculateRequest) -> bool:
+    if source_at is not None and source_at > received_at:
+        return False
     stamps = [received_at] + ([source_at] if source_at is not None else [])
     return all(0 <= req.as_of - at <= req.stale_seconds * 1000 for at in stamps)
 
