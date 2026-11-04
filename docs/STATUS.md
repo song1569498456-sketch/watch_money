@@ -1,42 +1,34 @@
 # 当前开发状态
 
-2026-11-04。仓库从空 README 开始，已集成一个可运行版本。**整个三阶段计划尚未完成验收。** 当前交付的是有真实接口实现、可运行 UI、持久化与计算/通知闭环的开发版本。
+2026-11-04。**完整三阶段计划尚未通过验收。** 本轮价差聚合/规模计算、资金费、费用配置及对应修复完成离线验证：**Python 563 passed、Node 18 passed；最终浏览器6/12/7组通过；TS/Vite build、CI Ruff E4/E7/E9/F和diffcheck通过**。证据见 [followup-validation.json](evidence/followup-validation.json)。这些是合成fixture、mock HTTP/RPC、loopback及隔离浏览器证据；不是实网全覆盖或24小时运行。
 
-## 当前目标和完成项
+用户最新优先级：先数据正确性，再**按资产聚合 → best价差排序 → 展开双向组合 → 指定规模calculator**；第二资金费聚合，第三其他简洁指标/已有历史。不新增交易账户。本轮已有历史/原生能力保留范围，后续不抢先扩大原生协议开发。
 
-- 建立数据契约、资产身份隔离与映射审计、质量检查、采集退避、SQLite 与 Parquet/DuckDB 历史。
-- 实现 12 CEX 公共适配与受支持产品的源 WebSocket，9 永续 DEX 全部或部分公开数据适配、Drift 原程序 RPC 元数据读取，以及 6 现货 DEX 的明确标识聚合池观察。
-- 构建七类策略输入校验、规模/深度均价、费用、资金费时间表、8/24/72h 情景、样本保存和不前视回放。
-- 增加持久化计算监控计划，重新拉取盘口并触发本地规则；失败时停止提供净收益、触发失效事件。
-- 实现通知规则、持久化队列、冷却去重、失败重试与重启恢复。按用户最新要求只做模拟渠道测试。
-- React 页面提供市场/详情/平台状态/计算/通知/配置，以及人工映射、连续监控、批量规模与 FX 输入。
-- 云端 Chromium 验证与截图已保存；Windows 启动脚本已提供，未在 Windows 真机验证。
+逐项状态、代码/测试/证据和限制统一见 [AUDIT_BACKLOG.md](AUDIT_BACKLOG.md)。**每批修改后更新对应审计ID与证据，再同步本状态和验证报告；收到问题或存在代码不能直接标done。** 父线程报告的市场数量不是本环境真实采集样本。
 
-## 团队与任务板
+## 已实现并离线验证
 
-所有子 Agent 与主 Agent 共享工作区，主 Agent 集成并提交；没有未说明的后台自治任务。
+- 新数据目录默认启用全部28个计划平台，已有持久化启用列表保留。CEX目录不按主流币白名单裁剪，部分服务失败保留身份/单独报告。广覆盖按已发现活跃目录默认30秒/100市场分批轮转，1800秒重发现；关注资产另有详细REST/可用源WS，不能称全目录同时实时更新。
+- CEX公共源WS及Hyperliquid/dYdX原生WS接入collector，包含稀疏字段、心跳/重连/选择变化取消与REST fallback。本地浏览器推送为初始完整markets、后续markets_delta增量/删除，保留过期转变、重连/模式重置；大目录实网负载未验。
+- 资产级扫描按可核对身份、报价币、来源时间和有效bid/ask筛选best，展开原始市场与双向组合，保留两腿ID/源与接收时间。预算截断明示best仅限已扫范围。点击精确ID/策略进入calculator，不自动提交计算；指示扫描net=null/executable=false。
+- Calculator支持基础数量或实际多档买方asks的金额换算，刷新指定两腿深度；不外推或静默舍余。spot base/perpetual contracts的step与min_amount、深度、费用/FX/时效/身份继续校验；未知或不足时不输出假净收益。退出假设有unknown/entry/prices/basis互斥输入；显式双腿holding逐腿名义/时长、一次换汇，独立于funding情景。
+- 公共费用API/设置/计算器按venue、spot/perpetual、maker/taker隔离。112档案中22条普通公开参考，保留来源/核验时间/适用scope；Binance perpetual等未知保持空，Bybit特殊区、HIP-3/HL spot等不越scope自动套值。用户覆盖明确为假设、可审计/恢复；切腿/同平台换产品清除相应手填fee与holding、旧异步结果不串腿。不是账户实际费率，不使用账户API。
+- CEX资金费独立任务默认60秒/100市场；DEX复用广覆盖REST已有payload并显示via_light_rest。全活跃perpetual排行、同资产矩阵保留raw/真实周期/8h、类型、下次结算/倒计时、逐字段时效；归一化费差不是现金收益。已结算历史是另外显式手动单页服务，保留原始值/来源/修订，不作后台全量回填。历史图表不借新价格事件刷新旧funding，类型/时期/演示/来源分别保留。
+- native_asset_id持久化，人工映射不能抹掉原生链地址/单位冲突；全目录候选和批量人工映射已有。REST/轻量/源WS共用volume单位核验，修正OKX合约量误作base；旧未核验CCXT永续volume缓存/历史读取抑制。
+- 公共payload诊断录制默认关闭，按venue、额度/保留期配置，脱敏和磁盘失败隔离；是解析JSON/CCXT对象，不是完整wire/frame或全协议回放。
+- 通知只做本地/HTTP模拟。入队固定delivery_expires_at，发送/重试claim前再验；停机后过期记录expired且不发，未送达旧通知可释放自身dedup，已sent/新状态不误清；规则/队列/冷却/失败恢复已有回归。
+- 六现货DEX搜索改为协议/链关键词和已知池，仍search_limited。Uniswap V3 Ethereum/Arbitrum/Base有显式地址状态；Pancake V2 BSC、Aerodrome Base v1有状态和单池exact-input估算，保留decimal/fee/方向/block hash/time及factory成员检查，始终executable=false，未作编译字节码/交易模拟认证。
 
-| ID | 负责人 | 依赖 | 文件范围 | 状态 | 验收与证据 |
-|---|---|---|---|---|---|
-| CORE | 主 Agent | 空仓库 | models/app/storage/collector/monitors/scripts/CI | 本地集成复测通过 | 核心 API、Parquet、恢复、身份保护；tests/test_acceptance.py |
-| CEX | cex，gpt-6.1-sol/high | CORE 契约 | adapters/cex.py + 专属测试/文档 | 自测/独立测试通过，在线待验 | tests/test_cex.py；CEX_SOURCES.md |
-| DEX | dex，gpt-6.1-sol/high | CORE 契约 | adapters/dex.py、deployments.json | 部分能力自测通过，覆盖未全 | tests/test_dex.py；DEX_SOURCES.md |
-| CALC | strategies，gpt-6.1-sol/high | CORE 契约 | strategies.py + 专属测试/文档 | 自测/独立测试通过，真实样本待验 | tests/test_strategies.py；CALCULATIONS.md |
-| ALERT | notifications，gpt-6.1-sol/high | CORE/CALC | notifications.py、通知/监控测试 | 模拟验证通过 | tests/test_notifications.py、test_monitors.py |
-| UI | frontend，gpt-6.1-sol/high | API 契约 | frontend/** | 构建与浏览器验证 | docs/screenshots；VALIDATION.md |
-| ACCEPT | acceptance，gpt-6-astra/high | 全部模块 | 独立测试与 ACCEPTANCE.md | 完整计划未通过 | ACCEPTANCE.md 中的独立结论 |
+## 未通过的实网与能力边界
 
-## 未完成项与外部条件
+1. 全币目录、真实两腿盘口与规模、身份/费用/周期的真实样本核对，以及实际限流/完整轮转延迟和24小时稳定性尚未完成。用户已授权官方域名，但本环境数据主机仍受策略限制，未绕过代理/CA，见NETWORK.md；短时空数据soak不能替代实网验收。
+2. 官方chain/address全币证据、包装/桥接关系和独立价格单位比例仍不完整，同ticker不能自动合并。公开费用参考不是账户实际费率；未知币种/产品/范围保持未知，不为凑净收益补零。
+3. GMX/Jupiter等完整side/collateral/size执行报价及所有协议funding/borrowing/持仓费模型未完成；RFQ缓存不是可执行报价。Drift仅原program metadata，当前链上生命周期和行情未经核验。
+4. 原生协议缺口暂不扩大：Curve/Raydium/Orca native、V3规模quoter/tick traversal、多跳、完整池索引、主网RPC/编译字节码认证未完成；其他DEX源WS/历史恢复也未全覆盖。已有单池估算不能冒充这些能力。
+5. Windows脚本尚未实机验证。飞书/Telegram真实发送按用户要求延期，不阻塞本轮模拟交付；没有交易账户、交易执行或真实外部通知。
 
-1. Drift 已核对原程序身份/布局，可选 RPC 元数据读取；当前实时生命周期未经验证。inactive 表示本适配器不支持可执行行情，不代表断言链上暂停；没有把后继协议冒充原服务。Jupiter 已实现官方公共只读 API，侧别借贷/状态单独显示。GMX/Jupiter 等完整持仓成本模型和所有 AMM/RFQ 可执行规模报价尚未实现。
-2. 六类现货 DEX 目前是经部署登记过滤的聚合观察，缺完整原生 RPC、区块状态和路由报价。不能将其计为计划要求的全部原生链上接入。
-3. CEX 源端 WebSocket 已实现并完成模拟断线/重订阅测试；DEX 源 WS、全目录轻量行情订阅、完整原始消息诊断录制尚未实现。当前收集关注资产，前端 WS 与源时效独立。
-4. 云端代理拒绝官方行情 API。用户已授权添加官方域名，但工具没有环境网络配置写入能力。已整理 NETWORK.md，未修改宿主策略；用户同意先用官方文档/GitHub 构建代码。
-5. 未完成真实数据人工核算与真实行情连续运行 24 小时。短时 HTTP 探测不能替代。
-6. 机器人凭证和真实消息发送按用户最新要求延期，不阻塞本次模拟通知验证。
+## 下一批顺序
 
-## 恢复与下一步
+先按AUDIT_BACKLOG维护每批记录。网络可达后优先验证全币真实目录/盘口/身份与价差规模闭环，录制真正样本、人工复算不同规模和双向结果，检查失效/限流/恢复，再运行`scripts/soak.py --hours 24`并修复问题。其次核验资金费真实周期、类型、结算和同资产矩阵；其他简洁指标/已有历史随后。原生路线及协议成本扩展排在这些验证之后。
 
-先读 PLAN、CONTRACTS、ACCEPTANCE 和本状态，再运行测试并核对 Git 状态。最靠前开发任务：补齐原生链上路由/区块状态、DEX 源 WS 与广覆盖订阅；网络可达后执行 probe_sources，逐平台拉取真实样本核对金额/周期/单位，再执行 soak.py --hours 24。不要因为当前单元测试通过而勾选完整阶段验收。
-
-最终完整测试 171 项通过，构建与隔离浏览器流程通过。准确命令、截图和短时运行见 VALIDATION.md。进程可能随云环境回收而停止；未承诺会话结束后的持续后台工作。
+本轮业务与文档已冻结；验收提交使用 `feat/market-monitor` 和 [草稿 PR #1](https://github.com/song1569498456-sketch/watch_money/pull/1)，不合并或发布。进程可能随云环境回收停止，未承诺会话结束后的后台持续执行。详细范围与证据见 [COVERAGE.md](COVERAGE.md)、[VALIDATION.md](VALIDATION.md)、[ACCEPTANCE.md](ACCEPTANCE.md)。

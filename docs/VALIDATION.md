@@ -4,17 +4,43 @@
 
 ## 自动测试
 
-最终完整测试 **171 项通过**，结果见 [pytest.txt](evidence/pytest.txt)，其中包含 31 项独立验收测试。CEX 源 WS、Jupiter 公共状态与 Drift 原程序只读元数据均已纳入回归。Ruff 检查、TypeScript/Vite 构建、隔离浏览器端到端测试均通过。
+本轮最终离线回归 **Python 563 passed，1 条上游 Starlette 弃用 warning，17.71s**；**前端 Node 18 passed**；TypeScript/Vite build、CI Ruff `E4,E7,E9,F` 与 `git diff --check` 均通过。机器记录与版本见 [followup-validation.json](evidence/followup-validation.json)：Python 3.12.14、CCXT 4.5.91、FastAPI 0.162.0、Pydantic 2.14.2、pytest 9.2.0、websockets 17.4。最终bundle的整合浏览器已由root实跑通过：baseline **6组**、followup **12组**、费用 **7组**；结果均在聚合证据browser_results内。
+
+本轮功能范围已收敛，扫描/资金费/原生/历史/费用配置与通知过期重试修复已有离线回归。费率目录是22个普通公开参考，范围不匹配或未知保持空，包含 Binance perpetual 未确认；费用切腿与整合浏览器也已复跑通过；这仍是离线/隔离模拟交付。逐项见 [AUDIT_BACKLOG.md](AUDIT_BACKLOG.md)。下一阶段先验证真实全币盘口、身份与稳定性，资金费聚合其次，其他简洁指标/已有历史再次，不扩展账户或本轮原生范围。
+
+本次文档审计只执行 9 项定向检查，全部通过，命令记录在 AUDIT_BACKLOG.md：OKX原生volume/已安装parser/盘口与OI、原生最小数量、人工映射不能掩盖原生合约冲突。没有重跑全套，也不把此9项视为最终总数；其他修复按各自新增回归/浏览器证据更新，不因收到报告直接关闭。
+
+前端18项纯函数用例见 `frontend/tests/marketData.test.mjs` 与 `bookSizing.test.mjs`：字段时效/范围/资金费事件去重与类型隔离、实际逐档金额换算/单位/深度/时间校验。旧171项仅是上一轮历史基线，不是当前总数。
 
 ```bash
 .venv/bin/pytest -q
 .venv/bin/ruff check backend tests scripts --select E4,E7,E9,F
 cd frontend && npm ci && npm run build
+# frontend 目录：npm test
 ```
 
 覆盖资金费正负与异周期、同时间结算回本、资金费名义价值、合约乘数、过期字段、盘口规模与不足、完整开平仓费用、汇率、DEX 精确路线与费用不重复、时序回放、映射审计、历史/配置恢复、持久化队列、重试、去重、关闭开关、自动监控失效，以及并发保存容量与无丢失更新。
 
-独立验收与具体复现见 [ACCEPTANCE.md](ACCEPTANCE.md)。上游 Starlette/httpx 有一条弃用提示，不影响当前测试结果。
+## 本轮新增验证范围
+
+| 模块 / 回归文件 | 已有证据与明确边界 |
+| --- | --- |
+| `test_cex_light.py`、`test_dex_catalog.py` | 非主流币完整发现、部分服务失败/恢复、client/产品/结算币分组、批量/单条成本、可配置搜索/已知池、空目录与稀疏补丁。六现货 DEX 仍 search_limited；不是全链索引证明 |
+| `test_dex_streaming.py` | Hyperliquid/dYdX 订阅与字段协议、心跳、取消/重连、独立时间与 loopback control ping/pong；本地 socket 不是生产服务接入 |
+| `test_onchain.py` | 66 项独立 mock RPC 验证：chain ID、factory/成员/代码存在、canonical block hash、decimal/ABI/方向/数量、Pancake/Aerodrome estimate 与凭证脱敏。与原 DEX 测试当次合跑 105 项通过；这是模块检查记录，不是最终总数。没有主网 RPC/编译字节码/交易执行证明 |
+| `test_recording.py` | 有限公共 payload 录制开关、脱敏、额度、保留期、重启/并发/磁盘失败。没有真实生产录制，也不是完整原始帧/协议回放验证 |
+| `test_identity.py` | 全目录身份候选、同名不同原生 ID、链地址大小写/冲突、包装/桥接/单位限制及 native_asset_id 持久化，不声称全币种官方身份已核验 |
+| `test_followup_acceptance.py` | 独立集成回归：广覆盖批次/小币可见、字段时间、防未来时间污染、精度/资金费覆盖值、原生池 API/身份冲突，以及停机过期通知的发送/重试/去重修复；已纳入563项通过 |
+| `test_volume_units.py` 与旧缓存回归 | 详细/轻量 REST 和源 WS 共用原始字段 volume helper，OKX contract/base 区分及反向不以现价倒算；旧未核验 CCXT derivative volume 读取时抑制，不传播错误单位 |
+| 最小数量 / 双腿持仓成本 / WS delta 回归 | min_amount 按 spot base / perpetual contracts 校验；两腿小时持仓费按各自名义/时长与一次 FX 计费；local WS 首次完整、后续增量/删除、过期转变及重置；仍非所有协议自动成本或大规模持续负载证明 |
+| `test_scanner.py` | 已纳入563项通过；身份组跨 venue 双向指示价差/8h funding、资产best/展开、时效/缺字段/截断，净收益 null、executable=false；不当作真实成交验收 |
+| 广覆盖资金费采集 | 已纳入563项通过：CEX 独立任务默认 60 秒/100 市场；DEX 通过 fetch_light 复用已有公共 REST 资金费 payload，funding_state=via_light_rest，不启动独立 funding task。各自遍历已发现活跃 perpetual；缺字段/周期未知，实网未验 |
+| `test_funding_view.py` / `test_funding_history.py` | 已纳入563项通过；全 perpetual 行/身份矩阵/字段有效性与手动单页历史、来源/原始值、分页提示、重复/修订/失败处理分别验证。当前快照与结算历史明确分开，未完成实网核对或后台全历史回填 |
+| `test_fee_profiles.py` | 已纳入563项通过；112个venue/product/role档案中22条普通公开参考，其余未知或not_applicable；scope/时间/覆盖审计/重启/事务与用户输入不可伪造核验标记。不是账户实际费率，前端切腿/同平台换产品/角色隔离7组浏览器也通过 |
+
+默认 28 平台启用只针对新数据目录，已有持久化设置保留。广覆盖价格默认 30 秒/100 市场分批轮转，目录 1800 秒重发现；真实限流、每批请求数量与全目录更新延迟待实网核对。CEX 的资金费独立频率与 DEX 复用广覆盖路径分开显示；资金费周期有明确元数据才归一化，不能以轮转频率替代真实 funding interval。
+
+独立验收与具体复现见 [ACCEPTANCE.md](ACCEPTANCE.md)。本轮唯一 warning 为上游 Starlette TestClient/httpx 弃用提示，测试退出成功；它不是行情接入或生产验收证据。
 
 ## 浏览器实测
 
@@ -24,7 +50,11 @@ cd frontend && npm ci && npm run build
 .venv/bin/python scripts/browser_smoke.py
 ```
 
-脚本创建隔离临时数据目录和临时服务，不修改用户数据，移除外部消息凭证。实际验证：真实模式空状态、显式演示开关、搜索、收藏持久化、资产详情、无执行深度时净收益为空、保存/回放、持续监控创建、本地通知入队与送达、390px 手机宽度无横向溢出。五个页面未出现 JavaScript 错误。
+脚本创建隔离临时数据目录和临时服务，不修改用户数据，移除外部消息凭证。上轮实际验证：真实模式空状态、显式演示开关、搜索、收藏持久化、资产详情、无执行深度时净收益为空、保存/回放、持续监控创建、本地通知入队与送达、390px 手机宽度无横向溢出，五个页面无 JavaScript 错误。
+
+本轮 [browser-followup.json](evidence/browser-followup.json) 当前记录 **12 组通过**：合成 PEPE 候选隔离/搜索；funding carry事件去重及current/predicted/settled/local系列隔离；退出prices/basis0互斥payload；多档ask预算换算及无效/不足深度阻止；无RPC禁用；DEX设置校验/保留；mock原生decimal/不可执行；资产展开到精确ID/策略handoff且不自动提交；扫描方向/排序/刷新；截断范围声明；funding raw/8h排序/矩阵与独立mock结算历史；手机布局/零JS错误。该流程使用隔离合成数据和浏览器 mock 响应，**没有请求真实 RPC，也没有证明真实小币报价或执行能力**。该最终bundle的构建、563 Python / 18 Node和12组接续浏览器均通过。
+
+最终 [browser_fee.json](evidence/browser_fee.json) **7组通过**：按instrument加载四个独立maker/taker开平仓字段、换腿只清当前侧/holding、同平台换产品、scope外有效null不回落表参考、保留来源/核验时间、手填/零值标用户假设、保存覆盖与恢复默认。root独立复跑已通过。所有费用浏览器资料为synthetic_fee_references_not_live，没有账户API。
 
 证据：[机器可读结果](evidence/browser-smoke.json)、[真实模式空状态](screenshots/live-empty.png)、[显式演示总览](screenshots/demo-overview.png)、[资产详情](screenshots/demo-detail.png)、[计算与监控](screenshots/calculator.png)、[本地通知](screenshots/notifications.png)、[手机布局](screenshots/mobile-demo.png)。截图中的演示行情不是真实市场样本。
 

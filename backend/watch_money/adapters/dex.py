@@ -13,6 +13,8 @@ import json
 import math
 import os
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -71,7 +73,27 @@ def field_sources(source: str, values: dict) -> dict[str, str]:
     return {key: source for key, value in values.items() if value is not None}
 
 
-class PublicREST:
+class BroadPublicData:
+    """Catalog scheduling interface; reuses fetch, not a cheaper endpoint."""
+
+    light_fetch_mode = "reuse-public-fetch"
+    light_fetch_cost = "Same public API calls as fetch; no order book requests"
+    on_payload: Callable[[str, str, Any], Awaitable[None]] | None = None
+
+    async def _record_payload(self, transport: str, payload: Any):
+        if self.on_payload is not None:
+            # Optional diagnostics must not stop collection. Transport labels
+            # contain no request URLs, query strings, headers or credentials.
+            with suppress(Exception):
+                await self.on_payload(self.venue, transport, payload)
+
+    async def fetch_light(self, instruments):
+        """Fetch every supplied catalog market with the normal public fetch path."""
+        instruments = list(instruments)
+        return await self.fetch(instruments) if instruments else []
+
+
+class PublicREST(BroadPublicData):
     def __init__(self, client: httpx.AsyncClient | None = None):
         self._client = client
         self._owns_client = client is None
@@ -82,6 +104,7 @@ class PublicREST:
         response = await self._client.request(method, url, **kwargs)
         response.raise_for_status()
         body = response.json()
+        await self._record_payload(f"rest:public:{method.upper()}", body)
         if isinstance(body, dict) and body.get("code") not in (None, 0, 200, "SUCCESS"):
             raise RuntimeError(f"{self.venue}: public API error code {body['code']}")
         return body
@@ -94,6 +117,7 @@ class PublicREST:
 
 class HyperliquidAdapter(PublicREST):
     venue = "hyperliquid"
+    light_fetch_cost = "One metaAndAssetCtxs POST per distinct selected namespace"
     endpoint = "https://api.hyperliquid.xyz/info"
 
     def __init__(self, client=None):
@@ -204,6 +228,7 @@ class HyperliquidAdapter(PublicREST):
 
 class LighterAdapter(PublicREST):
     venue = "lighter"
+    light_fetch_cost = "Two GETs: all-market orderBookDetails and funding-rates"
     endpoint = "https://mainnet.zklighter.elliot.ai/api/v1"
 
     async def details(self):
@@ -308,6 +333,7 @@ class LighterAdapter(PublicREST):
 
 class DydxAdapter(PublicREST):
     venue = "dydx"
+    light_fetch_cost = "One all-market perpetualMarkets GET"
     endpoint = "https://indexer.dydx.trade/v4"
 
     async def markets(self):
@@ -388,8 +414,12 @@ class DydxAdapter(PublicREST):
         )
 
 
-class CCXTPerpetualAdapter:
+class CCXTPerpetualAdapter(BroadPublicData):
     """CCXT supplies public transport and venue parsing; absent rate periods stay absent."""
+    light_fetch_cost = (
+        "Tickers and funding use batch methods when supported, otherwise up to N calls each; "
+        "optional funding intervals add a public method call; CCXT may paginate internally"
+    )
 
     def __init__(self, venue: str, client=None):
         self.venue = venue
@@ -408,7 +438,7 @@ class CCXTPerpetualAdapter:
         return self._client
 
     async def discover(self):
-        markets = await self.client.load_markets(reload=True)
+        markets = await self._public_call("load_markets", reload=True)
         self._markets = {
             m["symbol"]: m
             for m in markets.values()
@@ -437,17 +467,17 @@ class CCXTPerpetualAdapter:
             return []
         client = self.client
         if client.has.get("fetchTickers"):
-            tickers = await client.fetch_tickers(symbols)
+            tickers = await self._public_call("fetch_tickers", symbols)
         else:
-            tickers = {symbol: await client.fetch_ticker(symbol) for symbol in symbols}
+            tickers = {symbol: await self._public_call("fetch_ticker", symbol) for symbol in symbols}
         if client.has.get("fetchFundingRates"):
-            funding = await client.fetch_funding_rates(symbols)
+            funding = await self._public_call("fetch_funding_rates", symbols)
         elif client.has.get("fetchFundingRate"):
-            funding = {symbol: await client.fetch_funding_rate(symbol) for symbol in symbols}
+            funding = {symbol: await self._public_call("fetch_funding_rate", symbol) for symbol in symbols}
         else:
             funding = {}
         intervals = (
-            await client.fetch_funding_intervals(symbols) if client.has.get("fetchFundingIntervals") else {}
+            await self._public_call("fetch_funding_intervals", symbols) if client.has.get("fetchFundingIntervals") else {}
         )
         result = []
         for instrument in instruments:
@@ -517,8 +547,13 @@ class CCXTPerpetualAdapter:
             )
         return result
 
+    async def _public_call(self, method, *args, **kwargs):
+        payload = await getattr(self.client, method)(*args, **kwargs)
+        await self._record_payload(f"rest:ccxt:{method}", payload)
+        return payload
+
     async def orderbook(self, instrument):
-        book = await self.client.fetch_order_book(instrument.native_symbol, 100)
+        book = await self._public_call("fetch_order_book", instrument.native_symbol, 100)
 
         def levels(side):
             return [
@@ -548,13 +583,21 @@ def deployments() -> list[dict]:
 
 class AggregatedSpotAdapter(PublicREST):
     discovery_complete = False
+    discovery_state = "search_limited"
+    light_fetch_cost = "One pair-list GET per chain and each batch of at most 30 pools"
     endpoint = "https://api.dexscreener.com/latest/dex"
 
     def __init__(self, venue: str, client=None, search_queries: list[str] | None = None):
         super().__init__(client)
         self.venue = venue
         self.registry = [d for d in deployments() if d["protocol"] == venue]
-        self.search_queries = search_queries or ["WETH USDC", "WBTC USDC", "SOL USDC", "USDT USDC"]
+        # Protocol/deployment searches have no base-token allowlist. The upstream
+        # search remains bounded and is not a complete chain pool index.
+        self.default_search_queries = list(dict.fromkeys(
+            [venue] + [f"{dex_id} {deployment['chain']}"
+                       for deployment in self.registry for dex_id in deployment["dex_ids"]]
+        ))
+        self.search_queries = list(self.default_search_queries if search_queries is None else search_queries)
         self._instruments: dict[str, Instrument] = {}
         self.pools: dict[str, Pool] = {}
         self._pairs: dict[str, dict] = {}
@@ -623,8 +666,18 @@ class AggregatedSpotAdapter(PublicREST):
 
     async def discover(self):
         found = {}
-        for query in self.search_queries:
-            response = await self.request("GET", f"{self.endpoint}/search", params={"q": query})
+        for query in dict.fromkeys(self.search_queries):
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("DEX discovery queries must be nonempty strings")
+            if query.startswith("pool:"):
+                parts = query.split(":", 2)
+                chains = {deployment["chain"] for deployment in self.registry}
+                if (len(parts) != 3 or parts[1] not in chains
+                        or not parts[2].isascii() or not parts[2].isalnum()):
+                    raise ValueError("Known pool source must be pool:<registered-chain>:<pool-address>")
+                response = await self.request("GET", f"{self.endpoint}/pairs/{parts[1]}/{parts[2]}")
+            else:
+                response = await self.request("GET", f"{self.endpoint}/search", params={"q": query})
             if not isinstance(response.get("pairs"), list):
                 raise TypeError("dexscreener: malformed search response")
             for pair in response["pairs"]:
@@ -684,6 +737,7 @@ class AggregatedSpotAdapter(PublicREST):
                         "pool_membership_not_rpc_verified",
                         "source_event_time_unavailable",
                         "bounded_search_not_full_chain_discovery",
+                        "search_limited",
                     ],
                 )
             )
@@ -697,6 +751,7 @@ class AggregatedSpotAdapter(PublicREST):
 
 class EdgeXAdapter(PublicREST):
     venue = "edgex"
+    light_fetch_cost = "One all-market ticker GET plus one funding GET per selected market (1+N)"
     endpoint = "https://edgex-prod-v2.edgex.exchange/api/v2/public"
 
     def __init__(self, client=None):
@@ -808,6 +863,7 @@ class EdgeXAdapter(PublicREST):
 class VariationalAdapter(PublicREST):
     discovery_complete = False
     venue = "variational"
+    light_fetch_cost = "One all-listings metadata/v2/stats GET"
     endpoint = "https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/v2/stats"
 
     async def listings(self):
@@ -890,6 +946,7 @@ class GMXAdapter(PublicREST):
     """Arbitrum V2 market discovery and indicative marks; no universal funding rate invented."""
 
     venue = "gmx"
+    light_fetch_cost = "One Arbitrum V2 all-market ticker GET; no executable quotes"
     endpoint = "https://arbitrum-api.gmxinfra.io"
     market_endpoint = "https://arbitrum.gmxapi.io/v1/markets/tickers"
 
@@ -988,6 +1045,7 @@ class JupiterPerpsAdapter(PublicREST):
     """Read-only published market/state APIs; their reference price is not an execution quote."""
 
     venue = "jupiter-perps"
+    light_fetch_cost = "One jlp-info GET plus market-stats and pool-info GETs per selected mint (1+2N)"
     endpoint = "https://perps-api.jup.ag/v1"
     discovery_complete = False
     # Explicitly enumerated market mints in the published /market-stats and /pool-info schema.
@@ -1116,6 +1174,7 @@ def base58_encode(data: bytes) -> str:
 class DriftAdapter(PublicREST):
     """Optional metadata-only RPC audit of original Drift; current lifecycle is unverified."""
 
+    light_fetch_cost = "Two getProgramAccounts RPC reads; metadata only, no market prices"
     venue = "drift"
     program_id = "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH"
     # A successor repository claim is not canonical Drift lifecycle verification.
@@ -1301,7 +1360,7 @@ def build_dex_adapters():
 
 
 def coverage():
-    blocked = "Live API verification blocked by enforced environment network policy (2026-11-04)"
+    blocked = "Development-time live verification unavailable under network policy (2026-11-04); see runtime status separately"
     rows = []
     docs = {
         "hyperliquid": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint",
@@ -1311,7 +1370,8 @@ def coverage():
         "aster": "https://github.com/asterdex/api-docs",
     }
     for venue in ("hyperliquid", "lighter", "dydx", "paradex", "aster"):
-        limits = [blocked, "REST polling; no historical/stream recovery adapter yet"]
+        limits = [blocked, ("Native public WebSocket plus REST; no complete historical/depth recovery"
+                           if venue in {"hyperliquid", "dydx"} else "REST polling; no native source stream recovery yet")]
         if venue == "lighter":
             limits.append("Funding raw fraction retained; endpoint period unverified, normalization disabled")
         if venue == "aster":
@@ -1323,8 +1383,8 @@ def coverage():
                 venue=venue,
                 category="perpetual-dex",
                 products=["perpetual"],
-                method="public REST",
-                capabilities=["market-discovery", "price", "orderbook", "funding"],
+                method="native public WebSocket + REST" if venue in {"hyperliquid", "dydx"} else "public REST",
+                capabilities=["market-discovery", "price", "orderbook", "funding", "full-catalog-rotation"],
                 requirements=["Public API network access"]
                 + (["Compatible CCXT version"] if venue in ("paradex", "aster") else []),
                 limitations=limits,
@@ -1428,7 +1488,9 @@ def coverage():
                 category="spot-dex",
                 products=["pool"],
                 chains=sorted({d["chain"] for d in deployments_for_venue}),
-                method="DEX Screener aggregated discovery/indicative pool prices",
+                method=("DEX Screener indicative discovery + optional addressed native RPC"
+                        if venue in {"uniswap", "pancakeswap", "aerodrome"} else
+                        "DEX Screener aggregated discovery/indicative pool prices"),
                 capabilities=[
                     "bounded-pool-discovery",
                     "indicative-price",
@@ -1442,8 +1504,9 @@ def coverage():
                 ],
                 limitations=[
                     blocked,
-                    "Search-limited discovery; strict version labels may omit valid pools",
-                    "No executable quotes, block time/number, verified pool membership or fee tiers",
+                    "search_limited: configurable protocol/chain queries and known pool addresses; not a complete pool index",
+                    "Strict version labels may omit valid pools",
+                    "Aggregated observations lack native block/membership evidence; addressed RPC reader separately supports Uniswap V3, Pancake V2 and Aerodrome v1; no executable route provider",
                     "Deployment source documents verified; deployed bytecode not checked",
                 ],
                 status="aggregated-partial-unverified-live",

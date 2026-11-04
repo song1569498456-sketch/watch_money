@@ -240,9 +240,20 @@ async def test_failed_multi_service_catalog_preserves_previous_discovery():
         raise TimeoutError("catalog unavailable")
 
     clients["krakenfutures"].load_markets = fail_catalog
-    with pytest.raises(TimeoutError):
-        await adapter.discover()
-    assert adapter._markets == previous
+    items = await adapter.discover()
+    assert adapter._markets.keys() == previous.keys()
+    for identity, (client_id, payload) in previous.items():
+        current_client, current_payload = adapter._markets[identity]
+        assert current_client == client_id
+        assert {key: value for key, value in current_payload.items() if key != "_catalog_observed_at"} == {
+            key: value for key, value in payload.items() if key != "_catalog_observed_at"}
+        if client_id == "krakenfutures":
+            assert current_payload["_catalog_observed_at"] == payload["_catalog_observed_at"]
+    assert adapter.discovery_complete is False
+    assert adapter.discovery_errors == {"krakenfutures": "TimeoutError"}
+    assert len(items) == 2
+    assert next(item for item in items if item.kind == "spot").active is True
+    assert next(item for item in items if item.kind == "perpetual").active is False
 
 
 def test_all_twelve_venues_have_honest_coverage_and_lazy_constructors():

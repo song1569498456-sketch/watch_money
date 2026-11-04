@@ -595,6 +595,7 @@ async def test_source_stream_reconnects_resubscribes_and_cancels_pending_receive
             self.closed += 1
     adapter, stream = Adapter(), Stream()
     collector = Collector(store, {"alpha": adapter})
+    collector.discovered.add("alpha")
     delays = []
     async def pause(seconds):
         delays.append(seconds)

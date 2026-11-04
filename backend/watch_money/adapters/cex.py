@@ -10,11 +10,14 @@ import math
 import os
 import re
 import ssl
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
+from watch_money.adapters.volume_units import volume_fields
 from watch_money.models import CoverageEntry, Instrument, MarketSnapshot, OrderBook, now_ms
 
 
@@ -144,13 +147,32 @@ def _client_factory(client_id: str) -> Any:
 
 
 class CexAdapter:
+    light_max_instruments = 100
+    light_batch_size = 50
+
     def __init__(self, venue: str, *, client_factory: Callable[[str], Any] | None = None):
         self.venue = venue
         self.spec = SPECS[venue]
         self._factory = client_factory or _client_factory
         self._clients: dict[str, Any] = {}
         self._markets: dict[str, tuple[str, dict]] = {}
+        self._instruments: dict[str, Instrument] = {}
+        self._catalog_observed_at: dict[str, int] = {}
         self._semaphore = asyncio.Semaphore(4)
+        self.light_unsupported: list[str] = []
+        self.light_errors: dict[str, str] = {}
+        self.funding_errors: dict[str, str] = {}
+        self.funding_unsupported: list[str] = []
+        self.fetch_errors: dict[str, str] = {}
+        self.discovery_complete = False
+        self.discovery_errors: dict[str, str] = {}
+        self.on_payload: Callable[[str, str, Any], Awaitable[None]] | None = None
+
+    async def _record_payload(self, method: str, payload: Any) -> None:
+        # Diagnostic recording is optional and must not interrupt collection.
+        if self.on_payload is not None:
+            with suppress(Exception):
+                await self.on_payload(self.venue, f"rest:ccxt:{method}", payload)
 
     def _client(self, client_id: str) -> Any:
         if client_id not in self._clients:
@@ -161,10 +183,30 @@ class CexAdapter:
         # Sequential clients avoid simultaneous exchange-wide catalog bursts.
         discovered: dict[str, tuple[str, dict]] = {}
         instruments = []
+        self.discovery_errors = {}
+        self.discovery_complete = False
+        successful_clients = 0
+        first_error: Exception | None = None
         for client_id in self.spec.clients:
-            client = self._client(client_id)
-            markets = await client.load_markets(reload=True)
+            try:
+                client = self._client(client_id)
+                markets = await client.load_markets(reload=True)
+            except Exception as exc:
+                self.discovery_errors[client_id] = type(exc).__name__
+                first_error = first_error or exc
+                # A failed service is neither a successful empty catalog nor
+                # evidence of delisting. Keep its last known identities visible,
+                # but do not claim their current availability is established.
+                for identity, (previous_client, market) in self._markets.items():
+                    if previous_client == client_id:
+                        discovered[identity] = (previous_client, market)
+                        if identity in self._instruments:
+                            instruments.append(self._instruments[identity].model_copy(update={"active": False}))
+                continue
+            successful_clients += 1
+            self._catalog_observed_at[client_id] = now_ms()
             for market in markets.values():
+                market = {**market, "_catalog_observed_at": self._catalog_observed_at[client_id]}
                 kind = "spot" if market.get("spot") else "perpetual" if market.get("swap") else None
                 if kind is None or kind not in self.spec.products or market.get("active") is False:
                     continue
@@ -182,6 +224,12 @@ class CexAdapter:
                 identity = f"cex:{self.venue}:{client_id}:{kind}:{quote(str(market['id']), safe='')}"
                 precision = market.get("precision") or {}
                 limits = (market.get("limits") or {}).get("cost") or {}
+                # Deribit CCXT amounts (precision/minimum included) are native
+                # base for linear and quote for inverse, like its order books.
+                amount_divisor = size if client_id == "deribit" and kind == "perpetual" else 1
+                amount_step = _number(precision.get("amount"))
+                minimum_amount = _number(((market.get("limits") or {}).get("amount") or {}).get("min"),
+                                         nonnegative=True)
                 instrument = Instrument(
                     id=identity, venue=self.venue, native_symbol=market["symbol"], asset_id=asset_id,
                     base=base, quote=market["quote"], settle=market.get("settle"), kind=kind,
@@ -190,13 +238,18 @@ class CexAdapter:
                     # emit ticks only when its mode explicitly says TICK_SIZE (4).
                     price_precision=_number(precision.get("price")) if getattr(client, "precisionMode", 4) == 4
                     else None,
-                    amount_precision=_number(precision.get("amount")) if getattr(client, "precisionMode", 4) == 4
+                    amount_precision=amount_step / amount_divisor if amount_step is not None and getattr(client, "precisionMode", 4) == 4
                     else None,
                     min_notional=_number(limits.get("min"), nonnegative=True),
+                    min_amount=minimum_amount / amount_divisor if minimum_amount is not None else None,
                 )
                 discovered[identity] = (client_id, market)
                 instruments.append(instrument)
+        if not successful_clients and not discovered and first_error is not None:
+            raise first_error
         self._markets = discovered
+        self._instruments = {item.id: item for item in instruments}
+        self.discovery_complete = not self.discovery_errors
         return instruments
 
     def _resolve(self, instrument: Instrument) -> tuple[str, dict]:
@@ -205,7 +258,10 @@ class CexAdapter:
         return self._markets[instrument.id]
 
     async def fetch(self, instruments: list[Instrument]) -> list[MarketSnapshot]:
+        self.fetch_errors = {}
         interval_metadata: dict[tuple[str, str], dict] = {}
+        for item in instruments:
+            self._resolve(item)
         # Binance premiumIndex omits interval metadata. Query its separate public
         # adjustment list once per client/poll, without inventing defaults for
         # symbols omitted by that list.
@@ -216,9 +272,16 @@ class CexAdapter:
                 continue
             client = self._client(client_id)
             if client.has.get("fetchFundingIntervals"):
-                values = await client.fetch_funding_intervals([item.native_symbol for item in selected])
+                try:
+                    async with self._semaphore:
+                        values = await client.fetch_funding_intervals([item.native_symbol for item in selected])
+                except Exception as exc:
+                    self.fetch_errors.update((item.id, f"funding_interval:{type(exc).__name__}") for item in selected)
+                    continue
+                observed_at = now_ms()
+                await self._record_payload("fetch_funding_intervals", values)
                 for symbol, payload in values.items():
-                    interval_metadata[(client_id, symbol)] = payload
+                    interval_metadata[(client_id, symbol)] = {**payload, "_observed_at": observed_at}
         # A bounded per-symbol path avoids CCXT bulk endpoints mixing product
         # families and preserves distinct bid/ask across native market identities.
         async def fetch_one(instrument: Instrument) -> MarketSnapshot:
@@ -226,7 +289,329 @@ class CexAdapter:
                 client_id, _market = self._resolve(instrument)
                 return await self._fetch_one(instrument, interval_metadata.get((client_id,
                                                                                instrument.native_symbol)))
-        return list(await asyncio.gather(*(fetch_one(instrument) for instrument in instruments)))
+        tasks = [asyncio.create_task(fetch_one(instrument)) for instrument in instruments]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        snapshots = []
+        first_error: Exception | None = None
+        for item, result in zip(instruments, results):
+            if isinstance(result, BaseException):
+                if not isinstance(result, Exception):
+                    raise result
+                first_error = first_error or result
+                self.fetch_errors[item.id] = type(result).__name__
+            else:
+                snapshots.append(result)
+        if not snapshots and first_error is not None:
+            raise first_error
+        return snapshots
+
+    async def fetch_light(self, instruments: list[Instrument]) -> list[MarketSnapshot]:
+        """Collect ticker-only sparse patches for a collector-selected slice.
+
+        The caller owns full-catalog rotation, cadence and retry/backoff. Never
+        use the detailed fetch path here: it adds per-market funding/OI calls.
+        Limits apply after identity deduplication, before any network request.
+        """
+        self.light_unsupported = []
+        self.light_errors = {}
+        selected = {item.id: item for item in instruments}
+        if len(selected) > self.light_max_instruments:
+            raise ValueError(f"fetch_light accepts at most {self.light_max_instruments} unique instruments")
+        groups: dict[tuple, list[Instrument]] = defaultdict(list)
+        for item in selected.values():
+            client_id, _market = self._resolve(item)
+            # Deribit's summary endpoint additionally requires one base currency.
+            groups[(client_id, item.kind, item.settle, item.linear,
+                    item.base if client_id == "deribit" else None)].append(item)
+        patches: dict[str, MarketSnapshot] = {}
+        first_error: Exception | None = None
+        successful_requests = 0
+
+        def record_error(batch: list[Instrument], exc: Exception) -> None:
+            nonlocal first_error
+            first_error = first_error or exc
+            self.light_errors.update((item.id, type(exc).__name__) for item in batch)
+
+        for group, items in groups.items():
+            client_id = group[0]
+            client = self._client(client_id)
+            params = _light_params(client_id, items[0])
+            # CCXT's "emulated" capability can hide per-market request fanout.
+            # Keep those calls on our explicitly bounded single-ticker path.
+            multiple = client.has.get("fetchTickers") is True
+            single = client.has.get("fetchTicker") is True
+            for offset in range(0, len(items), self.light_batch_size):
+                batch = items[offset:offset + self.light_batch_size]
+                if multiple:
+                    try:
+                        async with self._semaphore:
+                            payloads = await client.fetch_tickers([item.native_symbol for item in batch], params)
+                        await self._record_payload("fetch_tickers", payloads)
+                        if not isinstance(payloads, dict):
+                            raise ValueError("Public fetch_tickers returned a non-mapping payload")
+                    except Exception as exc:
+                        if type(exc).__name__ != "NotSupported":
+                            record_error(batch, exc)
+                            continue
+                        multiple = False
+                    else:
+                        successful_requests += 1
+                        for item in batch:
+                            ticker = payloads.get(item.native_symbol)
+                            if not isinstance(ticker, dict):
+                                continue
+                            # A mismatched explicit symbol must never refresh a
+                            # different market; extra response entries are ignored.
+                            if ticker.get("symbol") not in (None, item.native_symbol):
+                                continue
+                            patch = _light_ticker_patch(item, client_id, ticker, "fetch_tickers",
+                                                        self._resolve(item)[1])
+                            if patch is not None:
+                                patches[item.id] = patch
+                        continue
+                if not single:
+                    self.light_unsupported.append(
+                        f"{client_id}:{group[1]}:{group[2]}:native public ticker unavailable")
+                    break
+
+                async def fetch_single(item: Instrument) -> MarketSnapshot | None:
+                    async with self._semaphore:
+                        try:
+                            ticker = await client.fetch_ticker(item.native_symbol)
+                        except Exception as exc:
+                            if type(exc).__name__ != "NotSupported":
+                                raise
+                            self.light_unsupported.append(
+                                f"{client_id}:{item.kind}:{item.native_symbol}:public ticker unavailable")
+                            return None
+                    await self._record_payload("fetch_ticker", ticker)
+                    if not isinstance(ticker, dict):
+                        raise ValueError("Public fetch_ticker returned a non-mapping payload")
+                    if ticker.get("symbol") not in (None, item.native_symbol):
+                        return None
+                    return _light_ticker_patch(item, client_id, ticker, "fetch_ticker", self._resolve(item)[1])
+
+                tasks = [asyncio.create_task(fetch_single(item)) for item in batch]
+                try:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                except BaseException:
+                    # Do not leave queued requests running after the caller
+                    # enters backoff or cancels this collection cycle.
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
+                for item, result in zip(batch, results):
+                    if isinstance(result, BaseException):
+                        if not isinstance(result, Exception):
+                            raise result
+                        record_error([item], result)
+                    else:
+                        successful_requests += 1
+                        if result is not None:
+                            patches[result.instrument_id] = result
+        if first_error is not None and not successful_requests:
+            raise first_error
+        return [patches[item_id] for item_id in selected if item_id in patches]
+
+    async def fetch_funding_light(self, instruments: list[Instrument]) -> list[MarketSnapshot]:
+        """Funding-only catalog slice; collector owns its independent slow rotation."""
+        self.funding_errors = {}
+        self.funding_unsupported = []
+        selected = {item.id: item for item in instruments}
+        if len(selected) > self.light_max_instruments:
+            raise ValueError(f"fetch_funding_light accepts at most {self.light_max_instruments} unique instruments")
+        groups: dict[tuple, list[Instrument]] = defaultdict(list)
+        for item in selected.values():
+            client_id, _market = self._resolve(item)
+            if item.kind == "perpetual":
+                groups[(client_id, item.settle, item.linear)].append(item)
+        patches: dict[str, MarketSnapshot] = {}
+        first_error: Exception | None = None
+        successful_requests = 0
+
+        def record_error(batch: list[Instrument], exc: Exception) -> None:
+            nonlocal first_error
+            first_error = first_error or exc
+            self.funding_errors.update((item.id, type(exc).__name__) for item in batch)
+
+        for group, items in groups.items():
+            client_id = group[0]
+            client = self._client(client_id)
+            interval_metadata: dict[str, dict] = {}
+            if client_id.startswith("binance") and client.has.get("fetchFundingIntervals") is True:
+                try:
+                    async with self._semaphore:
+                        values = await client.fetch_funding_intervals([item.native_symbol for item in items])
+                    observed = now_ms()
+                    await self._record_payload("fetch_funding_intervals", values)
+                    if not isinstance(values, dict):
+                        raise ValueError("Public funding interval payload must be a mapping")
+                    interval_metadata = {symbol: {**payload, "_observed_at": observed}
+                                         for symbol, payload in values.items() if isinstance(payload, dict)}
+                except Exception as exc:
+                    # Keep rates from their independent endpoint; interval stays
+                    # absent rather than inventing a default after metadata failure.
+                    self.funding_errors.update((item.id, f"funding_interval:{type(exc).__name__}") for item in items)
+            multiple = client.has.get("fetchFundingRates") is True
+            # Emulated single funding usually calls the batch method again; do
+            # not introduce hidden fanout when the native batch is unavailable.
+            single = client.has.get("fetchFundingRate") is True
+            params = _funding_params(client_id, items[0])
+            for offset in range(0, len(items), self.light_batch_size):
+                batch = items[offset:offset + self.light_batch_size]
+                if multiple:
+                    try:
+                        async with self._semaphore:
+                            payloads = await client.fetch_funding_rates([item.native_symbol for item in batch], params)
+                        observed = now_ms()
+                        await self._record_payload("fetch_funding_rates", payloads)
+                        if not isinstance(payloads, dict):
+                            raise ValueError("Public funding rates payload must be a mapping")
+                    except Exception as exc:
+                        if type(exc).__name__ != "NotSupported":
+                            record_error(batch, exc)
+                            continue
+                        multiple = False
+                    else:
+                        successful_requests += 1
+                        for item in batch:
+                            payload = payloads.get(item.native_symbol)
+                            if not isinstance(payload, dict) or payload.get("symbol") not in (None, item.native_symbol):
+                                self.funding_errors[item.id] = "MissingFundingRate"
+                                continue
+                            patches[item.id] = self._funding_patch(
+                                item, payload, "fetch_funding_rates", observed,
+                                interval_metadata.get(item.native_symbol))
+                        continue
+                if not single:
+                    self.funding_unsupported.append(
+                        f"{client_id}:{group[1]}:native public funding unavailable")
+                    break
+
+                async def fetch_single(item: Instrument) -> MarketSnapshot | None:
+                    async with self._semaphore:
+                        try:
+                            payload = await client.fetch_funding_rate(item.native_symbol)
+                        except Exception as exc:
+                            if type(exc).__name__ not in {"NotSupported", "BadSymbol"}:
+                                raise
+                            self.funding_unsupported.append(
+                                f"{client_id}:{item.native_symbol}:public funding {type(exc).__name__}")
+                            return None
+                        observed = now_ms()
+                    await self._record_payload("fetch_funding_rate", payload)
+                    if not isinstance(payload, dict):
+                        raise ValueError("Public funding rate payload must be a mapping")
+                    if payload.get("symbol") not in (None, item.native_symbol):
+                        return None
+                    return self._funding_patch(item, payload, "fetch_funding_rate", observed,
+                                               interval_metadata.get(item.native_symbol))
+
+                tasks = [asyncio.create_task(fetch_single(item)) for item in batch]
+                try:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                except BaseException:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
+                for item, result in zip(batch, results):
+                    if isinstance(result, BaseException):
+                        if not isinstance(result, Exception):
+                            raise result
+                        record_error([item], result)
+                    else:
+                        successful_requests += 1
+                        if result is not None:
+                            patches[item.id] = result
+        if first_error is not None and not successful_requests:
+            raise first_error
+        return [patches[item_id] for item_id in selected if item_id in patches]
+
+    def _funding_patch(self, instrument: Instrument, payload: dict, method: str, received: int,
+                       interval_metadata: dict | None = None) -> MarketSnapshot:
+        client_id, market = self._resolve(instrument)
+        if interval_metadata:
+            market = {**market, "_funding_interval_metadata": interval_metadata}
+        source = f"ccxt:{client_id}:{method}:{instrument.native_symbol}"
+        event_time = _timestamp(payload.get("timestamp"))
+        fields: dict[str, Any] = {}
+        sources: dict[str, str] = {}
+        times: dict[str, int | None] = {}
+        receipts: dict[str, int] = {}
+        issues = []
+        predicted = payload.get("fundingRate") is None and payload.get("nextFundingRate") is not None
+        rate_key = "nextFundingRate" if predicted else "fundingRate"
+        rate = _number(payload.get(rate_key))
+        if rate is not None:
+            fields["funding_rate"] = rate
+            fields["funding_kind"] = "predicted" if predicted else "current"
+            raw = payload.get("info") or {}
+            if client_id == "kucoinfutures" and isinstance(raw, dict) and raw.get("nextFundingRate") is not None:
+                fields["funding_kind"] = "predicted"
+            if client_id == "deribit":
+                fields["funding_kind"] = "settled"
+                issues.append("Deribit funding: realized trailing window; continuous accrual, not a discrete upcoming 8h payment")
+            sources["funding_rate"] = f"{source}.{rate_key}"
+            times["funding_rate"] = event_time
+            receipts["funding_rate"] = received
+            hours, interval_source = funding_interval(client_id, market, payload)
+            if hours is not None:
+                fields["funding_interval_hours"] = hours
+                interval_time = event_time
+                interval_observed = received
+                if interval_source.startswith("market."):
+                    interval_source = f"ccxt:{client_id}:load_markets:{instrument.native_symbol}:{interval_source}"
+                    interval_time = None
+                    interval_observed = market.get("_catalog_observed_at")
+                    interval_source += ":catalog_metadata_observed_at"
+                elif interval_source.startswith("fetch_funding_intervals"):
+                    interval_source = f"ccxt:{client_id}:{interval_source}:{instrument.native_symbol}"
+                    interval_time = _timestamp((interval_metadata or {}).get("timestamp"))
+                    interval_observed = (interval_metadata or {}).get("_observed_at")
+                    if interval_time is None:
+                        interval_source += ":public_metadata_observed_at"
+                else:
+                    interval_source = f"{source}:{interval_source}"
+                    if interval_time is None:
+                        interval_source += ":public_metadata_observed_at"
+                sources["funding_interval_hours"] = interval_source
+                times["funding_interval_hours"] = interval_time
+                if interval_observed is not None:
+                    receipts["funding_interval_hours"] = interval_observed
+                if interval_time is None:
+                    issues.append("Funding interval uses metadata observation time; it is not exchange event time")
+            else:
+                issues.append("funding_interval_hours: not provided; 8h normalization unavailable")
+            next_key = "nextFundingTimestamp" if predicted else "fundingTimestamp"
+            next_at = _timestamp(payload.get(next_key))
+            if next_at is not None and next_at > (event_time or received) and client_id != "deribit":
+                fields["next_funding_at"] = next_at
+                sources["next_funding_at"] = f"{source}.{next_key}"
+                times["next_funding_at"] = event_time
+                receipts["next_funding_at"] = received
+        else:
+            issues.append("funding_rate: not provided or nonfinite")
+        for field, key in (("mark", "markPrice"), ("index", "indexPrice")):
+            value = _number(payload.get(key), positive=True)
+            if value is not None:
+                fields[field] = value
+                sources[field] = f"{source}.{key}"
+                times[field] = event_time
+                receipts[field] = received
+        if event_time is None:
+            issues.append("Funding source event time unavailable; receipt time is not source time")
+        return MarketSnapshot(instrument_id=instrument.id, venue=self.venue, source=source,
+                              source_at=event_time, received_at=received, field_sources=sources,
+                              field_timestamps=times, field_received_at=receipts, issues=issues,
+                              valid=rate is not None, is_demo=False, **fields)
 
     async def _fetch_one(self, instrument: Instrument, interval_metadata: dict | None = None) -> MarketSnapshot:
         client_id, market = self._resolve(instrument)
@@ -235,12 +620,14 @@ class CexAdapter:
         client = self._client(client_id)
         symbol = instrument.native_symbol
         ticker = await client.fetch_ticker(symbol)
+        await self._record_payload("fetch_ticker", ticker)
         received = now_ms()
         ticker_time = _timestamp(ticker.get("timestamp"))
         source = f"ccxt:{client_id}:fetch_ticker:{symbol}"
         fields: dict[str, Any] = {}
         sources: dict[str, str] = {}
         times: dict[str, int | None] = {}
+        receipts: dict[str, int] = {}
         issues = []
 
         def put(field: str, value: Any, endpoint: str, timestamp: int | None,
@@ -255,16 +642,12 @@ class CexAdapter:
             put(field, ticker.get(field), f"{source}.{field}", ticker_time, positive=True)
         for field, key in (("mark", "markPrice"), ("index", "indexPrice")):
             put(field, ticker.get(key), f"{source}.{key}", ticker_time, positive=True)
-        # CCXT unified ticker volumes use base and quote currencies. No contract
-        # volume field is silently interpreted as base currency.
-        if _number(ticker.get("baseVolume"), nonnegative=True) is not None:
-            put("volume", ticker["baseVolume"], f"{source}.baseVolume:rolling_24h", ticker_time,
-                nonnegative=True)
-            fields["volume_unit"] = instrument.base
-        elif _number(ticker.get("quoteVolume"), nonnegative=True) is not None:
-            put("volume", ticker["quoteVolume"], f"{source}.quoteVolume:rolling_24h", ticker_time,
-                nonnegative=True)
-            fields["volume_unit"] = instrument.quote
+        # Unified derivative baseVolume can contain contracts. Use the same
+        # audited native-unit helper as lightweight and streaming collection.
+        volume, volume_unit, volume_suffix = volume_fields(client_id, instrument, ticker, market)
+        if volume is not None:
+            put("volume", volume, f"{source}.{volume_suffix}", ticker_time, nonnegative=True)
+            fields["volume_unit"] = volume_unit
 
         if instrument.kind == "perpetual":
             for capability, method in (("fetchFundingRate", "fetch_funding_rate"),
@@ -286,48 +669,14 @@ class CexAdapter:
                 endpoint = f"ccxt:{client_id}:{method}:{symbol}"
                 event_time = _timestamp(payload.get("timestamp"))
                 if capability == "fetchFundingRate":
-                    rate = payload.get("fundingRate")
-                    # Some providers publish only an explicitly predicted field.
-                    predicted = rate is None and payload.get("nextFundingRate") is not None
-                    if predicted:
-                        rate = payload["nextFundingRate"]
-                    put("funding_rate", rate, f"{endpoint}.{'nextFundingRate' if predicted else 'fundingRate'}",
-                        event_time)
-                    if "funding_rate" in fields:
-                        fields["funding_kind"] = "predicted" if predicted else "current"
-                        raw_funding = payload.get("info") or {}
-                        if client_id == "kucoinfutures" and isinstance(raw_funding, dict) and \
-                                raw_funding.get("nextFundingRate") is not None:
-                            fields["funding_kind"] = "predicted"
-                        # Deribit's public rate is a realized trailing 8h rate;
-                        # never portray it as a future payment prediction.
-                        if client_id == "deribit":
-                            fields["funding_kind"] = "settled"
-                            issues.append("Deribit funding: realized trailing window; continuous accrual, "
-                                          "not a discrete upcoming 8h payment")
-                        hours, interval_source = funding_interval(client_id, market, payload)
-                        if hours is not None:
-                            fields["funding_interval_hours"] = hours
-                            if interval_source.startswith("market."):
-                                sources["funding_interval_hours"] = (
-                                    f"ccxt:{client_id}:load_markets:{symbol}:{interval_source}")
-                                times["funding_interval_hours"] = None
-                            elif interval_source.startswith("fetch_funding_intervals"):
-                                sources["funding_interval_hours"] = f"ccxt:{client_id}:{interval_source}:{symbol}"
-                                times["funding_interval_hours"] = _timestamp(interval_metadata.get("timestamp"))
-                            else:
-                                sources["funding_interval_hours"] = f"{endpoint}:{interval_source}"
-                                times["funding_interval_hours"] = event_time
-                        else:
-                            issues.append("funding_interval_hours: not provided; 8h normalization unavailable")
-                        next_key = "nextFundingTimestamp" if predicted else "fundingTimestamp"
-                        next_at = _timestamp(payload.get(next_key))
-                        if next_at is not None and next_at > (event_time or received) and client_id != "deribit":
-                            fields["next_funding_at"] = next_at
-                            sources["next_funding_at"] = f"{endpoint}.{next_key}"
-                            times["next_funding_at"] = event_time
-                    for field, key in (("mark", "markPrice"), ("index", "indexPrice")):
-                        put(field, payload.get(key), f"{endpoint}.{key}", event_time, positive=True)
+                    patch = self._funding_patch(instrument, payload, method, received, interval_metadata)
+                    for field in ("funding_rate", "funding_kind", "funding_interval_hours", "next_funding_at", "mark", "index"):
+                        if field in patch.model_fields_set:
+                            fields[field] = getattr(patch, field)
+                    sources.update(patch.field_sources)
+                    times.update(patch.field_timestamps)
+                    receipts.update(patch.field_received_at)
+                    issues.extend(patch.issues)
                 else:
                     oi, unit, key = _open_interest(client_id, market, payload)
                     if oi is not None:
@@ -349,7 +698,7 @@ class CexAdapter:
         valid = any(fields.get(key) for key in ("bid", "ask", "last", "mark", "index"))
         return MarketSnapshot(instrument_id=instrument.id, venue=self.venue, source=source,
                               source_at=ticker_time, received_at=received, field_sources=sources,
-                              field_timestamps=times, issues=issues, valid=valid and
+                              field_timestamps=times, field_received_at=receipts, issues=issues, valid=valid and
                               "crossed orderbook: bid exceeds ask" not in issues, **fields)
 
     async def orderbook(self, instrument: Instrument) -> OrderBook:
@@ -384,6 +733,74 @@ class CexAdapter:
                 raise result
 
 
+def _funding_params(client_id: str, instrument: Instrument) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    if client_id.startswith("binance") or client_id in {"bybit", "htx"}:
+        params["subType"] = "linear" if instrument.linear else "inverse"
+    if client_id == "gate" and instrument.settle:
+        params["settle"] = instrument.settle.lower()
+    # These unified params are consumed by the CCXT funding method; do not send
+    # generic ticker `type` params to endpoints such as OKX that forward them.
+    if client_id == "bitget":
+        params["productType"] = ({"USDT": "USDT-FUTURES", "USDC": "USDC-FUTURES"}
+                                 .get(instrument.settle, "COIN-FUTURES"))
+    return params
+
+
+def _light_params(client_id: str, instrument: Instrument) -> dict[str, Any]:
+    """Select endpoint families without mutating shared client default options."""
+    params: dict[str, Any] = {}
+    if client_id in {"okx", "bybit", "bitget", "gate", "mexc", "htx"}:
+        params["type"] = "spot" if instrument.kind == "spot" else "swap"
+        if instrument.kind == "perpetual":
+            if client_id in {"bybit", "bitget", "htx"}:
+                params["subType"] = "linear" if instrument.linear else "inverse"
+            if client_id == "gate" and instrument.settle:
+                params["settle"] = instrument.settle.lower()
+    if client_id == "coinbase":
+        params["usePrivate"] = False
+    return params
+
+
+def _light_ticker_patch(instrument: Instrument, client_id: str, ticker: dict,
+                        method: str, market: dict | None = None) -> MarketSnapshot | None:
+    """REST equivalent of streaming.ticker_patch, with REST provenance.
+
+    Omitted fields must stay unset so merges preserve detailed funding/OI and
+    their ages. A ticker's event time does not establish each constituent's age.
+    """
+    source = f"ccxt:{client_id}:{method}:{instrument.native_symbol}"
+    event_time = _timestamp(ticker.get("timestamp"))
+    values: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    timestamps: dict[str, int | None] = {}
+    for field, key in (("bid", "bid"), ("ask", "ask"), ("last", "last"),
+                       ("mark", "markPrice"), ("index", "indexPrice")):
+        value = _number(ticker.get(key), positive=True)
+        if value is not None:
+            values[field] = value
+            sources[field] = f"{source}.{key}:unified_ticker_event_time"
+            timestamps[field] = event_time
+    if not values:
+        return None
+    volume, volume_unit, volume_suffix = volume_fields(client_id, instrument, ticker, market)
+    if volume is not None:
+        values.update(volume=volume, volume_unit=volume_unit)
+        sources["volume"] = f"{source}.{volume_suffix}:unified_ticker_event_time"
+        timestamps["volume"] = event_time
+    crossed = values.get("bid") is not None and values.get("ask") is not None and values["bid"] > values["ask"]
+    issues = ["REST timestamps describe unified ticker events; constituent field timing may differ"]
+    if event_time is None:
+        issues.append("REST ticker event time unavailable; receipt time is not source time")
+    if crossed:
+        issues.append("crossed orderbook: bid exceeds ask")
+    return MarketSnapshot(
+        instrument_id=instrument.id, venue=instrument.venue, source=source,
+        source_at=event_time, received_at=now_ms(), field_sources=sources,
+        field_timestamps=timestamps, valid=not crossed, issues=issues, is_demo=False, **values,
+    )
+
+
 def _open_interest(client_id: str, market: dict, payload: dict) -> tuple[float | None, str | None, str]:
     """CCXT amount is *not* a universal unit: native APIs differ."""
     amount = _number(payload.get("openInterestAmount"), nonnegative=True)
@@ -411,7 +828,7 @@ def build_cex_adapters() -> dict[str, CexAdapter]:
 def coverage() -> list[CoverageEntry]:
     return [CoverageEntry(
         venue=venue, category="cex", products=list(spec.products), method="CCXT public REST + supported source WebSocket",
-        capabilities=["market_catalog", "ticker", "orderbook_on_demand"] +
+        capabilities=["market_catalog", "full_catalog_rotation", "ticker", "orderbook_on_demand", "per_market_failure_isolation"] +
                      (["funding_when_provided", "open_interest_when_unit_verified"]
                       if "perpetual" in spec.products else []),
         requirements=["Public API reachable from runtime region; no account/API key required"],

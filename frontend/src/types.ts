@@ -3,6 +3,7 @@ export interface Instrument {
   venue: string;
   native_symbol: string;
   asset_id: string;
+  native_asset_id?: string | null;
   base: string;
   quote: string;
   settle?: string;
@@ -50,6 +51,7 @@ export interface Snapshot {
   stale?: boolean;
 }
 export interface MarketData {
+  mode?: string;
   instruments: Instrument[];
   snapshots: Snapshot[];
 }
@@ -58,6 +60,20 @@ export interface VenueStatus {
   state: string;
   transport: string;
   stream_state: string;
+  funding_state: string;
+  funding_subscriptions: number;
+  funding_last_received_at?: number;
+  funding_retries: number;
+  funding_errors: Record<string, string>;
+  light_state: string;
+  light_subscriptions: number;
+  light_last_received_at?: number;
+  light_retries: number;
+  discovery_complete: boolean;
+  discovery_state?: string | null;
+  discovery_errors: Record<string, string>;
+  light_errors: Record<string, string>;
+  detail_errors: Record<string, string>;
   stream_reconnects: number;
   last_received_at?: number;
   last_attempt_at?: number;
@@ -90,11 +106,21 @@ export interface Settings {
   retention_days: number;
   collection_enabled: boolean;
   prefer_websocket: boolean;
+  broad_collection_enabled: boolean;
+  broad_poll_seconds: number;
+  funding_poll_seconds: number;
+  discovery_seconds: number;
+  broad_batch_size: number;
+  recording_enabled: boolean;
+  recording_venues: string[];
+  recording_max_mb: number;
+  recording_retention_days: number;
   history_enabled: boolean;
   computation_enabled: boolean;
   notifications_enabled: boolean;
   demo_mode: boolean;
   rpc_urls: Record<string, string>;
+  dex_search_queries: Record<string, string[]>;
 }
 export interface Book {
   instrument_id: string;
@@ -112,5 +138,61 @@ export interface Asset {
   chain?: string;
   address?: string;
   verified: boolean;
+}
+export interface IdentityCandidate {
+  id: string;
+  kind: string;
+  symbols: string[];
+  instrument_ids: string[];
+  venues: string[];
+  identities?: unknown;
+  asset_ids?: string[];
+  quotes?: string[];
+  identity_compatible: boolean;
+  comparison_ready: boolean;
+  blockers: string[];
+  requirements?: string[];
+  warnings: string[];
+  markets: Record<string, unknown>[];
+}
+export interface ScanCandidate {
+  asset_id: string;
+  asset_symbols: string[];
+  strategy: string;
+  buy_instrument_id: string;
+  sell_instrument_id: string;
+  buy_venue: string;
+  sell_venue: string;
+  buy_quote: string;
+  sell_quote: string;
+  buy_ask?: number | null;
+  sell_bid?: number | null;
+  spread_rate?: number | null;
+  spread_pct?: number | null;
+  spread_absolute?: number | null;
+  spread_quote?: string | null;
+  funding_8h_rate?: number | null;
+  funding_8h_pct?: number | null;
+  funding?: { long?: unknown; short?: unknown };
+  missing: string[];
+  net_profit: null;
+  executable: false;
+  [key: string]: unknown;
+}
+export interface ScannerResult {
+  as_of: number;
+  enabled?: boolean;
+  candidates: ScanCandidate[];
+  stats: {
+    catalog_markets: number;
+    identity_groups: number;
+    eligible_groups: number;
+    blocked_groups: number;
+    possible_candidates: number;
+    scanned: number;
+    returned: number;
+    truncated: boolean;
+    [key: string]: unknown;
+  };
 }
 export type Json = Record<string, any>;

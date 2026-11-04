@@ -27,6 +27,7 @@ class Instrument(Model):
     venue: str
     native_symbol: str
     asset_id: str
+    native_asset_id: str | None = None
     base: str
     quote: str
     settle: str | None = None
@@ -38,6 +39,8 @@ class Instrument(Model):
     active: bool = True
     price_precision: float | None = None
     amount_precision: float | None = None
+    # Exchange order amount: contracts for perpetuals, base units for spot.
+    min_amount: float | None = Field(default=None, ge=0)
     min_notional: float | None = None
     index_source: str | None = None
     mapping_verified: bool = False
@@ -119,9 +122,23 @@ class VenueStatus(Model):
     transport: str = 'REST'
     stream_state: str = 'idle'
     stream_reconnects: int = 0
+    funding_state: str = 'idle'
+    funding_subscriptions: int = 0
+    funding_last_received_at: int | None = None
+    funding_retries: int = 0
+    funding_errors: dict[str, str] = Field(default_factory=dict)
+    light_state: str = 'idle'
+    light_subscriptions: int = 0
+    light_last_received_at: int | None = None
+    light_retries: int = 0
+    detail_errors: dict[str, str] = Field(default_factory=dict)
+    discovery_state: str | None = None
+    discovery_complete: bool = False
+    discovery_errors: dict[str, str] = Field(default_factory=dict)
+    light_errors: dict[str, str] = Field(default_factory=dict)
 
 class Settings(Model):
-    enabled_venues: list[str] = Field(default_factory=lambda: ['binance', 'okx', 'bybit', 'bitget', 'hyperliquid', 'lighter'])
+    enabled_venues: list[str] = Field(default_factory=lambda: ['binance', 'okx', 'bybit', 'bitget', 'gate', 'mexc', 'kucoin', 'coinbase', 'kraken', 'htx', 'deribit', 'upbit', 'hyperliquid', 'lighter', 'dydx', 'paradex', 'aster', 'edgex', 'variational', 'gmx', 'jupiter-perps', 'drift', 'uniswap', 'pancakeswap', 'aerodrome', 'curve', 'raydium', 'orca'])
     watch_assets: list[str] = Field(default_factory=lambda: ['BTC', 'ETH', 'SOL'])
     poll_seconds: float = Field(default=15, ge=5, le=3600)
     refresh_ms: int = Field(default=1000, ge=500, le=60000)
@@ -133,7 +150,17 @@ class Settings(Model):
     notifications_enabled: bool = True
     demo_mode: bool = False
     prefer_websocket: bool = True
+    broad_collection_enabled: bool = True
+    broad_poll_seconds: float = Field(default=30, ge=10, le=3600)
+    funding_poll_seconds: float = Field(default=60, ge=10, le=3600)
+    discovery_seconds: float = Field(default=1800, ge=300, le=21600)
+    broad_batch_size: int = Field(default=100, ge=1, le=100)
+    recording_enabled: bool = False
+    recording_venues: list[str] = Field(default_factory=list)
+    recording_max_mb: int = Field(default=100, ge=1, le=10000)
+    recording_retention_days: int = Field(default=3, ge=1, le=30)
     rpc_urls: dict[str, str] = Field(default_factory=dict)
+    dex_search_queries: dict[str, list[str]] = Field(default_factory=dict)
 
 class CoverageEntry(Model):
     venue: str

@@ -19,6 +19,15 @@ def field_time(snapshot, field):
     return min(received, source) if source is not None else received
 
 
+def field_stale(snapshot: MarketSnapshot, field: str, stale_seconds: float) -> bool:
+    if (field == 'funding_interval_hours' and snapshot.field_timestamps.get(field) is None
+            and snapshot.field_sources.get(field, '').endswith(
+                (':catalog_metadata_observed_at', ':public_metadata_observed_at'))):
+        at = snapshot.field_received_at.get(field)
+        return at is None or not 0 <= now_ms() - at <= 6 * 3600_000
+    return not 0 <= now_ms() - field_time(snapshot, field) <= stale_seconds * 1000
+
+
 def enrich(snapshot: MarketSnapshot, stale_seconds: float) -> dict:
     result = snapshot.model_dump()
     primary = ['bid', 'ask'] if snapshot.bid and snapshot.ask else [next(
@@ -28,7 +37,7 @@ def enrich(snapshot: MarketSnapshot, stale_seconds: float) -> dict:
     result.update(age_seconds=round(age, 3), stale=age > stale_seconds,
                   field_ages_seconds={f: max(0, (now_ms() - field_time(snapshot, f)) / 1000)
                                       for f in VALUE_FIELDS if getattr(snapshot, f) is not None},
-                  field_stale={f: now_ms() - field_time(snapshot, f) > stale_seconds * 1000
+                  field_stale={f: field_stale(snapshot, f, stale_seconds)
                                for f in VALUE_FIELDS if getattr(snapshot, f) is not None},
                   mid=(snapshot.bid + snapshot.ask) / 2 if snapshot.bid and snapshot.ask else None,
                   funding_8h=(snapshot.funding_rate * 8 / snapshot.funding_interval_hours
@@ -64,26 +73,64 @@ def quality(snapshot: MarketSnapshot) -> MarketSnapshot:
                                        'field_received_at': received, 'field_timestamps': timestamps})
 
 
+def sanitize_legacy_volume(snapshot, instrument):
+    """Old CCXT derivative baseVolume labels did not prove a base-unit amount."""
+    source = snapshot.field_sources.get('volume', '')
+    if (instrument is not None and instrument.kind == 'perpetual' and snapshot.volume is not None
+            and source.startswith(('ccxt:', 'ccxt.pro:'))
+            and any(key in source for key in ('.baseVolume', '.quoteVolume')) and '.info.' not in source):
+        return snapshot.model_copy(update={'volume': None, 'volume_unit': None,
+                                          'issues': sorted(set(snapshot.issues + ['legacy_volume_unit_unverified']))})
+    return snapshot
+
+
 class Collector:
     def __init__(self, store, adapters, notifications=None):
         self.store = store
         self.adapters = adapters
         self.notifications = notifications
         self.instruments = store.instruments()
-        self.snapshots = store.latest()
+        self.snapshots = {key: sanitize_legacy_volume(value, self.instruments.get(key))
+                          for key, value in store.latest().items()}
         self.statuses = {name: VenueStatus(venue=name) for name in adapters}
         self.tasks = []
         self.stopping = asyncio.Event()
+        self.discovered = set()
+        from .recording import RawMarketRecorder
+        self.recorder = RawMarketRecorder(store.directory)
+        for adapter in self.adapters.values():
+            adapter.on_payload = self.record_payload
 
     async def start(self):
         self.tasks = [asyncio.create_task(self.run(name, adapter), name=f'collector:{name}')
                       for name, adapter in self.adapters.items()]
         self.tasks.append(asyncio.create_task(self.watch_health(), name='market-health'))
+        for name, adapter in self.adapters.items():
+            if hasattr(adapter, 'fetch_light'):
+                self.tasks.append(asyncio.create_task(self.run_light(name, adapter), name=f'light:{name}'))
+            if hasattr(adapter, 'fetch_funding_light'):
+                self.tasks.append(asyncio.create_task(self.run_light(name, adapter, funding=True), name=f'funding:{name}'))
         from .adapters.streaming import create_stream
         for name, adapter in self.adapters.items():
             streamer = create_stream(adapter)
             if streamer is not None:
+                streamer.on_payload = self.record_payload
                 self.tasks.append(asyncio.create_task(self.run_stream(name, streamer), name=f'stream:{name}'))
+
+    async def record_payload(self, venue, transport, payload):
+        settings = self.store.settings()
+        if not settings.recording_enabled or settings.demo_mode:
+            return
+        if settings.recording_venues and venue not in settings.recording_venues:
+            return
+        try:
+            await asyncio.to_thread(self.recorder.configure, enabled=True,
+                                    max_total_bytes=settings.recording_max_mb * 1024 * 1024,
+                                    retention_days=settings.recording_retention_days)
+            await asyncio.to_thread(self.recorder.record, venue, transport, payload)
+        except Exception:
+            # Diagnostic disk failures must not stop market collection.
+            pass
 
     def merge_patch(self, snapshot):
         snapshot = quality(snapshot)
@@ -123,6 +170,8 @@ class Collector:
         data.update(patch)
         issues = set(old.issues + snapshot.issues)
         issues = {issue for issue in issues if 'crossed' not in issue.lower()}
+        if patch.get('volume') is not None:
+            issues.discard('legacy_volume_unit_unverified')
         data.update(field_timestamps=timestamps, field_sources=sources, field_received_at=received,
                     issues=sorted(issues))
         return quality(MarketSnapshot.model_validate(data))
@@ -135,7 +184,7 @@ class Collector:
         def selection():
             settings = self.store.settings()
             if (not settings.collection_enabled or not settings.prefer_websocket or settings.demo_mode
-                    or name not in settings.enabled_venues or not getattr(self.adapters[name], '_markets', None)):
+                    or name not in settings.enabled_venues or name not in self.discovered):
                 return []
             return sorted((i for i in self.instruments.values() if i.venue == name and i.active
                            and i.base.upper() in {a.upper() for a in settings.watch_assets}), key=lambda i: i.id)
@@ -192,6 +241,67 @@ class Collector:
             if failures:
                 await self.pause(min(300, 5 * 2 ** min(failures - 1, 6)))
 
+    async def run_light(self, name, adapter, funding=False):
+        """Rotate over the active catalog independently of detailed watchlist polling."""
+        status = self.statuses[name]
+        prefix = 'funding' if funding else 'light'
+
+        def update(**values):
+            for key, value in values.items():
+                setattr(status, f'{prefix}_{key}', value)
+
+        cursor = 0
+        failures = 0
+        while not self.stopping.is_set():
+            settings = self.store.settings()
+            period = settings.funding_poll_seconds if funding else settings.broad_poll_seconds
+            if (not settings.collection_enabled or not settings.broad_collection_enabled or settings.demo_mode
+                    or name not in settings.enabled_venues or name not in self.discovered):
+                update(state='disabled')
+                await self.pause(1)
+                continue
+            catalog = sorted((i for i in self.instruments.values() if i.venue == name and i.active
+                              and (not funding or i.kind == 'perpetual')),
+                             key=lambda i: i.id)
+            update(subscriptions=len(catalog))
+            if not catalog:
+                update(state='no_markets')
+                await self.pause(period)
+                continue
+            cursor %= len(catalog)
+            selected = catalog[cursor:cursor + settings.broad_batch_size]
+            try:
+                update(state='polling')
+                fetched = await asyncio.wait_for((adapter.fetch_funding_light(selected) if funding else adapter.fetch_light(selected)), timeout=90)
+                ids = {i.id for i in selected}
+                if any(s.instrument_id not in ids or s.venue != name for s in fetched):
+                    raise ValueError('Light adapter returned unexpected market identity')
+                snapshots = [self.merge_patch(s) for s in fetched]
+                self.snapshots.update({s.instrument_id: s for s in snapshots})
+                await asyncio.to_thread(self.store.save_snapshots, snapshots, settings.history_enabled)
+                if snapshots:
+                    update(last_received_at=max(s.received_at for s in snapshots))
+                errors = getattr(adapter, f'{prefix}_errors', {})
+                update(errors=errors, state='partial' if errors else ('online' if snapshots else 'no_data'))
+                if not funding and not hasattr(adapter, 'fetch_funding_light'):
+                    status.funding_subscriptions = sum(i.kind == 'perpetual' for i in catalog)
+                    status.funding_state = 'via_light_rest' if status.funding_subscriptions else 'not_applicable'
+                    funding_rows = [s for s in fetched if s.funding_rate is not None]
+                    if funding_rows:
+                        status.funding_last_received_at = max(s.received_at for s in funding_rows)
+                cursor = (cursor + len(selected)) % len(catalog)
+                failures = 0
+                await self.pause(period)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failures += 1
+                update(retries=getattr(status, f'{prefix}_retries') + 1, state=f'{type(exc).__name__}; retry',
+                       errors=getattr(adapter, f'{prefix}_errors', {}))
+                # Advance past a failing batch so one broken market cannot starve the catalog.
+                cursor = (cursor + len(selected)) % len(catalog)
+                await self.pause(min(300, period * 2 ** min(failures - 1, 5)))
+
     async def stop(self):
         self.stopping.set()
         for task in self.tasks:
@@ -230,6 +340,7 @@ class Collector:
         failures = 0
         discovered_at = 0
         default_rpc = getattr(adapter, 'rpc_url', None)
+        default_queries = getattr(adapter, 'search_queries', None)
         while not self.stopping.is_set():
             settings = self.store.settings()
             if not settings.collection_enabled or name not in settings.enabled_venues or settings.demo_mode:
@@ -239,12 +350,17 @@ class Collector:
             status.last_attempt_at = now_ms()
             status.state = 'connecting' if not status.last_received_at else 'polling'
             try:
+                if default_queries is not None:
+                    queries = settings.dex_search_queries.get(name, default_queries)
+                    if adapter.search_queries != queries:
+                        adapter.search_queries = queries
+                        discovered_at = 0
                 if hasattr(adapter, 'rpc_url'):
                     rpc = settings.rpc_urls.get('solana') or default_rpc
                     if adapter.rpc_url != rpc:
                         adapter.rpc_url = rpc
                         discovered_at = 0
-                if not discovered_at or now_ms() - discovered_at > 6 * 3600_000:
+                if not discovered_at or now_ms() - discovered_at > settings.discovery_seconds * 1000:
                     instruments = await asyncio.wait_for(adapter.discover(), timeout=90)
                     previous = {i.id for i in self.instruments.values() if i.venue == name}
                     if any(i.venue != name for i in instruments):
@@ -267,6 +383,10 @@ class Collector:
                                                   'platforms': [name], 'source_at': now_ms(),
                                                   'message': f'New market {instrument.native_symbol} on {name}'})
                     discovered_at = now_ms()
+                    self.discovered.add(name)
+                    status.discovery_complete = getattr(adapter, 'discovery_complete', True)
+                    status.discovery_errors = getattr(adapter, 'discovery_errors', {})
+                    status.discovery_state = getattr(adapter, 'discovery_state', None)
                 selected = [i for i in self.instruments.values() if i.venue == name and i.active
                             and i.base.upper() in {s.upper() for s in settings.watch_assets}]
                 status.subscriptions = len(selected)
@@ -291,8 +411,9 @@ class Collector:
                 status.missing_fields = sorted({key for s in snapshots for key in
                                                ('bid', 'ask', 'source_at', 'volume') if getattr(s, key) is None})
                 status.last_received_at = max(s.received_at for s in snapshots)
-                status.state = 'online'
-                status.message = None
+                status.detail_errors = getattr(adapter, 'fetch_errors', {})
+                status.state = 'partial' if status.detail_errors else 'online'
+                status.message = 'Some markets failed; see detail_errors' if status.detail_errors else None
                 failures = 0
                 await asyncio.to_thread(self.store.prune, settings.retention_days)
                 await self.pause(settings.poll_seconds)
@@ -302,6 +423,8 @@ class Collector:
                 failures += 1
                 status.retries += 1
                 # Exception text can contain API URLs and credentials. Expose only safe classification.
+                status.discovery_errors = getattr(adapter, 'discovery_errors', {})
+                status.detail_errors = getattr(adapter, 'fetch_errors', {})
                 category = type(exc).__name__
                 limited = 'ratelimit' in category.lower() or getattr(getattr(exc, 'response', None), 'status_code', None) == 429
                 status.rate_limited += int(limited)
@@ -322,7 +445,7 @@ class Collector:
             return {'instruments': [i.model_dump() for i in instruments],
                     'snapshots': [enrich(s, settings.stale_seconds) for s in snapshots], 'mode': 'demo'}
         ids = {key for key, i in self.instruments.items() if i.venue in allowed
-               and i.base.upper() in {s.upper() for s in settings.watch_assets}}
+               and (settings.broad_collection_enabled or i.base.upper() in {s.upper() for s in settings.watch_assets})}
         return {'instruments': [self.instruments[key].model_dump() for key in sorted(ids)],
                 'snapshots': [enrich(s, settings.stale_seconds) for key, s in self.snapshots.items() if key in ids],
                 'mode': 'live'}

@@ -103,3 +103,7 @@ This is a single-service worker queue. DB transactions are protected for app-fac
 Run `.venv/bin/python -m pytest tests/test_notifications.py -q`. Tests use `httpx.MockTransport` and a controlled clock for signed Feishu requests, Telegram rate limits, provider rejection, exhausted retries, queue restart, cooldown persistence, local default, explicit channel selection, scope/threshold filtering, stale/missing metrics, hit/duration rules, pause/resume and FastAPI TestClient lifecycle.
 
 Current delivery verification is simulated, as requested. No Feishu or Telegram credentials were configured and no real external messages were sent. Actual reception on the two providers remains unverified until credentials are supplied and explicitly tested.
+
+## 发送前过期复核
+
+规则触发时将 `source_at + max_age_seconds` 作为不可刷新的队列有效期限保存。每次首次发送、重试和崩溃恢复后发送都重新检查；超期记录转为 `expired`，`last_error=event_expired_before_send`，保留原消息和审计但不调用渠道。旧格式队列用原事件时间和规则期限恢复判断，不把重启时间当消息时间。完全未送达的过期机会允许未来新的新鲜观察重新触发；已送达事件继续去重，旧队列不会清掉新通知的去重状态。显式渠道测试消息不作为投资机会设置此到期门槛。

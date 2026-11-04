@@ -53,6 +53,8 @@ class Storage:
         return Settings.model_validate(self.get('settings', {}))
 
     def save_instruments(self, instruments: list[Instrument]):
+        instruments = [i if i.native_asset_id else i.model_copy(update={'native_asset_id': i.asset_id})
+                       for i in instruments]
         with self.connect() as db:
             db.executemany('INSERT INTO instruments VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value',
                            [(i.id, i.model_dump_json()) for i in instruments])
@@ -64,6 +66,8 @@ class Storage:
         result = {}
         for row in rows:
             instrument = Instrument.model_validate_json(row[0])
+            if instrument.native_asset_id is None:
+                instrument.native_asset_id = instrument.asset_id
             if instrument.id in mappings:
                 instrument.asset_id = mappings[instrument.id]
                 instrument.mapping_verified = True
@@ -71,13 +75,18 @@ class Storage:
         return result
 
     def map_asset(self, instrument_id: str, asset_id: str):
-        with self.connect() as db:
-            previous = db.execute('SELECT asset_id FROM mappings WHERE instrument_id=?', (instrument_id,)).fetchone()
-            db.execute('INSERT INTO mappings VALUES (?,?,?) ON CONFLICT(instrument_id) DO UPDATE SET asset_id=excluded.asset_id,at=excluded.at',
-                       (instrument_id, asset_id, now_ms()))
-            db.execute('INSERT INTO audit(at,action,payload) VALUES (?,?,?)',
-                       (now_ms(), 'asset_mapping', json.dumps({'instrument_id': instrument_id, 'asset_id': asset_id,
-                                                              'previous': previous[0] if previous else None})))
+        self.map_assets([instrument_id], asset_id)
+
+    def map_assets(self, instrument_ids: list[str], asset_id: str):
+        # A single transaction prevents partially applied cross-venue confirmations.
+        with self.lock, self.connect() as db:
+            for instrument_id in dict.fromkeys(instrument_ids):
+                previous = db.execute('SELECT asset_id FROM mappings WHERE instrument_id=?', (instrument_id,)).fetchone()
+                db.execute('INSERT INTO mappings VALUES (?,?,?) ON CONFLICT(instrument_id) DO UPDATE SET asset_id=excluded.asset_id,at=excluded.at',
+                           (instrument_id, asset_id, now_ms()))
+                db.execute('INSERT INTO audit(at,action,payload) VALUES (?,?,?)',
+                           (now_ms(), 'asset_mapping', json.dumps({'instrument_id': instrument_id, 'asset_id': asset_id,
+                                                                  'previous': previous[0] if previous else None})))
 
     def audit(self):
         with self.connect() as db:

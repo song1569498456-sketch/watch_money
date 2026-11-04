@@ -16,6 +16,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import Field, model_validator
 
+from .identity import identity_candidates
 from .models import Instrument, MarketSnapshot, Model, OrderBook, now_ms
 
 Strategy = Literal[
@@ -36,7 +37,8 @@ class LegCost(Model):
     instrument_id: str
     open_fee_rate: float | None = Field(default=None, ge=-0.1, le=1)
     close_fee_rate: float | None = Field(default=None, ge=-0.1, le=1)
-    # Required for a held short spot position. Fraction of entry notional per hour.
+    # Explicit per-leg holding charge, fraction of entry notional per hour.
+    # Required for short spot borrowing; optional on other held positions.
     holding_rate_per_hour: float | None = Field(default=None, ge=0)
     source: str | None = None
     at: int | None = None
@@ -152,6 +154,19 @@ def _fresh(source_at: int | None, received_at: int, req: CalculateRequest) -> bo
     return all(0 <= req.as_of - at <= req.stale_seconds * 1000 for at in stamps)
 
 
+def _field_fresh(snapshot: MarketSnapshot, field: str, req: CalculateRequest) -> bool:
+    # A merged envelope can describe an unrelated, late-arriving source event.
+    source = snapshot.field_timestamps.get(field, snapshot.source_at)
+    received = snapshot.field_received_at.get(field, snapshot.received_at)
+    if field == "funding_interval_hours" and source is None and snapshot.field_sources.get(field, "").endswith(
+            (":catalog_metadata_observed_at", ":public_metadata_observed_at")):
+        # Configuration has an observation time, not a fabricated exchange event time.
+        return field in snapshot.field_received_at and 0 <= req.as_of - received <= 6 * 3600_000
+    if field in snapshot.field_timestamps and source is None:
+        return False
+    return _fresh(source, received, req)
+
+
 def _fx(currency: str, req: CalculateRequest) -> tuple[float | None, dict | None]:
     if currency == req.valuation_currency:
         return 1.0, {"base": currency, "quote": currency, "rate": 1.0, "source": "identity", "at": req.as_of}
@@ -172,6 +187,9 @@ def _fill_book(instrument: Instrument, book: OrderBook, side: str, size: float) 
         raise ValueError("Inverse contract requires explicit base settlement and distinct quote currency")
     if book.quantity_unit == "contracts" and instrument.kind != "perpetual":
         raise ValueError("Contract quantities require a perpetual instrument")
+    step = instrument.amount_precision
+    if step is not None and (not math.isfinite(step) or step <= 0):
+        raise ValueError("Amount precision must be a positive quantity step")
     for levels in (book.bids, book.asks):
         if any(not math.isfinite(p) or not math.isfinite(q) or p <= 0 or q <= 0 for p, q in levels):
             raise ValueError("Order book contains nonpositive or nonfinite levels")
@@ -196,16 +214,29 @@ def _fill_book(instrument: Instrument, book: OrderBook, side: str, size: float) 
             quote_amount += take * price
             filled += take
             contract_take = None
-            if book.quantity_unit == "contracts":
+            if instrument.kind == "perpetual":
                 contract_take = take / instrument.contract_size if instrument.linear else take * price / instrument.contract_size
                 contracts += contract_take
             used.append({"price": price, "base_quantity": take, "contracts": contract_take})
     complete = filled > 0 and math.isclose(filled, size, rel_tol=1e-10, abs_tol=0)
+    quantity = (size / instrument.contract_size if instrument.linear else contracts
+                ) if instrument.kind == "perpetual" else size
+    unit = "contracts" if instrument.kind == "perpetual" else "base"
+    if ((complete or instrument.linear) and instrument.min_amount is not None and quantity < instrument.min_amount
+            and not math.isclose(quantity, instrument.min_amount, rel_tol=1e-12, abs_tol=0)):
+        raise ValueError(f"Requested quantity is below minimum order amount {instrument.min_amount} {unit}")
+    if complete and step is not None:
+        # Exchange amount ticks apply to contracts for perpetuals, even when
+        # the supplied depth has already been normalized to base quantities.
+        units = quantity / step
+        if (not math.isfinite(units) or round(units) < 1
+                or not math.isclose(units, round(units), rel_tol=0, abs_tol=1e-8)):
+            raise ValueError(f"Requested quantity does not match amount precision step {step} {unit}")
     return {"instrument_id": instrument.id, "venue": instrument.venue, "side": side,
             "quote_currency": instrument.quote, "size_base": size, "filled_base": filled,
             "capacity_base": capacity, "complete": complete,
             "average_price": quote_amount / filled if filled else None,
-            "quote_amount": quote_amount, "contracts": contracts if book.quantity_unit == "contracts" else None,
+            "quote_amount": quote_amount, "contracts": contracts if instrument.kind == "perpetual" else None,
             "quantity_unit": book.quantity_unit, "levels": used, "source": book.source,
             "source_at": book.source_at, "received_at": book.received_at,
             "contract_size": instrument.contract_size, "linear": instrument.linear,
@@ -220,6 +251,9 @@ def _fill_route(instrument: Instrument, route: RouteQuote, size: float) -> dict:
     base_amount = route.output_amount if route.side == "buy" else route.input_amount
     if not math.isclose(base_amount, size, rel_tol=1e-9, abs_tol=0):
         raise ValueError("DEX quote quantity differs from requested size; request a fresh exact-size quote")
+    if (instrument.min_amount is not None and size < instrument.min_amount
+            and not math.isclose(size, instrument.min_amount, rel_tol=1e-12, abs_tol=0)):
+        raise ValueError(f"Requested quantity is below minimum order amount {instrument.min_amount} base")
     if not route.fees_included:
         raise ValueError("DEX quote must include pool and route fees in its input/output amounts")
     quote_amount = route.input_amount if route.side == "buy" else route.output_amount
@@ -250,10 +284,17 @@ def _classification(req: CalculateRequest, buy: Instrument, sell: Instrument) ->
         return ["Cross-pool comparison requires markets on the same explicit chain"]
     if buy.asset_id != sell.asset_id:
         return ["Asset identities differ; ticker equality is not an asset mapping"]
-    if buy.base != sell.base and not (buy.mapping_verified and sell.mapping_verified):
-        return ["Different base symbols require verified asset mappings"]
     if buy.venue != sell.venue and not (buy.mapping_verified and sell.mapping_verified):
         return ["Cross-venue asset mapping requires explicit verification"]
+    # A reviewed mapping cannot erase native token addresses, chain conflicts
+    # or scaled/wrapped base units. Share the catalog review's identity gate;
+    # its quote/contract conversion requirements remain separate below.
+    shared_identity = next((row for row in identity_candidates([buy, sell])
+                            if row["kind"] == "identity" and len(row["instrument_ids"]) == 2), None)
+    if shared_identity is None:
+        return ["Asset identity evidence does not establish a comparable base unit"]
+    if shared_identity["blockers"]:
+        return [f"Asset identity conflict: {reason}" for reason in shared_identity["blockers"]]
     if not buy.active or not sell.active:
         return ["A selected instrument is inactive"]
     return []
@@ -269,24 +310,23 @@ def _funding_events(req: CalculateRequest, inst: Instrument, snap: MarketSnapsho
     end = req.as_of + round(hours * 3_600_000)
     explicit = [e for e in req.funding_events if e.instrument_id == inst.id and e.known_at <= req.as_of
                 and req.as_of < e.settlement_at <= end]
+    # Both complete schedules and partial overrides use the latest estimate
+    # actually known at decision time, subject to the same freshness gate.
+    if any(e.kind == "settled" for e in explicit):
+        return [], "Future settled funding would introduce lookahead"
+    dedup = {e.settlement_at: e for e in sorted(explicit, key=lambda e: e.known_at)}
+    if any(req.as_of - e.known_at > req.stale_seconds * 1000 for e in dedup.values()):
+        return [], "Explicit funding rate estimate is stale"
     schedule_known = req.funding_schedule_known_at.get(inst.id, req.as_of)
     if req.funding_schedule_complete_until.get(inst.id, -1) >= end and schedule_known <= req.as_of:
         if req.as_of - schedule_known > req.stale_seconds * 1000:
             return [], "Explicit funding schedule is stale"
-        if any(e.kind == "settled" for e in explicit):
-            return [], "Future settled funding would introduce lookahead"
-        # At each settlement use the latest estimate known at decision time.
-        dedup = {e.settlement_at: e for e in sorted(explicit, key=lambda e: e.known_at)}
-        if any(req.as_of - e.known_at > req.stale_seconds * 1000 for e in dedup.values()):
-            return [], "Explicit funding rate estimate is stale"
         return [e.model_dump() for _, e in sorted(dedup.items())], None
     if snap is None or snap.funding_rate is None or snap.funding_kind not in {"current", "predicted"}:
         return [], "Current/predicted funding rate or complete explicit schedule required"
     for field in ("funding_rate", "funding_interval_hours", "next_funding_at"):
-        if field in snap.field_timestamps:
-            at = snap.field_timestamps[field]
-            if at is None or not 0 <= req.as_of - at <= req.stale_seconds * 1000:
-                return [], f"Funding field {field} has stale, unknown, or future provenance timestamp"
+        if not _field_fresh(snap, field, req):
+            return [], f"Funding field {field} has stale, unknown, or future provenance timestamp"
     if snap.funding_interval_hours is None or snap.next_funding_at is None:
         return [], "Funding interval and next actual settlement timestamp required"
     if snap.next_funding_at <= req.as_of:
@@ -295,7 +335,7 @@ def _funding_events(req: CalculateRequest, inst: Instrument, snap: MarketSnapsho
     count = max(0, math.floor((end - snap.next_funding_at) / step) + 1)
     if count > 100_000:
         return [], "Funding schedule exceeds supported event count"
-    overrides = {e.settlement_at: e for e in sorted(explicit, key=lambda e: e.known_at)}
+    overrides = dict(dedup)
     events = []
     for index in range(count):
         at = round(snap.next_funding_at + index * step)
@@ -328,7 +368,8 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
            "funding_profit": None, "basis_profit": None, "entry_spread": None, "capacity_base": None,
            "missing_prerequisites": [], "invalid_reasons": [], "legs": [], "costs": [], "scenarios": [],
            "fx_rates": [], "assumptions": [], "is_demo": False, "stale": False,
-           "data_age_seconds": None, "breakeven_hours": None, "venues": [], "funding_events": []}
+           "data_age_seconds": None, "breakeven_hours": None, "venues": [], "funding_events": [],
+           "holding_cost": None, "borrowing_cost": None, "holding_costs": []}
     missing, invalid = out["missing_prerequisites"], out["invalid_reasons"]
     if buy is None or sell is None:
         missing.append("Explicit metadata for both instruments is required")
@@ -360,7 +401,7 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
                 invalid.append(f"{inst.id}: snapshot venue differs from instrument")
             if not snap.valid:
                 invalid.append(f"{inst.id}: snapshot marked invalid: {', '.join(snap.issues)}")
-            if not _fresh(snap.source_at, snap.received_at, req):
+            if not snap.field_timestamps and not _fresh(snap.source_at, snap.received_at, req):
                 invalid.append(f"{inst.id}: stale or future market snapshot")
                 out["stale"] = True
         factor, fx = _fx(inst.quote, req)
@@ -465,6 +506,8 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
     out["basis_profit"] = basis_profit
     for inst, leg in ((buy, long_leg), (sell, short_leg)):
         config = costs.get(inst.id)
+        if not held and config is not None and (config.holding_rate_per_hour or 0) > 0:
+            missing.append(f"{inst.id}: nonzero holding cost requires a held strategy with a holding period")
         if config is not None and config.at is not None and config.at > req.as_of:
             missing.append(f"{inst.id}: fee cost configuration was not yet known")
             config = None
@@ -502,8 +545,29 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
     if not held:
         out["gross_profit"] = basis_profit
         out["funding_profit"] = 0.0
+        out["holding_cost"] = 0.0
+        out["borrowing_cost"] = 0.0
         out["net_profit"] = basis_profit - known_fixed if fixed_complete and not missing and not invalid else None
     else:
+        # Keep holding charges separate from fixed execution fees: each horizon
+        # incurs its own time-dependent debit, with no funding-scenario scaling.
+        holding_terms, holding_missing = [], []
+        for inst, leg in ((buy, long_leg), (sell, short_leg)):
+            config = costs.get(inst.id)
+            rate = config.holding_rate_per_hour if config is not None else None
+            borrowing = inst.id == sell.id and inst.kind == "spot"
+            if rate is None and not borrowing:
+                continue
+            if config is not None and config.at is not None and config.at > req.as_of:
+                holding_missing.append(f"{inst.id}: holding cost configuration was not yet known")
+                rate = None
+            elif rate is None:
+                holding_missing.append(f"{inst.id}: short spot borrowing cost is unknown")
+            if config is not None and config.at is None and rate is not None:
+                out["assumptions"].append(f"{inst.id}: holding rate is a user assumption without an observation timestamp")
+            holding_terms.append((inst, leg, config, rate, borrowing))
+        holding_per_hour = sum(leg["valuation_amount"] * rate
+                               for _, leg, _, rate, _ in holding_terms if rate is not None)
         horizons = sorted({8.0, 24.0, 72.0, req.hold_hours})
         factors = {"maintain": 1.0, "half": 0.5, "zero": 0.0, "reverse": -1.0}
         for hours in horizons:
@@ -524,9 +588,7 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
                 funding_price = leg["average_price"]
                 if req.funding_notional_basis == "mark":
                     funding_price = snapshot.mark if snapshot is not None else None
-                    mark_at = (snapshot.field_timestamps.get("mark", snapshot.source_at or snapshot.received_at)
-                               if snapshot is not None else None)
-                    if funding_price is None or mark_at is None or not 0 <= req.as_of - mark_at <= req.stale_seconds * 1000:
+                    if funding_price is None or snapshot is None or not _field_fresh(snapshot, "mark", req):
                         funding_missing.append(f"{inst.id}: fresh mark price required for funding notional; entry VWAP requires explicit opt-in")
                         continue
                 funding_notional = size * funding_price * leg_fx[inst.id]
@@ -539,55 +601,73 @@ def _calculate_size(req: CalculateRequest, size: float) -> dict:
                                        "valuation_currency": req.valuation_currency,
                                        "cashflow": cashflow})
             event_rows.sort(key=lambda event: (event["settlement_at"], event["instrument_id"]))
-            borrow_cost = 0.0
-            holding_missing = []
-            if sell.kind == "spot":
-                cfg = costs.get(sell.id)
-                if cfg is not None and cfg.at is not None and cfg.at > req.as_of:
-                    cfg = None
-                rate = cfg.holding_rate_per_hour if cfg else None
-                if rate is None:
-                    holding_missing.append(f"{sell.id}: short spot borrowing cost is unknown")
-                else:
-                    borrow_cost = entry_sell * rate * hours
+            holding_rows = []
+            for inst, leg, config, rate, borrowing in holding_terms:
+                amount = leg["quote_amount"] * rate * hours if rate is not None else None
+                holding_rows.append({
+                    "name": f"{inst.id}: short spot borrowing" if borrowing else f"{inst.id}: holding cost",
+                    "instrument_id": inst.id, "amount": amount, "currency": inst.quote,
+                    "valuation_amount": amount * leg_fx[inst.id] if amount is not None else None,
+                    "source": config.source if config is not None else None,
+                    "at": config.at if config is not None else None,
+                    "conditions": config.conditions if config is not None else None,
+                    "fx": leg["fx"], "category": "holding", "borrowing": borrowing,
+                    "rate_per_hour": rate, "hold_hours": hours,
+                })
+            known_holding = sum(row["valuation_amount"] for row in holding_rows if row["valuation_amount"] is not None)
+            borrow_rows = [row for row in holding_rows if row["borrowing"]]
+            borrow_cost = (sum(row["valuation_amount"] for row in borrow_rows)
+                           if all(row["valuation_amount"] is not None for row in borrow_rows) else None)
             for scenario, multiplier in factors.items():
                 funding = sum(e["cashflow"] for e in event_rows) * multiplier if not funding_missing else None
                 gross = basis_profit + funding if basis_profit is not None and funding is not None else None
-                net = gross - known_fixed - borrow_cost if gross is not None and fixed_complete and not missing and not funding_missing and not holding_missing and not invalid else None
+                net = gross - known_fixed - known_holding if gross is not None and fixed_complete and not missing and not funding_missing and not holding_missing and not invalid else None
                 row = {"hold_hours": hours, "scenario": scenario, "funding_multiplier": multiplier,
                        "funding_profit": funding, "basis_profit": basis_profit, "gross_profit": gross,
-                       "known_costs": known_fixed + borrow_cost,
-                       "borrowing_cost": None if holding_missing else borrow_cost,
+                       "known_costs": known_fixed + known_holding,
+                       "holding_cost": None if holding_missing else known_holding,
+                       "borrowing_cost": borrow_cost, "holding_costs": holding_rows,
                        "net_profit": net,
                        "missing_prerequisites": list(dict.fromkeys(missing + funding_missing + holding_missing)),
                        "funding_events": [{**e, "scenario_cashflow": e["cashflow"] * multiplier} for e in event_rows]}
                 out["scenarios"].append(row)
                 if hours == req.hold_hours and scenario == "maintain":
-                    out.update({k: row[k] for k in ("funding_profit", "gross_profit", "net_profit", "known_costs")})
+                    out.update({k: row[k] for k in ("funding_profit", "gross_profit", "net_profit", "known_costs",
+                                                   "holding_cost", "borrowing_cost", "holding_costs")})
+                    out["costs"].extend(holding_rows)
                     out["funding_events"] = row["funding_events"]
                     missing.extend(funding_missing + holding_missing)
         out["assumptions"].append(
             f"Funding uses frozen {req.funding_notional_basis} prices and constant quote FX; future settlement marks may differ"
         )
         out["assumptions"].append("Funding scenarios scale each estimated rate; settled history is never projected as current funding")
-        # Breakeven is only reported when unchanged basis and nonnegative cumulative future income
-        # allow a meaningful first crossing. Never divide cost by a normalized headline rate.
-        if req.assume_exit_at_entry and out["net_profit"] is not None and basis_profit == 0:
+        # Search the projected cashflow path, including continuously accrued
+        # holding charges. A zero entry balance alone is not a profitable path.
+        if (req.assume_exit_at_entry and out["net_profit"] is not None
+                and basis_profit == 0 and sell.kind != "spot"):
             simultaneous = {}
             for event in out["funding_events"]:
                 at = event["settlement_at"]
                 simultaneous[at] = simultaneous.get(at, 0.0) + event["cashflow"]
-            stream = sorted(simultaneous.items())
-            if stream and all(cashflow >= 0 for _, cashflow in stream) and sell.kind != "spot":
-                cumulative = -known_fixed
-                if cumulative >= 0:
-                    out["breakeven_hours"] = 0.0
-                else:
-                    for at, cashflow in stream:
-                        cumulative += cashflow
-                        if cumulative >= 0:
-                            out["breakeven_hours"] = (at - req.as_of) / 3_600_000
-                            break
+            cumulative = -known_fixed
+            trajectory = [(0.0, cumulative)]
+            crossings = [(0, 0.0)] if cumulative > 0 else []
+            for at, cashflow in sorted(simultaneous.items()):
+                elapsed = (at - req.as_of) / 3_600_000
+                trajectory.append((elapsed, cumulative - holding_per_hour * elapsed))
+                cumulative += cashflow
+                balance = cumulative - holding_per_hour * elapsed
+                trajectory.append((elapsed, balance))
+                if balance >= 0:
+                    crossings.append((len(trajectory) - 1, elapsed))
+            trajectory.append((req.hold_hours, out["net_profit"]))
+            if crossings and any(balance > 0 for _, balance in trajectory):
+                index, elapsed = crossings[0]
+                out["breakeven_hours"] = elapsed
+                if any(balance < 0 for _, balance in trajectory[index + 1:]):
+                    out["assumptions"].append(
+                        "Breakeven is the first projected crossing; later funding or holding charges make the projected balance negative again"
+                    )
     out["missing_prerequisites"] = list(dict.fromkeys(missing))
     if invalid:
         out["status"] = "invalidated"
@@ -630,11 +710,10 @@ def opportunity_event(opportunity: dict, calculation: CalculateRequest) -> dict:
         if instrument.kind == "perpetual":
             snapshot = _snapshot(calculation, instrument)
             funding_fields_fresh = snapshot is not None and all(
-                snapshot.field_timestamps[field] is not None
-                and 0 <= calculation.as_of - snapshot.field_timestamps[field] <= calculation.stale_seconds * 1000
-                for field in ("funding_rate", "funding_interval_hours") if field in snapshot.field_timestamps
+                _field_fresh(snapshot, field, calculation)
+                for field in ("funding_rate", "funding_interval_hours")
             )
-            if snapshot is None or not snapshot.valid or not _fresh(snapshot.source_at, snapshot.received_at, calculation) or not funding_fields_fresh or snapshot.funding_rate is None or snapshot.funding_interval_hours is None or snapshot.funding_kind not in {"current", "predicted"}:
+            if snapshot is None or not snapshot.valid or not funding_fields_fresh or snapshot.funding_rate is None or snapshot.funding_interval_hours is None or snapshot.funding_kind not in {"current", "predicted"}:
                 funding_available = False
             else:
                 funding_spread += direction * snapshot.funding_rate * 8 / snapshot.funding_interval_hours

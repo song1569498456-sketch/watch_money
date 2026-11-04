@@ -10,6 +10,7 @@ from contextlib import suppress
 from typing import Any
 
 from watch_money.adapters.cex import CexAdapter, _number, _timestamp
+from watch_money.adapters.volume_units import volume_fields
 from watch_money.models import Instrument, MarketSnapshot, now_ms
 
 
@@ -60,12 +61,11 @@ def ticker_patch(instrument: Instrument, client_id: str, ticker: dict, method: s
             values[field] = value
             sources[field] = f"{source}.{key}:unified_ticker_event_time"
             timestamps[field] = event_time
-    volume_key = "baseVolume" if _number(ticker.get("baseVolume"), nonnegative=True) is not None else "quoteVolume"
-    volume = _number(ticker.get(volume_key), nonnegative=True)
+    volume, unit, volume_source = volume_fields(client_id, instrument, ticker)
     if volume is not None:
         values["volume"] = volume
-        values["volume_unit"] = instrument.base if volume_key == "baseVolume" else instrument.quote
-        sources["volume"] = f"{source}.{volume_key}:rolling_24h:unified_ticker_event_time"
+        values["volume_unit"] = unit
+        sources["volume"] = f"{source}.{volume_source}:unified_ticker_event_time"
         timestamps["volume"] = event_time
     if not any(field in values for field in ("bid", "ask", "last", "mark", "index")):
         return None
@@ -99,6 +99,7 @@ class CexStreamAdapter:
         self._tasks: list[asyncio.Task] = []
         self._running = False
         self.unsupported: list[str] = []
+        self.on_payload = None
 
     def _client(self, client_id: str) -> Any:
         if client_id not in self._clients:
@@ -166,6 +167,9 @@ class CexStreamAdapter:
                     payloads = await client.watch_tickers(symbols)
                 else:
                     payloads = {symbols[0]: await client.watch_ticker(symbols[0])}
+                if self.on_payload is not None:
+                    with suppress(Exception):
+                        await self.on_payload(self.venue, f'websocket:ccxt:{method}', payloads)
                 for symbol, ticker in payloads.items():
                     instrument = by_symbol.get(symbol)
                     if instrument is None or not isinstance(ticker, dict):
@@ -182,7 +186,7 @@ class CexStreamAdapter:
                         continue
                     if patch.source_at is not None and patch.source_at < last_source_times.get(symbol, 0):
                         continue
-                    if patch.source_at is not None:
+                    if patch.source_at is not None and patch.source_at <= now_ms() + 30_000:
                         last_source_times[symbol] = patch.source_at
                     previous[symbol] = fingerprint
                     await events.put(patch)
@@ -215,7 +219,8 @@ class CexStreamAdapter:
 
 def create_stream(rest_adapter: Any) -> CexStreamAdapter | None:
     if not isinstance(rest_adapter, CexAdapter):
-        return None
+        from .dex_streaming import create_dex_stream
+        return create_dex_stream(rest_adapter)
     try:
         import ccxt.pro  # noqa: F401
     except ImportError:

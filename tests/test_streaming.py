@@ -205,7 +205,8 @@ async def test_rest_only_is_explicit_no_null_stream_values():
 
 
 @pytest.mark.asyncio
-async def test_duplicate_and_older_events_do_not_undo_newer_price():
+async def test_duplicate_and_older_events_do_not_undo_newer_price(monkeypatch):
+    monkeypatch.setattr("watch_money.adapters.streaming.now_ms", lambda: EVENT + 1000)
     item = instrument()
     client = MockStreamClient()
     for time, price in [(EVENT, 100), (EVENT, 100), (EVENT - 1, 99), (EVENT + 1, 101)]:

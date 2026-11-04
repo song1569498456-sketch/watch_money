@@ -390,6 +390,12 @@ class NotificationService:
     def _enqueue(self, rule_id, event_id, title, message, priority, event, channels) -> str:
         notification_id = uuid4().hex
         now = self.clock()
+        event = dict(event)
+        if rule_id is not None:
+            saved_rule = self.db.execute("SELECT body FROM rules WHERE id=?", (rule_id,)).fetchone()
+            rule = NotificationRule.model_validate_json(saved_rule[0]) if saved_rule else None
+            stamp = _number(event, "source_at")
+            event["delivery_expires_at"] = stamp + rule.max_age_seconds * 1000 if stamp is not None and rule else 0
         self.db.execute("INSERT INTO notifications VALUES (?,?,?,?,?,?,?,?)", (
             notification_id, rule_id, event_id, int(now * 1000), _clean(title), _clean(message), priority,
             json.dumps(_clean(event))))
@@ -465,7 +471,7 @@ class NotificationService:
     @_locked
     def _due_rows(self, limit):
         self._connect()
-        return self.db.execute("""SELECT d.*,n.title,n.message,n.priority FROM deliveries d
+        return self.db.execute("""SELECT d.*,n.title,n.message,n.priority,n.event,n.rule_id,n.event_id FROM deliveries d
             JOIN notifications n ON n.id=d.notification_id WHERE d.status IN ('pending','retry')
             AND d.next_attempt_at<=? ORDER BY CASE n.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
             d.next_attempt_at,d.rowid LIMIT ?""", (self.clock(), limit)).fetchall()
@@ -474,6 +480,29 @@ class NotificationService:
     def _claim(self, row):
         now = self.clock()
         channel = row["channel"]
+        if row["rule_id"] is not None:
+            event = json.loads(row["event"])
+            expires = _number(event, "delivery_expires_at")
+            if expires is None:
+                # Recover pre-expiry-schema queued events without refreshing their age.
+                saved = self.db.execute("SELECT body FROM rules WHERE id=?", (row["rule_id"],)).fetchone()
+                stamp = _number(event, "source_at")
+                rule = NotificationRule.model_validate_json(saved[0]) if saved else None
+                expires = stamp + rule.max_age_seconds * 1000 if stamp is not None and rule else 0
+            if expires <= now * 1000:
+                self.db.execute("UPDATE deliveries SET status='expired',last_error='event_expired_before_send' "
+                                "WHERE id=? AND status IN ('pending','retry')", (row["id"],))
+                sent = self.db.execute("SELECT 1 FROM deliveries WHERE notification_id=? AND status='sent' LIMIT 1",
+                                       (row["notification_id"],)).fetchone()
+                latest = self.db.execute("SELECT id FROM notifications WHERE rule_id=? AND event_id=? "
+                                         "ORDER BY rowid DESC LIMIT 1", (row["rule_id"], row["event_id"])).fetchone()
+                # A signal that never reached any channel must not suppress a
+                # later fresh observation forever. Do not erase a newer signal's state.
+                if not sent and latest and latest[0] == row["notification_id"]:
+                    self.db.execute("DELETE FROM rule_state WHERE rule_id=? AND event_id=?",
+                                    (row["rule_id"], row["event_id"]))
+                self.db.commit()
+                return False
         if channel != "local":
             rate = self.db.execute("SELECT next_at FROM channel_limits WHERE channel=?", (channel,)).fetchone()
             if rate and rate[0] > now:

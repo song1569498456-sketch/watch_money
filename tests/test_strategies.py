@@ -141,6 +141,53 @@ def test_explicit_irregular_funding_events_and_zero_events_complete_horizon():
     assert 3.5 in {s["hold_hours"] for s in out["scenarios"]}
 
 
+@pytest.mark.parametrize("complete_schedule", [False, True])
+@pytest.mark.parametrize("age_ms", [60_000, 60_001, HOUR])
+def test_explicit_funding_estimates_share_freshness_boundary(complete_schedule, age_ms):
+    data = request_data("perpetual", "funding_spread")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 8})
+    if complete_schedule:
+        data["funding_schedule_complete_until"] = {"b": NOW + 72 * HOUR}
+    data["funding_events"] = [
+        {"instrument_id": "b", "settlement_at": NOW + HOUR, "rate": 0.5,
+         "kind": "predicted", "known_at": NOW - age_ms, "source": "forecast"},
+    ]
+    out = result(data)
+    if age_ms <= 60_000:
+        assert out["net_profit"] is not None
+        assert any(event["rate"] == 0.5 for event in out["funding_events"])
+    else:
+        assert out["funding_profit"] is None
+        assert out["net_profit"] is None
+        assert any("stale" in reason for reason in out["missing_prerequisites"])
+        assert all(row["net_profit"] is None for row in out["scenarios"])
+
+
+@pytest.mark.parametrize("complete_schedule", [False, True])
+def test_explicit_funding_uses_latest_known_estimate_before_freshness_check(complete_schedule):
+    data = request_data("perpetual", "funding_spread")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 8})
+    if complete_schedule:
+        data["funding_schedule_complete_until"] = {"b": NOW + 72 * HOUR}
+    # Deliberately unsorted: an obsolete forecast and a future revision must
+    # neither override nor invalidate the fresh revision available now.
+    data["funding_events"] = [
+        {"instrument_id": "b", "settlement_at": NOW + HOUR, "rate": rate,
+         "kind": "predicted", "known_at": known_at, "source": source}
+        for rate, known_at, source in [(0.003, NOW, "latest known"),
+                                      (0.5, NOW - HOUR, "obsolete"),
+                                      (0.9, NOW + 1, "future revision")]
+    ]
+    out = result(data)
+    assert out["net_profit"] is not None
+    selected = [event for event in out["funding_events"] if event["instrument_id"] == "b"
+                and event["settlement_at"] == NOW + HOUR]
+    assert len(selected) == 1
+    assert selected[0]["rate"] == 0.003
+    assert selected[0]["known_at"] == NOW
+    assert selected[0]["source"] == "latest known"
+
+
 def test_linear_contract_multiplier_and_inverse_depth_conversion():
     inst = Instrument(id="a", venue="a", native_symbol="X", asset_id="btc", base="BTC", quote="USD",
                       kind="perpetual", contract_size=0.01, settle="USDT")
@@ -158,6 +205,47 @@ def test_linear_contract_multiplier_and_inverse_depth_conversion():
     assert fill["quote_amount"] == 5000
     with pytest.raises(ValueError, match="base settlement"):
         _fill_book(inverse.model_copy(update={"settle": "USD"}), inverse_book, "buy", 0.5)
+
+
+@pytest.mark.parametrize("quantity_unit", ["base", "contracts"])
+@pytest.mark.parametrize("size,contract_size,step,executable", [
+    (0.25, 1, 1, False), (0.25, 0.01, 1, True),
+    (0.25, 0.01, 2, False), (0.24, 0.01, 2, True), (0.3, 0.1, 1, True),
+])
+def test_contract_amount_step_applies_after_base_conversion(quantity_unit, size, contract_size, step, executable):
+    data = request_data("perpetual", "funding_spread")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 8, "size_base": size})
+    for instrument in data["instruments"]:
+        instrument.update({"contract_size": contract_size, "amount_precision": step})
+    for book in data["orderbooks"]:
+        book["quantity_unit"] = quantity_unit
+        book["asks"] = [[100, 100]]
+        book["bids"] = [[99, 100]]
+    out = result(data)
+    if executable:
+        assert out["net_profit"] is not None
+        assert all(leg["contracts"] == pytest.approx(size / contract_size) for leg in out["legs"])
+    else:
+        assert out["net_profit"] is None
+        assert out["status"] == "invalidated"
+        assert any("amount precision step" in reason for reason in out["invalid_reasons"])
+
+
+def test_spot_amount_step_and_inverse_contract_step_do_not_round_requested_size():
+    data = request_data()
+    data["instruments"][0]["amount_precision"] = 0.1
+    data["size_base"] = 0.25
+    assert result(data)["net_profit"] is None
+    data["size_base"] = 0.3
+    assert result(data)["net_profit"] is not None
+    inverse = Instrument(id="a", venue="a", native_symbol="X", asset_id="btc", base="BTC", quote="USD",
+                         kind="perpetual", contract_size=100, linear=False, settle="BTC", amount_precision=1)
+    for quantity_unit in ("base", "contracts"):
+        book = OrderBook(instrument_id="a", asks=[(10_000, 100)], bids=[(9999, 100)],
+                         quantity_unit=quantity_unit, source="test", received_at=NOW)
+        assert _fill_book(inverse, book, "buy", 0.5)["contracts"] == 50
+        with pytest.raises(ValueError, match="amount precision step"):
+            _fill_book(inverse, book, "buy", 0.505)
 
 
 def test_stale_source_not_hidden_by_recent_receive_and_invalid_book():
@@ -207,6 +295,170 @@ def test_spot_perpetual_basis_exit_and_short_spot_borrowing():
     assert out["known_costs"] == pytest.approx(0.205 + 0.41 + 105 * 0.001 * 24)
 
 
+def test_both_perpetual_holding_charges_scale_with_duration_and_use_each_quote_fx_once():
+    data = request_data("perpetual", "funding_spread")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 8})
+    data["instruments"][1].update({"quote": "USD", "settle": "USD"})
+    data["fx_rates"] = [{"base": "USD", "quote": "USDT", "rate": 0.5, "source": "test:FX", "at": NOW}]
+    for index, cost in enumerate(data["costs"]):
+        cost.update({"holding_rate_per_hour": (index + 1) * 0.001, "source": f"account:{index}",
+                     "at": NOW - 1000, "conditions": "explicit account assumption"})
+    out = result(data)
+    hourly = 100 * 0.001 + 105 * 0.5 * 0.002
+    assert out["holding_cost"] == pytest.approx(hourly * 8)
+    assert out["known_costs"] == pytest.approx((100 + 105 * 0.5) * 0.003 + hourly * 8)
+    assert out["net_profit"] == pytest.approx(out["gross_profit"] - out["known_costs"])
+    assert sum(cost["valuation_amount"] for cost in out["costs"]) == pytest.approx(out["known_costs"])
+    assert len(out["holding_costs"]) == 2 and out["borrowing_cost"] == 0
+    assert out["holding_costs"][1]["amount"] == pytest.approx(105 * 0.002 * 8)
+    assert out["holding_costs"][1]["currency"] == "USD"
+    assert out["holding_costs"][1]["valuation_amount"] == pytest.approx(105 * 0.5 * 0.002 * 8)
+    assert out["holding_costs"][1]["source"] == "account:1"
+    assert out["holding_costs"][1]["at"] == NOW - 1000
+    for scenario in out["scenarios"]:
+        assert scenario["holding_cost"] == pytest.approx(hourly * scenario["hold_hours"])
+        assert scenario["net_profit"] == pytest.approx(scenario["gross_profit"] - scenario["known_costs"])
+
+
+def test_long_spot_explicit_holding_charge_is_applied_and_short_spot_borrowing_not_double_counted():
+    data = request_data("perpetual", "spot_perp_basis")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 8})
+    data["instruments"][0]["kind"] = "spot"
+    data["costs"][0]["holding_rate_per_hour"] = 0.001
+    out = result(data)
+    assert out["net_profit"] is not None and out["holding_cost"] == pytest.approx(0.8)
+    assert out["borrowing_cost"] == 0
+    assert any("user assumption without an observation timestamp" in text for text in out["assumptions"])
+    data["instruments"][0]["kind"] = "perpetual"
+    data["instruments"][1]["kind"] = "spot"
+    data["costs"][1]["holding_rate_per_hour"] = 0.001
+    out = result(data)
+    assert out["holding_cost"] == pytest.approx((100 + 105) * 0.001 * 8)
+    assert out["borrowing_cost"] == pytest.approx(105 * 0.001 * 8)
+    assert out["known_costs"] == pytest.approx(0.615 + out["holding_cost"])
+    assert sum(cost["valuation_amount"] for cost in out["costs"]) == pytest.approx(out["known_costs"])
+    data["costs"][1]["holding_rate_per_hour"] = None
+    assert result(data)["holding_cost"] is None and result(data)["net_profit"] is None
+
+
+def test_optional_holding_default_future_configuration_and_instant_strategy_applicability():
+    data = request_data("perpetual", "funding_spread")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 8})
+    assert result(data)["holding_cost"] == 0 and result(data)["net_profit"] is not None
+    data["costs"][0].update({"holding_rate_per_hour": 0.001, "at": NOW + 1})
+    out = result(data)
+    assert out["holding_cost"] is None and out["net_profit"] is None
+    assert any("holding cost configuration was not yet known" in reason for reason in out["missing_prerequisites"])
+    assert out["holding_costs"][0]["at"] == NOW + 1 and out["holding_costs"][0]["amount"] is None
+    data = request_data()
+    data["costs"][0]["holding_rate_per_hour"] = 0.001
+    out = result(data)
+    assert out["net_profit"] is None
+    assert any("requires a held strategy" in reason for reason in out["missing_prerequisites"])
+    data["costs"][0]["holding_rate_per_hour"] = 0
+    assert result(data)["net_profit"] == pytest.approx(4.795)
+
+
+def test_breakeven_includes_continuously_accruing_perpetual_holding_cost():
+    data = request_data("perpetual", "funding_spread")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 72})
+    data["snapshots"][1]["funding_interval_hours"] = 8
+    assert result(data)["breakeven_hours"] == 41
+    data["costs"][0]["holding_rate_per_hour"] = 0.00002
+    out = result(data)
+    assert out["breakeven_hours"] == 49
+    assert 6 * 0.11 - 0.615 - 100 * 0.00002 * 41 < 0
+    assert 7 * 0.11 - 0.615 - 100 * 0.00002 * 49 > 0
+
+
+def test_zero_entry_cost_does_not_imply_breakeven_for_an_always_losing_holding_path():
+    data = request_data("perpetual", "funding_spread")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 8})
+    for cost in data["costs"]:
+        cost.update({"open_fee_rate": 0, "close_fee_rate": 0, "holding_rate_per_hour": 0.001})
+    for snapshot in data["snapshots"]:
+        snapshot.update({"mark": 100, "funding_rate": 0.001, "funding_interval_hours": 8})
+    out = result(data)
+    assert out["funding_profit"] == 0 and out["net_profit"] < 0
+    assert out["breakeven_hours"] is None
+    for cost in data["costs"]:
+        cost["holding_rate_per_hour"] = 0
+    assert result(data)["net_profit"] == 0 and result(data)["breakeven_hours"] is None
+
+
+def test_immediate_positive_rebate_can_breakeven_at_zero_but_later_carrying_loss_is_explicit():
+    data = request_data("perpetual", "funding_spread")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 8})
+    for cost in data["costs"]:
+        cost.update({"open_fee_rate": -0.001, "close_fee_rate": 0, "holding_rate_per_hour": 0.001})
+    for snapshot in data["snapshots"]:
+        snapshot.update({"mark": 100, "funding_rate": 0.001, "funding_interval_hours": 8})
+    out = result(data)
+    assert out["net_profit"] < 0 and out["breakeven_hours"] == 0
+    assert any("balance negative again" in text for text in out["assumptions"])
+
+
+@pytest.mark.parametrize("kind,quantity_unit,contract_size,minimum,size,executable", [
+    ("spot", "base", 1, 0.5, 0.25, False), ("spot", "base", 1, 0.5, 0.5, True),
+    ("perpetual", "contracts", 0.01, 10, 0.05, False),
+    ("perpetual", "contracts", 0.01, 10, 0.1, True),
+    ("perpetual", "base", 0.01, 10, 0.05, False),
+    ("perpetual", "base", 0.01, 10, 0.1, True),
+])
+def test_minimum_order_amount_uses_exchange_contract_or_spot_base_units(kind, quantity_unit, contract_size,
+                                                                      minimum, size, executable):
+    data = request_data(kind, "funding_spread" if kind == "perpetual" else "spot_spread")
+    data.update({"assume_exit_at_entry": True, "size_base": size})
+    for item in data["instruments"]:
+        item.update({"contract_size": contract_size, "min_amount": minimum})
+    for book in data["orderbooks"]:
+        book["quantity_unit"] = quantity_unit
+        book["asks"] = [[100, 100]]
+        book["bids"] = [[99, 100]]
+    out = result(data)
+    if executable:
+        assert out["net_profit"] is not None
+    else:
+        assert out["status"] == "invalidated" and out["net_profit"] is None
+        assert any("minimum order amount" in reason for reason in out["invalid_reasons"])
+
+
+def test_inverse_minimum_order_amount_uses_contracts_at_execution_price():
+    inst = Instrument(id="a", venue="a", native_symbol="X", asset_id="BTC", base="BTC", quote="USD",
+                      settle="BTC", kind="perpetual", contract_size=100, linear=False, min_amount=50)
+    for unit in ("base", "contracts"):
+        book = OrderBook(instrument_id="a", asks=[(10000, 100)], bids=[(9999, 100)], quantity_unit=unit,
+                         received_at=NOW, source="test")
+        with pytest.raises(ValueError, match="minimum order amount"):
+            _fill_book(inst, book, "buy", 0.49)
+        assert _fill_book(inst, book, "buy", 0.5)["contracts"] == 50
+
+
+@pytest.mark.parametrize("venue,kind,linear,contract_size,native_min,expected_min", [
+    ("okx", "spot", True, 1, 0.01, 0.01),
+    ("okx", "perpetual", True, 0.01, 10, 10),
+    ("deribit", "perpetual", True, 0.001, 0.001, 1),
+    ("deribit", "perpetual", False, 10, 10, 1),
+])
+@pytest.mark.asyncio
+async def test_cex_discovery_preserves_minimum_order_units(venue, kind, linear, contract_size,
+                                                        native_min, expected_min):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from watch_money.adapters.cex import CexAdapter
+    symbol = "BTC/USD:USD"
+    market = {"id": "BTCUSD", "symbol": symbol, "base": "BTC", "baseId": "BTC", "quote": "USD",
+              "settle": "USD" if linear else "BTC", "active": True, "spot": kind == "spot",
+              "swap": kind == "perpetual", "linear": linear, "inverse": not linear, "contractSize": contract_size,
+              "precision": {"amount": native_min}, "limits": {"amount": {"min": native_min}}}
+    client = SimpleNamespace(precisionMode=4, load_markets=AsyncMock(return_value={symbol: market}))
+    adapter = CexAdapter(venue, client_factory=lambda _: client)
+    [item] = await adapter.discover()
+    assert item.min_amount == expected_min
+    assert item.amount_precision == expected_min
+
+
 def test_dex_exact_size_route_gas_and_impact_not_double_counted():
     data = request_data(strategy="cex_dex_spot")
     data["instruments"][1].update({"kind": "pool", "mechanism": "amm", "chain": "base"})
@@ -235,6 +487,50 @@ def test_asset_mapping_and_strategy_validation():
     assert result(data)["status"] == "invalidated"
     data = request_data(strategy="funding_spread")
     assert result(data)["status"] == "invalidated"
+
+
+@pytest.mark.parametrize("second_chain,second_address,reason", [
+    ("base", "0x" + "b2" * 20, "different_native_chain_addresses"),
+    ("arbitrum", "0x" + "a1" * 20, "different_chains"),
+])
+def test_calculator_rejects_forced_mapping_over_native_token_conflicts(second_chain, second_address, reason):
+    data = request_data()
+    for instrument, chain, address in zip(data["instruments"], ["base", second_chain],
+                                           ["0x" + "a1" * 20, second_address], strict=True):
+        instrument.update({"chain": chain, "native_asset_id": f"{chain}:{address}",
+                           "asset_id": "reviewed:shared-token", "mapping_verified": True})
+    out = result(data)
+    assert out["status"] == "invalidated"
+    assert out["net_profit"] is None and out["gross_profit"] is None
+    assert any(reason in text for text in out["invalid_reasons"])
+
+
+@pytest.mark.parametrize("bases", [("PEPE", "1000PEPE"), ("ETH", "WETH"), ("USDC", "USDC.e")])
+def test_calculator_rejects_forced_mapping_over_incomparable_base_units(bases):
+    data = request_data()
+    for instrument, base in zip(data["instruments"], bases, strict=True):
+        instrument.update({"base": base, "asset_id": "reviewed:shared-token", "mapping_verified": True})
+    # Contract quantity conversion is independent of a base token unit ratio.
+    data["instruments"][1]["contract_size"] = 1000
+    out = result(data)
+    assert out["status"] == "invalidated"
+    assert out["net_profit"] is None
+    assert any("different_base_symbols_require_unit_review" in reason for reason in out["invalid_reasons"])
+
+
+def test_calculator_keeps_reviewed_bitcoin_alias_and_explicit_quote_contract_conversions():
+    data = request_data("perpetual", "funding_spread")
+    data.update({"assume_exit_at_entry": True, "hold_hours": 8})
+    data["instruments"][1].update({"base": "XBT", "quote": "USD", "settle": "USD", "contract_size": 0.01})
+    data["orderbooks"][1]["quantity_unit"] = "contracts"
+    data["orderbooks"][1]["bids"] = [[105, 100]]
+    data["orderbooks"][1]["asks"] = [[106, 100]]
+    data["fx_rates"] = [{"base": "USD", "quote": "USDT", "rate": 0.99,
+                         "source": "reviewed:USD/USDT", "at": NOW}]
+    out = result(data)
+    assert out["net_profit"] is not None
+    assert out["legs"][1]["contracts"] == 100
+    assert out["legs"][1]["valuation_amount"] == pytest.approx(105 * 0.99)
 
 
 def test_saved_sample_is_repeatable_and_replay_excludes_delayed_data(tmp_path, monkeypatch):

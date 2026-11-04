@@ -80,6 +80,8 @@ with tempfile.TemporaryDirectory(prefix='watch-money-browser-') as data:
                     page.get_by_label('策略', exact=False).select_option('spot_perp_basis')
                     page.get_by_label('买入 / 做多市场', exact=False).select_option('demo-alpha:BTC:USDT:spot')
                     page.get_by_label('卖出 / 做空市场', exact=False).select_option('demo-beta:BTC:USDT:perpetual')
+                    page.get_by_label('规模输入方式', exact=False).select_option('base')
+                    page.get_by_role('spinbutton', name='基础资产数量 / BTC', exact=True).fill('0.1')
                     page.get_by_role('button', name='计算收益情景', exact=True).click()
                     expect(page.get_by_role('heading', name='计算结果', exact=True)).to_be_visible()
                     page.get_by_label('保存样本名称').fill('Browser demo evidence')

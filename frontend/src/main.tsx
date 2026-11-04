@@ -59,11 +59,20 @@ import type {
   Snapshot,
   VenueStatus,
 } from "./types";
+import { IdentityCandidates } from "./IdentityCandidates";
+import { NativePoolPanel } from "./NativePoolPanel";
+import { ScannerPage } from "./ScannerPage";
+import { fundingHistorySeries, marketPriceSummary } from "./marketData";
+import { bookBaseForNotional } from "./bookSizing";
+import { FundingPage } from "./FundingPage";
+import { FeeProfiles, FeeCostFields, useTradeFees } from "./FeeProfiles";
 import "./style.css";
 
 type Page =
   | "markets"
   | "opportunities"
+  | "scanner"
+  | "funding"
   | "status"
   | "notifications"
   | "settings"
@@ -72,12 +81,16 @@ const titles: Record<Page, [string, string]> = {
   markets: ["市场总览", "跨平台观察价格、资金费率与市场流动性"],
   detail: ["资产详情", "核对市场身份、原始费率与数据来源"],
   opportunities: ["收益计算", "以当前行情计算执行成本与持有情景"],
+  funding: ["资金费率", "全目录原始费率、周期与跨平台比较"],
+  scanner: ["全市场扫描", "从已发现市场筛选指示价差与资金费差候选"],
   status: ["平台与数据源", "连接诊断、真实覆盖范围和接入条件"],
   notifications: ["通知中心", "管理机会与系统提醒，追踪每次发送"],
   settings: ["工作台配置", "控制采集节奏、关注范围与历史保存"],
 };
 const navigation: [Page, typeof Activity, string][] = [
   ["markets", LayoutDashboard, "市场总览"],
+  ["scanner", Search, "全市场扫描"],
+  ["funding", Activity, "资金费率"],
   ["opportunities", Calculator, "收益计算"],
   ["notifications", Bell, "通知中心"],
   ["status", Radio, "平台状态"],
@@ -202,6 +215,7 @@ function App() {
   const [wsState, setWsState] = useState("connecting");
   const [now, setNow] = useState(Date.now());
   const [selectedAsset, setSelectedAsset] = useState("");
+  const [scanSelection, setScanSelection] = useState<{buy_instrument_id: string; sell_instrument_id: string; strategy: string} | null>(null);
   const [toast, setToast] = useState("");
   const latest = useRef<MarketData | null>(null);
   const refresh = useRef(1000);
@@ -250,6 +264,7 @@ function App() {
     let stopped = false;
     let reconnect: ReturnType<typeof setTimeout>;
     let socket: WebSocket;
+    let streamData: MarketData | null = null;
     const connect = () => {
       setWsState("connecting");
       socket = new WebSocket(
@@ -259,8 +274,20 @@ function App() {
       socket.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data);
-          if (data.type === "markets")
-            latest.current = data.data ?? data.payload ?? data;
+          if (data.type === "markets") {
+            streamData = data.data ?? data.payload ?? data;
+            latest.current = streamData;
+          } else if (data.type === "markets_delta" && streamData) {
+            const instruments = new Map(streamData.instruments.map(i => [i.id, i]));
+            const snapshots = new Map(streamData.snapshots.map(s => [s.instrument_id, s]));
+            for (const id of data.removed_instruments ?? []) instruments.delete(id);
+            for (const id of data.removed_snapshots ?? []) snapshots.delete(id);
+            for (const item of data.instruments ?? []) instruments.set(item.id, item);
+            for (const item of data.snapshots ?? []) snapshots.set(item.instrument_id, item);
+            streamData = {...streamData, mode: data.mode,
+              instruments: Array.from(instruments.values()), snapshots: Array.from(snapshots.values())};
+            latest.current = streamData;
+          }
         } catch {
           /* Invalid messages never replace current market data. */
         }
@@ -317,6 +344,9 @@ function App() {
     () => new Map(markets.snapshots.map((s) => [s.instrument_id, s])),
     [markets.snapshots],
   );
+  const identityVersion = useMemo(() => markets.instruments.map((item) =>
+    `${item.id}:${item.asset_id}:${item.native_asset_id ?? ""}:${item.mapping_verified}`).sort().join("|"),
+    [markets.instruments]);
   const toggleFavorite = async (id: string) => {
     const next = favorites.includes(id)
       ? favorites.filter((x) => x !== id)
@@ -499,6 +529,7 @@ function App() {
                   detail="收藏市场跨会话保留"
                 />
               </div>
+              <IdentityCandidates refreshKey={identityVersion} />
               <Markets
                 instruments={markets.instruments}
                 snapshots={snapshots}
@@ -523,6 +554,8 @@ function App() {
               toggleFavorite={toggleFavorite}
             />
           )}
+          {page === "scanner" && <ScannerPage instruments={markets.instruments} onSelectCandidate={(candidate) => {setScanSelection(candidate); setPage("opportunities");}} />}
+          {page === "funding" && <FundingPage />}
           {page === "status" && (
             <Status statuses={statuses} coverage={coverage} now={now} />
           )}
@@ -536,6 +569,8 @@ function App() {
                   setToast("配置已保存");
                 }}
               />
+              <NativePoolPanel settings={settings} />
+              <IdentityCandidates refreshKey={identityVersion} />
               <AssetMappings
                 instruments={markets.instruments}
                 assets={assets}
@@ -548,6 +583,7 @@ function App() {
           )}
           {page === "opportunities" && (
             <Opportunities
+              initial={scanSelection}
               instruments={markets.instruments}
               snapshots={snapshots}
               toast={setToast}
@@ -631,7 +667,7 @@ function Markets({
       (!chain || i.chain === chain) &&
       (!kind || i.kind === kind) &&
       (!onlyFavorites || favorites.includes(i.id)) &&
-      `${i.base} ${i.asset_id} ${i.venue} ${i.native_symbol}`
+      `${i.base} ${i.asset_id} ${i.native_asset_id ?? ""} ${i.venue} ${i.native_symbol}`
         .toLowerCase()
         .includes(query.toLowerCase()),
   );
@@ -665,7 +701,7 @@ function Markets({
           <h2>
             资产与市场 <span className="count">{groups.length}</span>
           </h2>
-          <p>按已核验资产身份聚合 · 报价币保留原值</p>
+          <p>按内部资产身份分组 · 未确认市场保留独立身份 · 搜索覆盖全部已发现币种</p>
         </div>
         <button
           className={`button secondary ${onlyFavorites ? "selected" : ""}`}
@@ -751,7 +787,7 @@ function Markets({
             {groups.map(([id, items]) => {
               const asset = assets.find((a) => a.id === id);
               const open = expanded.has(id);
-              const quotes = [...new Set(items.map((i) => i.quote))];
+              const summary = marketPriceSummary(items, snapshots, now, staleSeconds);
               const available = items.filter((i) => snapshots.has(i.id));
               return (
                 <React.Fragment key={id}>
@@ -779,13 +815,13 @@ function Markets({
                           <strong>{items[0].base}</strong>
                           <small>{asset?.name ?? id}</small>
                         </button>
-                        {items.every((i) => i.mapping_verified) && (
+                        {items.every((i) => i.mapping_verified) ? (
                           <ShieldCheck
                             size={14}
                             className="mint"
                             aria-label="已核验映射"
                           />
-                        )}
+                        ) : <Badge tone="amber">映射待核验</Badge>}
                       </div>
                     </td>
                     <td>
@@ -806,23 +842,24 @@ function Markets({
                       </small>
                     </td>
                     <td>
-                      {quotes.map((q) => {
-                        const prices = items
-                          .filter((i) => i.quote === q)
-                          .map((i) => {
-                            const s = snapshots.get(i.id);
-                            return s?.mid ?? s?.last ?? s?.mark ?? s?.index;
-                          })
-                          .filter((x): x is number => x != null);
-                        return (
-                          <div key={q} className="mono">
-                            {prices.length
-                              ? `${num(Math.min(...prices), 6)}${Math.max(...prices) !== Math.min(...prices) ? ` – ${num(Math.max(...prices), 6)}` : ""}`
-                              : "未提供"}{" "}
-                            <small>{q}</small>
-                          </div>
-                        );
-                      })}
+                      {summary.ranges.map((range) => (
+                        <div key={range.key} className="mono">
+                          {num(range.min, 8)}{range.max !== range.min ? ` – ${num(range.max, 8)}` : ""} {range.quote}
+                          <small className="muted">
+                            {{ mid: "盘口中间价", last: "最新成交", mark: "标记价格", index: "指数价格" }[range.basis]}
+                            {range.isDemo ? " · 演示" : " · 公开行情"}
+                            {!range.sourceKnown ? " · 来源时间未知" : ""}
+                          </small>
+                        </div>
+                      ))}
+                      {!summary.ranges.length && <span className="muted">无可用参考价格</span>}
+                      <small className="muted">参考范围 · 已纳入 {summary.includedMarkets} / {items.length} 市场 · 排除 {summary.excludedMarkets}</small>
+                      {Object.keys(summary.exclusions).length > 0 && <small className="muted">
+                        过滤项：{Object.entries(summary.exclusions).map(([reason, count]) =>
+                          `${({ inactive: "非活跃", missing: "缺快照", invalid: "无效快照", identity: "身份不符",
+                            invalid_price: "无效价格", missing_time: "缺时间", future: "未来时间", stale: "过期",
+                            missing_price: "缺价格" } as Record<string, string>)[reason] ?? reason} ${count}`).join("、")}
+                      </small>}
                     </td>
                     <td>
                       <span className="muted">展开查看原始费率</span>
@@ -831,20 +868,13 @@ function Markets({
                       <span className="muted">按市场独立显示</span>
                     </td>
                     <td>
-                      <DataAge
-                        snapshot={
-                          items
-                            .map((i) => snapshots.get(i.id))
-                            .filter((s): s is Snapshot => !!s)
-                            .sort(
-                              (a, b) =>
-                                relevantPriceTimestamp(b) -
-                                relevantPriceTimestamp(a),
-                            )[0]
-                        }
-                        now={now}
-                        staleSeconds={staleSeconds}
-                      />
+                      {summary.ranges.map((range) => <small className="muted" key={range.key}
+                        title={`纳入范围最早字段 ${time(range.oldestAt)} · 最新字段 ${time(range.newestAt)}`}>
+                        {range.quote} · {{ mid: "中间价", last: "成交", mark: "标记", index: "指数" }[range.basis]}
+                        {range.isDemo ? " · 演示" : ""} · 最旧 {age(range.oldestAt, now)}
+                        {!range.sourceKnown ? " · 按本地接收，来源时间未知" : ""}
+                      </small>)}
+                      {!summary.ranges.length && <Badge tone="amber">无有效价格字段</Badge>}
                     </td>
                     <td>
                       <button
@@ -926,6 +956,9 @@ function MarketRow({
             <small>
               {kindName[i.kind]} · {i.chain ?? "链下市场"}
             </small>
+            <small className="muted break" title={i.native_asset_id ?? undefined}>
+              原生身份：{i.native_asset_id ?? "未提供"}
+            </small>
           </div>
         </div>
       </td>
@@ -987,24 +1020,30 @@ function Chart({
   field: "price" | "funding";
   label: string;
 }) {
-  const data = snapshots
+  const funding = field === "funding" ? fundingHistorySeries(snapshots) : null;
+  const priceData = (field === "price" ? snapshots : [])
     .map((s) => ({
       at: s.source_at ?? s.received_at,
-      value:
-        field === "price"
-          ? (s.mid ??
+      value: (s.mid ??
             s.last ??
             s.mark ??
-            (s.bid != null && s.ask != null ? (s.bid + s.ask) / 2 : null))
-          : s.funding_rate,
+            (s.bid != null && s.ask != null ? (s.bid + s.ask) / 2 : null)),
     }))
     .filter((p): p is { at: number; value: number } => p.value != null)
     .sort((a, b) => a.at - b.at);
+  const series = funding ? funding.series.map((item) => ({ ...item,
+    label: `${item.kind === "settled" ? "已结算值快照" : fundingKind(item.kind)} · ${item.intervalHours ?? "周期未提供"}${item.intervalHours ? "h" : ""} · ${
+      item.basis === "source" ? "来源字段时间" : item.basis === "field_received" ? "本地字段接收" : "本地快照（来源时间未知）"}${item.isDemo ? " · 演示" : ""}`,
+  })) : [{ key: "price", label, points: priceData }];
+  const data = series.flatMap((item) => item.points).sort((left, right) => left.at - right.at);
+  const historyNote = funding ? `资金费按字段时间去重：${funding.pointCount} 个点，去重 ${funding.duplicates} 条，排除 ${funding.excluded} 条；本图为本地快照序列，字段时间不自动等同实际结算时间。` : "";
   if (data.length < 2)
     return (
       <div className="chart-empty">
         <Activity size={20} />
-        <span>{label}至少需要两条有效历史记录</span>
+        <span>{label}至少需要两条独立有效记录（当前 {data.length} 条）
+          {funding && <small>{series.map((item) => item.label).join("；")}</small>}
+          {historyNote && <small>{historyNote}</small>}</span>
       </div>
     );
   const min = Math.min(...data.map((d) => d.value)),
@@ -1012,17 +1051,16 @@ function Chart({
   const range = max - min || Math.abs(max) * 0.01 || 1;
   const first = data[0].at,
     last = data[data.length - 1].at;
-  const points = data
-    .map(
-      (p, i) =>
-        `${48 + (last === first ? i / (data.length - 1) : (p.at - first) / (last - first)) * 680},${135 - ((p.value - min) / range) * 108}`,
-    )
-    .join(" ");
+  const position = (point: { at: number; value: number }) => ({
+    x: 48 + (last === first ? .5 : (point.at - first) / (last - first)) * 680,
+    y: 135 - ((point.value - min) / range) * 108,
+  });
+  const colors = ["#56d6ba", "#d5ae6e", "#8eacf8", "#ee91b4", "#a9c572", "#c0a2f4"];
   return (
     <div
       className="chart"
       role="img"
-      aria-label={`${label}历史，共 ${data.length} 条记录；最低 ${field === "funding" ? pct(min) : num(min, 6)}，最高 ${field === "funding" ? pct(max) : num(max, 6)}`}
+      aria-label={`${label}历史，共 ${data.length} 条记录；最低 ${field === "funding" ? pct(min) : num(min, 6)}，最高 ${field === "funding" ? pct(max) : num(max, 6)}${funding ? `；${series.map((item) => item.label).join("；")}；${historyNote}` : ""}`}
     >
       <svg viewBox="0 0 760 176">
         <defs>
@@ -1048,16 +1086,15 @@ function Chart({
             </text>
           </g>
         ))}
-        <polygon
-          points={`48,144 ${points} 728,144`}
-          fill={`url(#fill-${field})`}
-        />
-        <polyline
-          points={points}
-          stroke="#56d6ba"
-          strokeWidth="2"
-          fill="none"
-        />
+        {series.map((item, index) => <g key={item.key}>
+          <polyline points={item.points.map((point) => { const p = position(point); return `${p.x},${p.y}`; }).join(" ")}
+            stroke={colors[index % colors.length]} strokeWidth="2" fill="none" />
+          {field === "funding" && item.points.map((point) => { const p = position(point); return (
+            <circle key={point.at} cx={p.x} cy={p.y} r="3" fill={colors[index % colors.length]}>
+              <title>{item.label} · {time(point.at)} · {pct(point.value)}</title>
+            </circle>
+          ); })}
+        </g>)}
         <text x="48" y="166" fill="#8593a6" fontSize="10">
           {new Date(first).toLocaleTimeString("zh-CN", { hour12: false })}
         </text>
@@ -1065,6 +1102,9 @@ function Chart({
           {new Date(last).toLocaleTimeString("zh-CN", { hour12: false })}
         </text>
       </svg>
+      {funding && <><div className="tags">{series.map((item, index) =>
+        <span className="badge" key={item.key} style={{ color: colors[index % colors.length] }}>{item.label}</span>)}</div>
+        <small className="muted">{historyNote}</small></>}
     </div>
   );
 }
@@ -1449,6 +1489,10 @@ function Detail({
                 </dd>
                 <dt>原生市场 / 池标识</dt>
                 <dd className="break">{instrument.native_symbol}</dd>
+                <dt>原生资产身份</dt>
+                <dd className="break mono">{instrument.native_asset_id ?? "未提供"}</dd>
+                <dt>内部资产身份</dt>
+                <dd className="break mono">{instrument.asset_id}</dd>
                 <dt>最小名义价值</dt>
                 <dd>
                   {num(instrument.min_notional)} {instrument.quote}
@@ -1570,6 +1614,7 @@ function Status({
                 <th>平台</th>
                 <th>采集状态</th>
                 <th>行情源链路 / WebSocket 状态</th>
+                <th>资金费目录采集</th>
                 <th>源流重连</th>
                 <th>最后接收</th>
                 <th>订阅数</th>
@@ -1614,6 +1659,16 @@ function Status({
                       源 WebSocket：
                       {stateName[s.stream_state] ?? s.stream_state ?? "未提供"}
                     </small>
+                    <small>全目录：{s.light_state ?? "未提供"} · {s.light_subscriptions ?? 0} 市场 · 最近 {age(s.light_last_received_at, now)}</small>
+                    <small>轻量重试：{num(s.light_retries, 0)} · 目录发现：{s.discovery_complete ? "已完成" : "尚未完成"}
+                      {s.discovery_state ? ` · ${stateName[s.discovery_state] ?? s.discovery_state}` : ""}</small>
+                  </td>
+                  <td className="wrap">
+                    <Badge tone={Object.keys(s.funding_errors ?? {}).length ? "amber" : "neutral"}>
+                      {stateName[s.funding_state] ?? s.funding_state ?? "未提供"}
+                    </Badge>
+                    <small className="muted">{num(s.funding_subscriptions, 0)} 个市场 · 重试 {num(s.funding_retries, 0)}</small>
+                    <small className="muted" title={time(s.funding_last_received_at)}>最近 {age(s.funding_last_received_at, now)}</small>
                   </td>
                   <td className="mono">{num(s.stream_reconnects, 0)}</td>
                   <td title={time(s.last_received_at)}>
@@ -1628,6 +1683,20 @@ function Status({
                     {s.missing_fields?.length > 0 && (
                       <small>缺失：{s.missing_fields.join("、")}</small>
                     )}
+                    {([
+                      ["目录发现", s.discovery_errors],
+                      ["全目录轻量", s.light_errors],
+                      ["关注市场详情", s.detail_errors],
+                      ["资金费", s.funding_errors],
+                    ] as [string, Record<string, string> | undefined][]).map(([label, errors]) => (
+                      <details key={label}>
+                        <summary>{label}错误（{Object.keys(errors ?? {}).length}）</summary>
+                        {Object.entries(errors ?? {}).map(([service, message]) => (
+                          <p key={service} className="break">{service}：{message}</p>
+                        ))}
+                        {!Object.keys(errors ?? {}).length && <p>未记录错误</p>}
+                      </details>
+                    ))}
                   </td>
                 </tr>
               ))}
@@ -1734,12 +1803,16 @@ function SettingsPage({
   const [rpc, setRpc] = useState(
     JSON.stringify(settings?.rpc_urls ?? {}, null, 2),
   );
+  const [dexQueries, setDexQueries] = useState(
+    JSON.stringify(settings?.dex_search_queries ?? {}, null, 2),
+  );
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     setDraft(settings);
     setWatch(settings?.watch_assets.join(", ") ?? "");
     setRpc(JSON.stringify(settings?.rpc_urls ?? {}, null, 2));
+    setDexQueries(JSON.stringify(settings?.dex_search_queries ?? {}, null, 2));
   }, [settings]);
   if (!draft)
     return <Empty title="配置尚未加载" text="连接后端后可编辑配置。" />;
@@ -1758,6 +1831,11 @@ function SettingsPage({
         Object.values(urls).some((v) => typeof v !== "string")
       )
         throw new Error("RPC 配置必须是链名称到 URL 字符串的 JSON 对象");
+      const queries = JSON.parse(dexQueries);
+      if (!queries || Array.isArray(queries) || typeof queries !== "object" ||
+          Object.entries(queries).some(([protocol, values]) => !protocol.trim() || !Array.isArray(values) ||
+            values.some((value) => typeof value !== "string" || !value.trim())))
+        throw new Error("DEX 搜索配置必须是协议名称到非空搜索字符串数组的 JSON 对象");
       const result = await api<Settings>("/api/settings", "PUT", {
         ...draft,
         watch_assets: watch
@@ -1765,6 +1843,7 @@ function SettingsPage({
           .map((v) => v.trim())
           .filter(Boolean),
         rpc_urls: urls,
+        dex_search_queries: queries,
       });
       onSave(result);
     } catch (e) {
@@ -1774,6 +1853,8 @@ function SettingsPage({
     }
   };
   return (
+    <>
+    <FeeProfiles />
     <form onSubmit={(e) => void save(e)}>
       <div className="settings-grid">
         <section className="panel">
@@ -1797,6 +1878,8 @@ function SettingsPage({
                   "优先行情 WebSocket",
                   "优先使用平台公开行情流；断开或暂不支持时以 REST 回退，元数据和资金费仍按来源机制更新",
                 ],
+                ["broad_collection_enabled", "全目录轻量采集", "CEX 按批次轮转已发现市场；关注资产继续采集详细数据。轮转周期不等于全市场实时覆盖"],
+                ["recording_enabled", "行情诊断录制", "本地保存公开行情负载，按容量与天数限制；默认关闭，不记录认证信息"],
                 ["history_enabled", "历史存储", "保存定时快照，用于查询和回放"],
                 ["computation_enabled", "收益计算", "允许策略计算与机会分析"],
                 [
@@ -1835,11 +1918,11 @@ function SettingsPage({
             <Clock size={18} />
           </div>
           <div className="form-grid">
-            <Field label="关注资产" hint="使用逗号分隔，保留资产原有身份">
+            <Field label="关注资产" hint="任意已发现 ticker，逗号分隔；详细采集关注资产，全目录轻量采集独立控制">
               <input
                 value={watch}
                 onChange={(e) => setWatch(e.target.value)}
-                placeholder="BTC, ETH, SOL"
+                placeholder="例如 PEPE, BTC, 任意已发现 ticker"
               />
             </Field>
             <Field label="页面合并刷新 / 毫秒">
@@ -1861,6 +1944,34 @@ function SettingsPage({
                 value={draft.poll_seconds}
                 onChange={(e) => update("poll_seconds", Number(e.target.value))}
               />
+            </Field>
+            <Field label="全目录每批间隔 / 秒">
+              <input type="number" min={10} max={3600} required value={draft.broad_poll_seconds}
+                onChange={(e) => update("broad_poll_seconds", Number(e.target.value))} />
+            </Field>
+            <Field label="全目录每批市场数" hint="1–100；完成整轮所需时间随市场数增长">
+              <input type="number" min={1} max={100} required value={draft.broad_batch_size}
+                onChange={(e) => update("broad_batch_size", Number(e.target.value))} />
+            </Field>
+            <Field label="资金费采集周期 / 秒" hint="资金费目录独立刷新；行情源未提供的字段不会用零替代">
+              <input type="number" min={10} max={3600} required value={draft.funding_poll_seconds ?? 60}
+                onChange={(e) => update("funding_poll_seconds", Number(e.target.value))} />
+            </Field>
+            <Field label="市场目录刷新 / 秒" hint="300–21600；定期发现新增币种、市场及下架状态">
+              <input type="number" min={300} max={21600} required value={draft.discovery_seconds ?? 1800}
+                onChange={(e) => update("discovery_seconds", Number(e.target.value))} />
+            </Field>
+            <Field label="诊断录制容量 / MB">
+              <input type="number" min={1} max={10000} required value={draft.recording_max_mb}
+                onChange={(e) => update("recording_max_mb", Number(e.target.value))} />
+            </Field>
+            <Field label="诊断录制保留 / 天">
+              <input type="number" min={1} max={30} required value={draft.recording_retention_days}
+                onChange={(e) => update("recording_retention_days", Number(e.target.value))} />
+            </Field>
+            <Field label="诊断平台" hint="逗号分隔平台 ID；留空表示所有已启用平台">
+              <input value={draft.recording_venues.join(", ")}
+                onChange={(e) => update("recording_venues", e.target.value.split(",").map(s => s.trim()).filter(Boolean))} />
             </Field>
             <Field label="数据过期阈值 / 秒">
               <input
@@ -1958,6 +2069,22 @@ function SettingsPage({
             </div>
           </div>
         </section>
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>DEX 池发现范围</h2>
+              <p>为各协议添加任意币种搜索词或指定池地址；来源搜索结果不代表完整链上目录。</p>
+            </div>
+            <Search size={18} />
+          </div>
+          <div className="form-content">
+            <Field label="协议 → 搜索词数组（JSON）" hint="协议 ID 如 uniswap、pancakeswap、aerodrome、curve、raydium、orca。留空对象使用已有默认配置。">
+              <textarea aria-label="DEX 搜索词 JSON" rows={7} spellCheck={false} className="mono" value={dexQueries}
+                onChange={(e) => setDexQueries(e.target.value)}
+                placeholder={'{\n  "uniswap": ["PEPE USDC", "pool:ethereum:0x…"]\n}'} />
+            </Field>
+          </div>
+        </section>
       </div>
       {error && <Notice error>{error}</Notice>}
       <div className="form-actions">
@@ -1970,6 +2097,7 @@ function SettingsPage({
         </button>
       </div>
     </form>
+    </>
   );
 }
 const strategies: Record<string, string> = {
@@ -1982,17 +2110,19 @@ const strategies: Record<string, string> = {
   dex_pool_spread: "同链跨池价格比较",
 };
 function Opportunities({
+  initial,
   instruments,
   snapshots,
   toast,
 }: {
+  initial?: {buy_instrument_id: string; sell_instrument_id: string; strategy: string} | null;
   instruments: Instrument[];
   snapshots: Map<string, Snapshot>;
   toast: (t: string) => void;
 }) {
-  const [strategy, setStrategy] = useState("spot_spread");
-  const [buy, setBuy] = useState("");
-  const [sell, setSell] = useState("");
+  const [strategy, setStrategy] = useState(initial?.strategy ?? "spot_spread");
+  const [buy, setBuy] = useState(initial?.buy_instrument_id ?? "");
+  const [sell, setSell] = useState(initial?.sell_instrument_id ?? "");
   const [notional, setNotional] = useState("10000");
   const [sizeBase, setSizeBase] = useState("");
   const [sizeMode, setSizeMode] = useState("notional");
@@ -2002,10 +2132,11 @@ function Opportunities({
   const [fxRate, setFxRate] = useState("");
   const [fxSource, setFxSource] = useState("");
   const [fxAt, setFxAt] = useState("");
-  const [fees, setFees] = useState(["", "", "", ""]);
-  const [holdingFees, setHoldingFees] = useState(["", ""]);
   const [extras, setExtras] = useState("");
-  const [exitAssumption, setExitAssumption] = useState(false);
+  const [exitMode, setExitMode] = useState("unknown");
+  const [longExitPrice, setLongExitPrice] = useState("");
+  const [shortExitPrice, setShortExitPrice] = useState("");
+  const [exitBasis, setExitBasis] = useState("");
   const [fundingBasis, setFundingBasis] = useState("mark");
   const [monitorVersion, setMonitorVersion] = useState(0);
   const [result, setResult] = useState<Json | null>(null);
@@ -2018,16 +2149,15 @@ function Opportunities({
   const [savedError, setSavedError] = useState("");
   const [busy, setBusy] = useState(false);
   const [bookMode, setBookMode] = useState(true);
+  const [sizingNote, setSizingNote] = useState("");
   const [delay, setDelay] = useState("0");
   const [asOf, setAsOf] = useState("");
   const buyI = instruments.find((i) => i.id === buy),
     sellI = instruments.find((i) => i.id === sell);
+  const tradeFees = useTradeFees(buyI, sellI);
   const buyS = snapshots.get(buy);
-  const estimate = buyS?.ask ?? buyS?.last ?? buyS?.mark;
-  const quantity =
-    sizeMode === "notional" && estimate
-      ? Number(notional) / estimate
-      : Number(sizeBase);
+  const estimate = buyS?.ask != null && Number.isFinite(buyS.ask) && buyS.ask > 0 ? buyS.ask : null;
+  const indicativeQuantity = estimate ? Number(notional) / estimate : null;
   const loadSaved = () =>
     api<{ samples: Json[] }>("/api/opportunities/saved")
       .then((data) => {
@@ -2043,11 +2173,21 @@ function Opportunities({
     setError("");
     setBusy(true);
     setResult(null);
+    setSizingNote("");
     try {
       if (!buyI || !sellI) throw new Error("请选择买入与卖出市场");
       if (buy === sell) throw new Error("买卖两腿必须选择不同市场");
-      if (!Number.isFinite(quantity) || quantity <= 0)
-        throw new Error("请输入有效规模；按金额计算时必须有买方报价");
+      if (exitMode === "prices" && (![longExitPrice, shortExitPrice].every(v => v.trim() && Number.isFinite(Number(v)) && Number(v) > 0)))
+        throw new Error("请填写两腿正数退出价格；它们是模拟假设，不是已锁定报价");
+      if (exitMode === "basis" && (!exitBasis.trim() || !Number.isFinite(Number(exitBasis))))
+        throw new Error("请填写有效的退出基差假设");
+      let quantity = Number(sizeBase);
+      if (sizeMode === "base" && (!Number.isFinite(quantity) || quantity <= 0))
+        throw new Error("请输入有效的基础资产数量");
+      if (sizeMode === "notional" && (!Number.isFinite(Number(notional)) || Number(notional) <= 0))
+        throw new Error("请输入有效的买方报价币名义金额");
+      if (sizeMode === "notional" && !bookMode)
+        throw new Error("按金额核算需要启用订单簿深度获取；也可改用基础资产数量模式");
       const books: Book[] = [];
       const bookErrors: string[] = [];
       if (bookMode) {
@@ -2061,6 +2201,14 @@ function Opportunities({
               bookErrors.push(`${i.venue}: ${(e as Error).message}`);
             }
           }
+      }
+      const calculationAt = Date.now();
+      if (sizeMode === "notional") {
+        const buyBook = books.find((book) => book.instrument_id === buyI.id);
+        if (!buyBook) throw new Error(`无法取得买方盘口，不能按金额核算；可改用基础资产数量模式。${bookErrors.join("；")}`);
+        const sizing = bookBaseForNotional(buyI, buyBook, Number(notional), calculationAt, 60);
+        quantity = sizing.sizeBase;
+        setSizingNote(`本次买方名义金额 ${num(sizing.spentQuote, 8)} ${buyI.quote}（不含额外费用），按 ${sizing.levelsUsed} 档卖盘换算 ${num(sizing.sizeBase, 12)} ${buyI.base}；未自动调整两腿数量步长。${sizing.sourceTimeKnown ? "" : "源事件时间未提供，仅按盘口本地接收时间检查时效。"}`);
       }
       const input: Json = {
         instruments: [buyI, sellI],
@@ -2087,32 +2235,22 @@ function Opportunities({
           .split(/[,，\s]+/)
           .filter(Boolean)
           .map(Number),
-        costs: [buyI, sellI].map((i, index) => ({
-          instrument_id: i.id,
-          open_fee_rate:
-            fees[index * 2] === "" ? null : Number(fees[index * 2]) / 100,
-          close_fee_rate:
-            fees[index * 2 + 1] === ""
-              ? null
-              : Number(fees[index * 2 + 1]) / 100,
-          holding_rate_per_hour:
-            holdingFees[index] === "" ? null : Number(holdingFees[index]) / 100,
-          source: "用户配置",
-          at: Date.now(),
-        })),
+        costs: [buyI, sellI].map((instrument, side) => tradeFees.cost(instrument, side, calculationAt)),
         extra_costs: [
           {
             name: "Gas / 转账 / 其他执行成本",
             amount: extras === "" ? null : Number(extras),
             currency: buyI.quote,
             source: "用户配置",
-            at: Date.now(),
+            at: calculationAt,
           },
         ],
         hold_hours: Number(hold === "custom" ? customHold : hold),
-        assume_exit_at_entry: exitAssumption,
+        assume_exit_at_entry: exitMode === "entry",
+        exit_prices: exitMode === "prices" ? {[buy]: Number(longExitPrice), [sell]: Number(shortExitPrice)} : {},
+        exit_basis_quote: exitMode === "basis" ? Number(exitBasis) : null,
         stale_seconds: 60,
-        as_of: Date.now(),
+        as_of: calculationAt,
         funding_notional_basis: fundingBasis,
       };
       const output = await api<Json>(
@@ -2203,6 +2341,7 @@ function Opportunities({
       <Notice>
         计算使用当前来源快照与明确成本。不同报价币不默认等价；数据、费用或成交深度缺失时会显示计算前置条件。不会执行交易。
       </Notice>
+      {sizingNote && <Notice>{sizingNote}</Notice>}
       <form onSubmit={(e) => void calculate(e)}>
         <section className="panel">
           <div className="panel-heading">
@@ -2263,9 +2402,9 @@ function Opportunities({
               <Field
                 label={`计算金额 / ${buyI?.quote ?? "买方报价币"}`}
                 hint={
-                  estimate
-                    ? `按买方报价估算 ${num(quantity, 8)} ${buyI?.base}`
-                    : "买方报价缺失时请使用基础资产数量"
+                  `金额为买方报价币名义金额，不含额外费用。${estimate
+                    ? `仅按卖一的指示估算 ${num(indicativeQuantity, 8)} ${buyI?.base}；`
+                    : "卖一指示报价未提供；"}最终数量由本次获取的买方卖盘逐档换算，深度不足时停止核算。`
                 }
               >
                 <input
@@ -2350,45 +2489,8 @@ function Opportunities({
             <summary>
               费用与执行假设 <span>空白 = 待配置；输入 0 表示明确假设为零</span>
             </summary>
+            <FeeCostFields fees={tradeFees} />
             <div className="form-grid four">
-              {[
-                "买方开仓费率 / %",
-                "买方平仓费率 / %",
-                "卖方开仓费率 / %",
-                "卖方平仓费率 / %",
-              ].map((label, idx) => (
-                <Field label={label} key={label}>
-                  <input
-                    type="number"
-                    step="any"
-                    placeholder="待配置"
-                    value={fees[idx]}
-                    onChange={(e) =>
-                      setFees((old) =>
-                        old.map((v, i) => (i === idx ? e.target.value : v)),
-                      )
-                    }
-                  />
-                </Field>
-              ))}
-              {["买方持仓成本 / % 每小时", "卖方持仓成本 / % 每小时"].map(
-                (label, idx) => (
-                  <Field label={label} key={label}>
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      placeholder="待配置"
-                      value={holdingFees[idx]}
-                      onChange={(e) =>
-                        setHoldingFees((old) =>
-                          old.map((v, i) => (i === idx ? e.target.value : v)),
-                        )
-                      }
-                    />
-                  </Field>
-                ),
-              )}
               <Field label="资金费名义价值假设">
                 <select
                   value={fundingBasis}
@@ -2420,14 +2522,27 @@ function Opportunities({
                 />
                 按规模获取订单簿计算均价
               </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={exitAssumption}
-                  onChange={(e) => setExitAssumption(e.target.checked)}
-                />
-                显式假设退出价格等于入场价格
-              </label>
+            </div>
+            <div className="form-grid">
+              <Field label="退出情景" hint="仅辅助模拟；未来退出盘口与实际成交价格未知">
+                <select value={exitMode} onChange={(e) => setExitMode(e.target.value)}>
+                  <option value="unknown">未提供退出假设，持有净值未知</option>
+                  <option value="entry">假设退出价等于各自入场价</option>
+                  <option value="prices">分别输入两腿退出价格</option>
+                  <option value="basis">输入退出基差（空腿减多腿）</option>
+                </select>
+              </Field>
+              {exitMode === "prices" && <>
+                <Field label={`多腿退出卖价 / ${buyI?.quote ?? "报价币"}`}>
+                  <input type="number" min="0" step="any" value={longExitPrice} onChange={(e) => setLongExitPrice(e.target.value)} />
+                </Field>
+                <Field label={`空腿退出买价 / ${sellI?.quote ?? "报价币"}`}>
+                  <input type="number" min="0" step="any" value={shortExitPrice} onChange={(e) => setShortExitPrice(e.target.value)} />
+                </Field>
+              </>}
+              {exitMode === "basis" && <Field label={`退出基差 / ${buyI?.quote ?? "计价币"}`} hint="固定多腿退出为入场均价，再按此基差推导空腿退出价；可输入 0 模拟收敛">
+                <input type="number" step="any" value={exitBasis} onChange={(e) => setExitBasis(e.target.value)} />
+              </Field>}
             </div>
           </details>
           <div className="panel-foot">
@@ -3133,6 +3248,7 @@ function Notifications({ toast }: { toast: (t: string) => void }) {
                             {(
                               {
                                 sent: "已发送",
+                                expired: "已过期，未推送",
                                 queued: "排队中",
                                 pending: "待发送",
                                 retry: "等待重试",

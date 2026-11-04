@@ -1,0 +1,79 @@
+# 分阶段审计与待办
+
+更新：2026-11-04 UTC。每批修改都要更新本表的状态、代码、测试和证据，再更新 STATUS / COVERAGE / VALIDATION；**收到问题、存在代码或有一个 fixture 不等于完成验收**。用户当前顺序为：数据正确性 → 按资产监控聚合/价差规模闭环 → 资金费 → 其他简洁指标/已有历史。不新增交易账户，不扩大本轮历史/原生范围。
+
+状态含义：“定向mock/离线通过”仅证明所列本地检查，不承诺生产兼容；“实网受阻/未验”与“未开发”继续保持对应缺口，不能用mock或父线程报告勾选完成。最终离线结果已记录于 [followup-validation.json](evidence/followup-validation.json)：Python 563 passed（1条上游Starlette warning）、前端Node 18 passed、TS/Vite build、CI Ruff E4/E7/E9/F和diffcheck通过；最终整合浏览器全部通过：baseline6组、followup12组、费用7组，均见同一聚合证据。完整三阶段仍未通过验收。
+
+父线程曾报告 OKX **1750**、Bitget **4597**、Hyperliquid **347**、Lighter **213** 个市场。这些是**父线程报告，非本执行环境采集样本**；未收到可复核的当前原始响应、请求时间/产品口径和网络来源前，不作本环境已实测数量，也不按这些数字认定发现完整。
+
+<a id="p0"></a>
+
+## P0：数据与计算正确性
+
+| ID / Priority | Status | Code | Tests | Evidence | Limitations / 下一步 |
+| --- | --- | --- | --- | --- | --- |
+| D01 全币种目录真实采集 / P0 | 目录路径已实现；实网受阻 | [cex.py](../backend/watch_money/adapters/cex.py)、[dex.py](../backend/watch_money/adapters/dex.py)、[collector.py](../backend/watch_money/collector.py) | [test_cex_light.py](../tests/test_cex_light.py)、[test_dex_catalog.py](../tests/test_dex_catalog.py) | 非主流币、不同产品/client、部分发现失败的 fixture 已有；上述四个数量仅父线程报告 | 在授权可达环境保存各平台真实目录、产品/时间/分页/失败信息；DEX 搜索目录不是全链索引，不能用返回个数证完整 |
+| D02 同名异币及原生证据 / P0 | 保护已实现；本次定向 mock 通过 | [identity.py](../backend/watch_money/identity.py)、[storage.py](../backend/watch_money/storage.py)、[strategies.py](../backend/watch_money/strategies.py) | [test_identity.py](../tests/test_identity.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py) 的 `test_manual_mapping_cannot_hide_conflicting_native_contracts_from_calculation` | 本次独立定向检查 9 项中的该项通过；native_asset_id 持久化，人工映射不能抹掉不同原生链/地址/单位 | 全币种官方 chain/address、包装/桥接与价格单位证据仍不完整；确认前保留候选/冲突，不按 ticker 自动合并 |
+| D03 源过期、未来时间及恢复 / P0 | 已实现；563离线回归通过，实网未验 | [collector.py](../backend/watch_money/collector.py)、[streaming.py](../backend/watch_money/adapters/streaming.py)、[dex_streaming.py](../backend/watch_money/adapters/dex_streaming.py) | [test_core.py](../tests/test_core.py)、[test_streaming.py](../tests/test_streaming.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py) 的未来 watermark/保留字段年龄用例 | 字段级 source/receipt、未来事件不推进 watermark、修正报价恢复、旧 REST 不覆盖新 WS 的 fixture 已有 | 缺源时间必须明确；新 envelope/价格不得替旧 funding/其他价格续期。实网断线、重放及 24h 待验 |
+| D04 OKX volume、盘口与 OI 单位 / P0 | 修正已实现；本次定向 mock 通过 | [volume_units.py](../backend/watch_money/adapters/volume_units.py)、[cex.py](../backend/watch_money/adapters/cex.py)、[collector.py](../backend/watch_money/collector.py) | [test_volume_units.py](../tests/test_volume_units.py)：原生量、已安装 CCXT parser、盘口/OI；[test_followup_acceptance.py](../tests/test_followup_acceptance.py) | 本次 9 项检查含 linear/inverse 原生 volume、parser 错标复现、book 只转换一次且 OI 保留 contracts；全部通过 | 不把 unified baseVolume 的 contracts 当 base；反向不以现价倒推历史量。旧未核验 CCXT volume 缓存/历史读取抑制；真实 OKX 样本与跨平台单位仍待验 |
+| D05 逐市场失败隔离与限流 / P0 | 已实现；563离线回归通过，实网未验 | [cex.py](../backend/watch_money/adapters/cex.py)、[collector.py](../backend/watch_money/collector.py) | [test_cex_light.py](../tests/test_cex_light.py)、[test_acceptance.py](../tests/test_acceptance.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py) | 单条/批次/client 分组隔离、失败批次游标继续、429 退避 fixture 已有 | 实际 limiter、endpoint 内部分页/重试、一次全目录延迟和部分错误持续性未实测；100 市场批次不保证100次以内 HTTP或全部实时 |
+| D06 step / min amount / 剩余敞口 / P0 | 数量门槛/金额helper/费用联动离线验证通过 | [strategies.py](../backend/watch_money/strategies.py)、[bookSizing.ts](../frontend/src/bookSizing.ts)、[main.tsx](../frontend/src/main.tsx) | [test_strategies.py](../tests/test_strategies.py) 的 step/minimum；[test_followup_acceptance.py](../tests/test_followup_acceptance.py) 的 `test_native_minimum_quantity_is_enforced_in_correct_units` | 本次 9 项包含 spot base / perp base-depth / contracts-depth 的最小量3例通过；不静默四舍五入数量 | root报告前端纯函数18项通过；已检查 [bookSizing.test.mjs](../frontend/tests/bookSizing.test.mjs) 及12组浏览器记录的多档asks/深度不足/未来/缺盘口拦截。最终563 Python、18 Node及6/12/7组浏览器均通过；不得静默舍去剩余金额/敞口或外推未提供深度 |
+| D07 平台 spot/perp maker/taker 公共默认费率 / P0 | API/22参考档案与费用UI已接；离线/7组费用浏览器通过 | [fee_profiles.py](../backend/watch_money/fee_profiles.py)、[public_fees.json](../backend/watch_money/adapters/public_fees.json)、[main.tsx](../frontend/src/main.tsx)、[FeeProfiles.tsx](../frontend/src/FeeProfiles.tsx) | [test_fee_profiles.py](../tests/test_fee_profiles.py)、[test_strategies.py](../tests/test_strategies.py)；563离线与最终7组费用浏览器通过 | 已检查22个普通公开参考：OKX/Bybit/Bitget/Hyperliquid/Lighter各4，Binance仅spot2；来源/checked_at/scope分别保留，Binance perpetual未知，Bybit特殊区/HL spot/HIP-3等scope guard不把表参考当有效值。563离线含fee_profiles回归通过，root最终独立7组费用浏览器通过 | 按 venue/client/spot-perp/maker-taker 分清，记录官方 URL、时间、适用等级/折扣；默认可改，未知不能补零；不引入账户/本金要求 |
+| D08 切换两腿后费用残留 / P0 | 已修；root最终独立7组费用mock浏览器通过 | [FeeProfiles.tsx](../frontend/src/FeeProfiles.tsx) useTradeFees、[main.tsx](../frontend/src/main.tsx) | [browser_fee.json](evidence/browser_fee.json)、[test_fee_profiles.py](../tests/test_fee_profiles.py) | 已读instrument ID归属/切腿清空holding和开平仓fee/取消旧加载结果；7组记录包含只清换侧、同平台换产品、role独立、out_of_scope不回落非空默认；最终bundle的7组费用浏览器已由root独立复跑通过 | 切换买卖 ID、产品或调换方向应重载匹配默认/清空无效自填值，并明确用户覆盖；不能把旧平台费用带入新腿 |
+| D09 双腿 holding 与借贷不静默 / P0 | 已实现；563离线回归通过，实网未验 | [strategies.py](../backend/watch_money/strategies.py)、[main.tsx](../frontend/src/main.tsx) | [test_strategies.py](../tests/test_strategies.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py) 的双腿 holding/一次 FX | 两腿显式小时费按各自名义与8/24/72h计，短现货借贷未知会阻止净收益；持续成本与首次回本回归已有 | 用户假设不是协议实测费率；funding 情景不缩放 holding，未来费配置不能前视。所有协议自动持仓费模型仍未完成 |
+| D10 退出价格/退出基差 UI / P0 | 已修；12组mock浏览器含prices/basis0与最终构建通过 | [strategies.py](../backend/watch_money/strategies.py) `exit_prices` / `exit_basis_quote`、[main.tsx](../frontend/src/main.tsx) exitMode | [test_strategies.py](../tests/test_strategies.py) 有退出缺失门槛；[browser_followup.py](../scripts/browser_followup.py) 的互斥payload检查 | 已读unknown/entry/prices/basis、正退出价/有限基差及互斥请求；[12组浏览器证据](evidence/browser-followup.json) 包含两腿prices及basis=0。请求valuation_currency固定buyI.quote，因此当前基差标签与后端估值币一致 | 按腿 quote 单位展示退出价格，基差使用估值币单位；未知/非正/与策略冲突应拦截，不默认零基差或关闭费 |
+| D11 通知 retry 的二次时效校验 / P0 | 已修；563离线回归通过，实网发送未验 | [notifications.py](../backend/watch_money/notifications.py) 队列发送/重试 | [test_notifications.py](../tests/test_notifications.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py)；新增 `test_restart_never_delivers_expired_opportunity_from_queue` 三状态与 `test_unsent_expired_notification_allows_new_fresh_same_opportunity` | 已读 enqueue固定delivery_expires_at/claim复验代码；root/acceptance报告19项相关测试通过，已包含最终563离线回归。停机1h后 pending/retry/sending 不发送且expired留审计；未送达过期且仍为最新通知时释放旧dedup，已sent/更新状态不误清 | 本地模拟证明修复路径，不是provider或真实停机实测；最终后端离线通过，保留无真实外发边界 |
+
+## P1：监控聚合与价差规模闭环
+
+| ID / Priority | Status | Code | Tests | Evidence | Limitations / 下一步 |
+| --- | --- | --- | --- | --- | --- |
+| M01 全目录轮转与用户配置 / P1 | 已接入；563离线回归通过，实网未验 | [models.py](../backend/watch_money/models.py)、[collector.py](../backend/watch_money/collector.py) | [test_cex_light.py](../tests/test_cex_light.py)、[test_dex_catalog.py](../tests/test_dex_catalog.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py) | 新库默认28平台，已有启用列表保留；30s/100批次、1800s重发现，关注资产详细采集另行进行 | 轮转不是同时实时全覆盖；部分服务目录不完整、六DEX search_limited 必须显示；真实负载和全目录更新延迟未验 |
+| M02 自动双向盘口价差与筛选 / P1 | 后端冻结；563离线/最终12组浏览器通过 | [scanner.py](../backend/watch_money/scanner.py)、[ScannerPage.tsx](../frontend/src/ScannerPage.tsx) | [test_scanner.py](../tests/test_scanner.py) 的反向 bid/ask、平台/资产筛选、预算截断 | 按身份合格组枚举跨 venue 两个方向，quote不同缺FX则无价格差，净收益一直null/executable=false | 是 bid/ask 指示筛选，不含规模深度/费率；超 max_candidates 仅 bounded_prefix，不能宣称找到全市场最佳 |
+| M03 资产行 best 与展开双向组合 / P1 | 后端/资产展开UI冻结；563离线/最终12组浏览器通过 | [scanner.py](../backend/watch_money/scanner.py) asset summaries、[ScannerPage.tsx](../frontend/src/ScannerPage.tsx) | [test_scanner.py](../tests/test_scanner.py) 的资产best/截断口径；最终12组浏览器通过 | 已读每资产 best_spread_candidate/scan_complete 及前端资产行details展开；root报告scanner冻结/96项相关通过，已检查最新12组浏览器记录含展开与精确handoff。最终bundle构建、563离线与12组接续浏览器全部通过 | 一行资产排序→展开组合，显示身份受阻与候选不足；best须注明是否只在已扫前缀，避免重复行冒充独立流动性 |
+| M04 正确 ID、方向与两腿时间 / P1 | 精确handoff mock浏览器与最终构建通过 | [scanner.py](../backend/watch_money/scanner.py)、[ScannerPage.tsx](../frontend/src/ScannerPage.tsx)、[main.tsx](../frontend/src/main.tsx) | [test_scanner.py](../tests/test_scanner.py) 的方向/逐字段provenance；[browser_followup.py](../scripts/browser_followup.py) 的exact-ID/strategy断言 | 已读 candidate buy/sell ID、raw quote和逐腿时间；Scanner onSelectCandidate将两个ID/策略交main切入calculator，不靠ticker回找；96相关mock通过由root报告；最新browser-followup精确ID/策略handoff通过，且点击本身不自动提交计算 | 选中组合必须把原始两个ID/策略带入calculator，反向不能复用正向book/fee；两腿源时间与本地时间都可核对 |
+| M05 选中规模的实际核算 / P1 | 金额/退出/fee切腿离线闭环及最终浏览器通过 | [bookSizing.ts](../frontend/src/bookSizing.ts)、[main.tsx](../frontend/src/main.tsx)、[strategies.py](../backend/watch_money/strategies.py) | [test_strategies.py](../tests/test_strategies.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py)；[bookSizing.test.mjs](../frontend/tests/bookSizing.test.mjs)、最新browser-followup；7组费用切腿浏览器通过 | 后端 supplied depth VWAP/容量有fixtures；12组浏览器包含多档asks预算→base、缺费net未知及无效深度阻止。纯函数18项通过由root报告；fee UI最终7组浏览器通过 | 不能把headline价当成交价、按最后价外推深度或静默舍去剩余；必须刷新选中两腿、相同base规模、精度/min amount、费用、退出假设均满足才给net |
+| M06 本地 WS delta 与源连接 / P1 | 已接入并有回归；真实负载未验 | [market_stream.py](../backend/watch_money/market_stream.py)、[app.py](../backend/watch_money/app.py)、[streaming.py](../backend/watch_money/adapters/streaming.py)、[dex_streaming.py](../backend/watch_money/adapters/dex_streaming.py) | [test_market_stream.py](../tests/test_market_stream.py)、[test_streaming.py](../tests/test_streaming.py)、[test_dex_streaming.py](../tests/test_dex_streaming.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py) | 初始full、后续upserts/removals、stale transition、模式重置；HL/dYdX loopback heartbeat已有 | 本地WS连接不证明源WS在线；源支持平台不同，无全协议深度重建/历史恢复；大目录CPU与24h未验 |
+
+## P2：资金费聚合与真实结算语义
+
+| ID / Priority | Status | Code | Tests | Evidence | Limitations / 下一步 |
+| --- | --- | --- | --- | --- | --- |
+| F01 全 perpetual 资金费采集/同步 / P2 | 离线回归通过；实网周期/时效待验 | [cex.py](../backend/watch_money/adapters/cex.py)、[collector.py](../backend/watch_money/collector.py) | [test_cex_light.py](../tests/test_cex_light.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py) 的 catalog funding rotation | CEX独立60s/100轮转；DEX复用广覆盖payload，funding_state=via_light_rest；非大币不按watchlist裁剪 | 来源不提供周期/资金费时保持未知；本地采集频率不是funding interval；metadata观测TTL与动态费率源时间不可互相刷新 |
+| F02 矩阵周期、类型与下一结算 / P2 | 563离线/12组聚合浏览器通过，实网未验 | [funding_view.py](../backend/watch_money/funding_view.py)、[FundingPage.tsx](../frontend/src/FundingPage.tsx) | [test_funding_view.py](../tests/test_funding_view.py)、[test_scanner.py](../tests/test_scanner.py) | raw/actual interval/8h、current/predicted/settled、next/倒计时和逐字段有效性；未确认身份仅单行、不同kind不混算矩阵 | 不同报价币/结算时点须明确，未同步就提示；归一化费差不是现金利润，正负收付、实际结算笔数需计算器单独验证 |
+| F03 已结算历史与观测采样分离 / P2 | 有限手动历史已接入；真实样本未验 | [funding_history.py](../backend/watch_money/funding_history.py)、[funding_view.py](../backend/watch_money/funding_view.py) | [test_funding_history.py](../tests/test_funding_history.py)、[test_funding_view.py](../tests/test_funding_view.py) | 独立SQLite、raw/source/时间/修订；OKX只接受realizedRate；本地快照is_settled_history=false | 只限已审查服务白名单、显式手动单页；非后台全量回填，cursor不是缺口证明；旧预测/采样不得画成完整结算历史 |
+| F04 历史字段时间、范围、过期排除 / P2 | 字段/范围纯函数、mock图表及最终构建通过 | [storage.py](../backend/watch_money/storage.py)、[app.py](../backend/watch_money/app.py)、[FundingPage.tsx](../frontend/src/FundingPage.tsx)、[main.tsx](../frontend/src/main.tsx) | [test_funding_history.py](../tests/test_funding_history.py)、[test_acceptance.py](../tests/test_acceptance.py)；[marketData.test.mjs](../frontend/tests/marketData.test.mjs)、最新12组browser-followup | 已检查marketData测试：carry funding不重复、kind/period/demo分开、过期/future中间价排除与范围分组；root报告纯函数18项通过，12组浏览器含funding chart与排行/矩阵/独立历史mock | 价格事件时间不能代替funding时间；图表区分本地采样与交易所结算，筛选范围外/过期值不能因插值或envelope变新获得“有效”资格 |
+
+## P3：受限原生能力、证据和运行边界
+
+| ID / Priority | Status | Code | Tests | Evidence | Limitations / 下一步 |
+| --- | --- | --- | --- | --- | --- |
+| O01 全28平台逐项覆盖 / P3 | 清单已维护；全部实网未验 | [COVERAGE.md](COVERAGE.md)、[deployments.json](../backend/watch_money/adapters/deployments.json) | [test_cex.py](../tests/test_cex.py)、[test_dex.py](../tests/test_dex.py) | 下方28条稳定链接区分产品、链、版本、缺字段与接入方式；来源文档/部署hash已记录 | 默认启用不等于支持完整或当前可用；partial/metadata/search_limited与在线证据必须分开，新增平台能力逐条更新 |
+| O02 DEX native / route 缺口 / P3 | EVM有限实现；其它未开发，暂不扩大 | [onchain.py](../backend/watch_money/adapters/onchain.py)、[ONCHAIN.md](ONCHAIN.md) | [test_onchain.py](../tests/test_onchain.py) | 本模块66项mock通过；V3池状态、Pancake V2/Aerodrome单池exact-in、block hash/time/fee/decimal/方向与成员检查 | 所有估算executable=false；无编译字节码/交易模拟认证。Curve/Raydium/Orca native、V3规模quoter/tick、多跳/完整池索引仍未完成，排在价差闭环/实网数据之后 |
+| O03 mock vs real / 24h / Windows / P3 | 实网受阻；24h和Windows未验 | [VALIDATION.md](VALIDATION.md)、[NETWORK.md](NETWORK.md)、[soak.py](../scripts/soak.py) | [test_acceptance.py](../tests/test_acceptance.py)、[test_followup_acceptance.py](../tests/test_followup_acceptance.py) | [live-probes.json](evidence/live-probes.json) 是ProxyError证据；短soak零真实行情；浏览器mock明确标注 | 官方源码可读不等于行情主机可达；不绕过代理/CA/策略。需真实录制/人工核对及至少24h采集后才可声明对应验收 |
+| O04 通知仅模拟 / P3 | 模拟路径已有；外部发送延期 | [notifications.py](../backend/watch_money/notifications.py)、[NOTIFICATIONS.md](NOTIFICATIONS.md) | [test_notifications.py](../tests/test_notifications.py)、[test_acceptance.py](../tests/test_acceptance.py) | 用户指示“先不配置，模拟测试”；HTTP mock/本地通知不是provider receipt | 没有真实飞书/Telegram发送；D11已修且563离线通过，仍不替代真实运行或外部provider验收 |
+| O05 无账户/交易与隐私 / P3 | 当前公共只读边界；持续审计 | [cex.py](../backend/watch_money/adapters/cex.py)、[onchain.py](../backend/watch_money/adapters/onchain.py)、[funding_history.py](../backend/watch_money/funding_history.py)、[recording.py](../backend/watch_money/recording.py) | [test_recording.py](../tests/test_recording.py)、[test_onchain.py](../tests/test_onchain.py)、[test_funding_history.py](../tests/test_funding_history.py) | 无交易执行/账户导入；credential-free历史客户、RPC错误脱敏、payload键级脱敏/去URL、默认关闭录制有回归 | RPC URL仍是私有配置；键级脱敏不识别任意字符串内秘密，不得投入私有响应。录制只是公共JSON/CCXT对象，非完整wire/frame或审计级不可篡改日志；不提交凭证 |
+
+## 全部28平台的覆盖链接
+
+CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE.md#bybit)、[Bitget](COVERAGE.md#bitget)、[Gate](COVERAGE.md#gate)、[MEXC](COVERAGE.md#mexc)、[KuCoin](COVERAGE.md#kucoin)、[Coinbase](COVERAGE.md#coinbase)、[Kraken](COVERAGE.md#kraken)、[HTX](COVERAGE.md#htx)、[Deribit](COVERAGE.md#deribit)、[Upbit](COVERAGE.md#upbit)。
+
+永续 DEX：[Hyperliquid](COVERAGE.md#hyperliquid)、[Lighter](COVERAGE.md#lighter)、[dYdX](COVERAGE.md#dydx)、[Paradex](COVERAGE.md#paradex)、[Aster](COVERAGE.md#aster)、[edgeX](COVERAGE.md#edgex)、[Variational](COVERAGE.md#variational)、[GMX](COVERAGE.md#gmx)、[Jupiter Perps](COVERAGE.md#jupiter-perps)、[Drift](COVERAGE.md#drift)。
+
+现货 DEX：[Uniswap](COVERAGE.md#uniswap)、[PancakeSwap](COVERAGE.md#pancakeswap)、[Aerodrome](COVERAGE.md#aerodrome)、[Curve](COVERAGE.md#curve)、[Raydium](COVERAGE.md#raydium)、[Orca](COVERAGE.md#orca)。
+
+## 本次审计检查与更新规则
+
+本次未重跑 full suite。读取当前代码/fixture 后，只独立执行以下定向检查：
+
+```bash
+.venv/bin/python -m pytest -q \
+  tests/test_volume_units.py::test_okx_native_currency_volume_prevents_contract_count_mislabel \
+  tests/test_volume_units.py::test_installed_ccxt_okx_parser_exposes_the_reported_scale_error_without_network \
+  tests/test_volume_units.py::test_okx_synthetic_book_contracts_convert_once_and_open_interest_remains_contracts \
+  tests/test_followup_acceptance.py::test_native_minimum_quantity_is_enforced_in_correct_units \
+  tests/test_followup_acceptance.py::test_manual_mapping_cannot_hide_conflicting_native_contracts_from_calculation
+# 9 passed in 0.60s — 全部为本地合成/已安装parser测试，无实网请求。
+```
+
+最终563 Python / 18 Node、build/Ruff/diffcheck见 [followup-validation.json](evidence/followup-validation.json)；本审计者只额外独立跑上述9项，不重复full。root最终整合浏览器baseline6/followup12/fee7组均通过；旧171或中间总数不替代最终结果。每批至少更新对应 ID：问题是否重现、改动范围、命令/结果、mock或真实来源、尚缺什么；新问题先开项，修复后凭对应定向测试和集成证据升级状态，不能收到即 done。
