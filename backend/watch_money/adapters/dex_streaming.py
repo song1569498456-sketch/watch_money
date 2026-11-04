@@ -50,6 +50,29 @@ class SourceReadTimeout(TimeoutError):
     pass
 
 
+class _BufferedBook(dict):
+    """Internal compacted state, with per-side receipts outside the wire payload."""
+
+    def __init__(self, message, receipts):
+        super().__init__(message)
+        self.receipts = receipts
+
+
+def _hyperliquid_prices(row, channel):
+    levels = row.get('bbo') if channel == 'bbo' else row.get('levels')
+    if not isinstance(levels, list) or len(levels) != 2:
+        raise ValueError(f'hyperliquid: malformed {channel}')
+    if channel == 'l2Book':
+        if any(not isinstance(side, list) for side in levels):
+            raise TypeError('hyperliquid: malformed book sides')
+        levels = [next((level for level in side if isinstance(level, dict)
+                        and number(level.get('px'), positive=True) is not None
+                        and number(level.get('sz'), positive=True) is not None), None) for side in levels]
+    return {field: level.get('px') for field, level in zip(('bid', 'ask'), levels, strict=True)
+            if isinstance(level, dict) and number(level.get('sz'), positive=True) is not None
+            and number(level.get('px'), positive=True) is not None}
+
+
 class _HyperliquidInbox:
     """Bounded snapshot backlog; compact only on pressure, never block pong reads."""
 
@@ -80,6 +103,26 @@ class _HyperliquidInbox:
 
         if trustworthy(old, old_received) and (not trustworthy(new, new_received) or new < old):
             return previous
+        if old == new and trustworthy(old, old_received) and trustworthy(new, new_received):
+            channel = new_message['channel']
+            old_prices = _hyperliquid_prices(old_message['data'], channel)
+            new_prices = _hyperliquid_prices(new_message['data'], channel)
+            retained = set(new_prices) - set(old_prices)
+            if retained:
+                # Equal-event positive quotes cannot undo a clear, even before
+                # the collector sees it. Preserve only cleared sides; the other
+                # side keeps the current quote and its own original receipt.
+                key = 'bbo' if channel == 'bbo' else 'levels'
+                sides = list(new_message['data'][key])
+                receipts = dict(new_message.receipts) if isinstance(new_message, _BufferedBook) else {
+                    field: new_received for field in ('bid', 'ask')}
+                for index, field in enumerate(('bid', 'ask')):
+                    if field in retained:
+                        sides[index] = None if channel == 'bbo' else []
+                        receipts[field] = (old_message.receipts[field] if isinstance(old_message, _BufferedBook)
+                                           else old_received)
+                merged = _BufferedBook({**new_message, 'data': {**new_message['data'], key: sides}}, receipts)
+                return merged, new_received
         return current
 
     def put(self, message, received_at=None):
@@ -209,25 +252,16 @@ def hyperliquid_patch(instrument: Instrument, message: dict, *, received_at: int
         return None
     channel = message.get("channel")
     if channel in ("bbo", "l2Book"):
-        levels = row.get("bbo") if channel == "bbo" else row.get("levels")
-        if not isinstance(levels, list) or len(levels) != 2:
-            raise ValueError(f"hyperliquid: malformed {channel}")
-        if channel == "l2Book":
-            if any(not isinstance(side, list) for side in levels):
-                raise TypeError("hyperliquid: malformed book sides")
-            # Native l2Book messages are complete snapshots, never book deltas.
-            levels = [next((level for level in side if isinstance(level, dict)
-                            and number(level.get("px"), positive=True) is not None
-                            and number(level.get("sz"), positive=True) is not None), None) for side in levels]
-        prices = {field: level.get("px") for field, level in zip(("bid", "ask"), levels, strict=True)
-                  if isinstance(level, dict) and number(level.get("sz"), positive=True) is not None
-                  and number(level.get("px"), positive=True) is not None}
+        prices = _hyperliquid_prices(row, channel)
         # This protocol defines milliseconds. Reject apparent seconds instead of guessing.
         event_time = number(row.get("time"), positive=True)
         source_at = int(event_time) if event_time is not None and event_time >= 100_000_000_000 else None
-        return _patch(instrument, channel, prices,
+        patch = _patch(instrument, channel, prices,
                       (("bid", "bid", "positive"), ("ask", "ask", "positive")), source_at=source_at,
                       cleared_fields=tuple(field for field in ("bid", "ask") if field not in prices), received_at=received_at)
+        if isinstance(message, _BufferedBook):
+            patch.field_received_at = dict(message.receipts)
+        return patch
     if channel == "activeAssetCtx":
         ctx = row.get("ctx")
         if not isinstance(ctx, dict):

@@ -241,3 +241,5 @@ Regression: `tests/test_empty_book_snapshots.py` checks both empty, each single 
 离线测试见`tests/test_dex_stream_backpressure.py`，覆盖背压pong、真实超时、订阅阶段读取、合并/空book/乱序、字段时间、回调阻塞及清理。官方心跳语义来源：https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/timeouts-and-heartbeats 。未进行受限交易所实网访问，不宣称解决全部线上断流；24小时验收保持开放。
 
 独立复审另确认：仅保留receipt不足以阻止未来帧在墙钟追上后被排行接受。共享扫描/资金费门槛和测算现拒绝源事件时间晚于字段接收时间的记录；字段过期状态也保守标记。已过期记录仍优先显示stale，避免改变既有提示优先级。正常后续帧可以恢复，未将本地时间写回为源时间。
+
+压力合并对同一个事件时间采用逐侧清除优先：任何已清除的一侧不能被同时间正价复活，另一侧正常更新；较新事件可以恢复。内部`_BufferedBook`携带每侧原始receipt（不写入wire字典），避免合并后用最后帧接收时间续期旧清除；原始录制输入不会被修改。BBO与l2Book使用同一价格有效性解析。12项压力回归包括容量16的15清除+2正价、单侧/相反侧清除、较旧/较新时刻，以及300帧多轮压缩对照；容量约束保持不变。
