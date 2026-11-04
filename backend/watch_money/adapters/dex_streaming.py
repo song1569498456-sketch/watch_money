@@ -193,7 +193,7 @@ class _SubscriptionWindow:
             self.changed.set()
 
 
-def _connection_factory(endpoint: str):
+def _connection_factory(endpoint: str, *, additional_headers=None):
     """Use inherited proxies and verified TLS; no account credentials or alternate hosts."""
     from websockets.asyncio.client import connect
 
@@ -201,9 +201,10 @@ def _connection_factory(endpoint: str):
     proxy = (os.environ.get("WSS_PROXY") or os.environ.get("wss_proxy")
              or os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
              or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or True)
+    headers = {'additional_headers': additional_headers} if additional_headers is not None else {}
     return connect(endpoint, ssl=ssl.create_default_context(cafile=ca_file), proxy=proxy,
                    open_timeout=15, close_timeout=5, ping_interval=20, ping_timeout=10,
-                   max_size=2 * 1024 * 1024, max_queue=16)
+                   max_size=2 * 1024 * 1024, max_queue=16, **headers)
 
 
 def _patch(instrument: Instrument, channel: str, row: dict, mappings: tuple,

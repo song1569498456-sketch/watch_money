@@ -222,8 +222,8 @@ def create_stream(rest_adapter: Any) -> CexStreamAdapter | None:
         from .dex_streaming import create_dex_stream
         return create_dex_stream(rest_adapter)
     if rest_adapter.venue == "gate":
-        from .gate_streaming import GateSpotStreamAdapter
-        return GateSpotStreamAdapter(rest_adapter)
+        from .gate_streaming import GateStreamAdapter
+        return GateStreamAdapter(rest_adapter)
     try:
         import ccxt.pro  # noqa: F401
     except ImportError:

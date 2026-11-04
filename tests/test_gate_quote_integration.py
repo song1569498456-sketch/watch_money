@@ -107,8 +107,8 @@ async def test_gate_full_spot_catalog_selection_reports_perp_exclusion(tmp_path)
 
 
 def test_gate_factory_uses_native_book_time_stream():
-    from watch_money.adapters.gate_streaming import GateSpotStreamAdapter
-    assert isinstance(create_stream(CexAdapter('gate')), GateSpotStreamAdapter)
+    from watch_money.adapters.gate_streaming import GateStreamAdapter
+    assert isinstance(create_stream(CexAdapter('gate')), GateStreamAdapter)
 
 
 def test_gate_book_time_unlocks_only_fresh_verified_price_directions(tmp_path):

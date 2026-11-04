@@ -41,3 +41,31 @@
 [Gate永续REST](https://www.gate.com/docs/developers/apiv4/en/futures/)的funding_next_apply是结算时点，config_change_time是配置变更；futures.tickers的资金费没有独立更新时间，外层time_ms仅响应时间。它不像order_book.current具有明确整份快照生成语义，因此本批不以外层时间为费率续期。历史funding_rate接口t/r属于已结算记录，必须与当前/预估分开。新增回归确认这些字段不补成当前资金费源时间；尚无实网独立源时钟证据，资金费可靠比较继续受阻。
 
 本批按需快照、诊断与永续解析均为本地合成/浏览器验证；Gate主机仍不在当前云环境允许列表，没有绕过网络限制或重复请求地区受限Lighter。新快照路径和诊断仍需外部实网核对原始current/update、冷门市场覆盖、限流与稳定性。
+
+## 永续实时集成与独立复测（R35）
+
+Gate现在由`GateStreamAdapter`统一管理四个公开命名空间：spot及futures:btc/usdt/usd1。每个命名空间最多一连接、5000个市场，总选择预算8000；每连接50个原生ID一批、间隔0.25秒。这是应用预算，不是官方吞吐承诺。只使用发现目录中活跃、client=gate且swap/settle一致的永续；未知结算币排除，重复原生ID导致歧义时拒绝连接，截断在requested/selected/truncated中明确显示。支持USD1协议不代表当前CCXT发现已覆盖所有USD1合约，以实际目录为准。
+
+共享经过现货验证的接收、心跳、有界合并、清除及取消逻辑，但永续使用独立端点/频道/心跳、字符串更新ID解析及空价格规则。公开连接携带`X-Gate-Size-Decimal: 1`，避免小于1张的数量被取整成空盘口。只发出BBO价格，不把张数转换成基础币量，不改资金费。记录标签包含结算币，防止同原生合约名的跨连接数据污染。来源为gate:futures.book_ticker:<settle>:<nativeID>，只使用result.t；消息外层时间不补缺失。
+
+失败连接独立按5秒起步、最高300秒退避，不关闭健康兄弟连接。401/403/451表示访问限制，本次目录会话停止该连接的重试；不更换域名或绕过地区限制。连接重建重新订阅、重置本连接更新ID，同时collector保留原始事件时间和清除屏障，旧/同时间正价不能复活清除侧。总状态partial表示只有部分连接收到报价；online只说明各连接收到过帧，不保证当前全市场新鲜。子连接的reconnects与状态在query-work.source_streams.gate.streams中，不要仅看旧的全场stream_reconnects计数。
+
+新脚本完全不访问用户数据库、配置或映射。在允许Gate公开域名且无地区限制的独立环境，从仓库根目录运行：
+
+```sh
+.venv/bin/python scripts/probe_gate_streams.py --live --seconds 180 \
+  --scopes spot,usdt,btc,usd1 --max-markets 8000 \
+  --report /tmp/gate-mixed-public-probe.json
+```
+
+仅复测永续可用`--scopes usdt,btc,usd1`。脚本限制5–600秒、至多8000市场、16条初始公开patch样本；目录发现最多90秒。报告保留选择前后数与截断、各命名空间selected/observed/timed_bbo/fresh_bbo、运行结束前和关闭后的诊断、错误类型和关闭结果。timed_bbo可以已经过期，fresh_bbo使用60秒原时效门槛但不证明资产身份或可实现收益。关闭前采样诊断，避免把探针主动关闭误写成运行中连接失败。没有--live不会创建请求客户端。
+
+复测应逐项核对：
+
+1. 原始频道、连接settle、s和目录nativeID一致；result.t与patch字段时间完全一致，receipt独立；比对现货和同名永续不串值。
+2. 检查普通线性、反向及不同contract_size的价格均保持原生价格；小数B/A不被判成空。真实空侧才清除，不用畸形缺字段冒充空侧。
+3. 在隔离程序中中断一个连接，观察该命名空间退避/重连，其他连接继续；恢复后旧时间/低序列不能覆盖新盘口，长期静止盘口自然过期。不要通过代理/地区切换触发或绕过限制。
+4. 对照requested/selected、按id确认数、实际接收和当前fresh数；未返回的市场明确缺失。资金费仍需独立源时间，fresh BBO不能让缺时间费率变得可比较。
+5. 本脚本是短时诊断；通过后再进行组合应用负载和24小时验收，保留失败/缺覆盖数据，不把临时身份演练当生产批准。
+
+本批证据`gate-mixed-stream-synthetic.json`是四连接假WebSocket合成验证，非实网结果。当前云环境仍禁止Gate主机访问，未运行上面的--live命令，既有Gate现货实测不能替代新永续实测。

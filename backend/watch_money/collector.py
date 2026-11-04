@@ -239,7 +239,8 @@ class Collector:
             # can make it fresh again. Other REST metrics still merge normally.
             if (snapshot.venue == 'gate' and field in ('bid', 'ask') and stamp is None
                     and snapshot.source.startswith('ccxt:gate:fetch_ticker')
-                    and sources.get(field, '').startswith(('gate:spot.book_ticker:', 'gate:spot.order_book:'))
+                    and sources.get(field, '').startswith(('gate:spot.book_ticker:', 'gate:spot.order_book:',
+                                                          'gate:futures.book_ticker:'))
                     and previous is not None and previous <= received.get(field, old.received_at)):
                 patch.pop(field, None)
                 continue
@@ -308,6 +309,9 @@ class Collector:
             supports = getattr(streamer, 'supports_instrument', None)
             if supports is not None:
                 selected = [item for item in selected if supports(item)]
+            select_budget = getattr(streamer, 'select_instruments', None)
+            if select_budget is not None:
+                selected = select_budget(selected)
             cap = getattr(streamer, 'max_catalog_markets', None)
             if cap is not None:
                 selected = selected[:cap]
@@ -322,6 +326,9 @@ class Collector:
             next_selection_check = monotonic() + 1
             settings, instruments = selection()
             signature = tuple(item.model_dump_json() for item in instruments)
+            health = getattr(streamer, 'health_state', None)
+            if health is not None:
+                status.stream_state = health()
 
         while not self.stopping.is_set():
             if monotonic() >= next_selection_check:
@@ -365,7 +372,8 @@ class Collector:
                     status.stream_received_patches += 1
                     status.stream_observer_dropped = getattr(streamer, 'payload_observer_dropped', 0)
                     status.last_received_at = incoming.received_at
-                    status.stream_state = 'online'
+                    health = getattr(streamer, 'health_state', None)
+                    status.stream_state = health() if health is not None else 'online'
                     status.transport = 'WebSocket + REST metadata/funding'
                     failures = 0
                     if now_ms() - last_saved >= settings.poll_seconds * 1000:
