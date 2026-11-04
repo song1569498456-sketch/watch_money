@@ -407,6 +407,11 @@ class FundingHistoryService:
         if any(getattr(client, field, None) for field in ("apiKey", "secret", "password", "uid", "token")):
             raise HTTPException(409, "Funding history requires a credential-free public client")
         page_limit = min(limit, SETTLED_ENDPOINTS[client_id][0])
+        # Output limit must never trim raw events before conflict validation.
+        # KuCoin Classic has no server page-size parameter: bound its complete
+        # returned window locally, failing closed rather than clipping it.
+        if client_id in {"mexc", "kucoinfutures"}:
+            page_limit = 100 if client_id == "mexc" else 1000
         params: dict[str, Any] = {"paginate": False} if client_id in {
             "binanceusdm", "binancecoinm", "okx", "bybit", "gate", "bitget", "htx"} else {}
         if client_id.startswith("binance"):
@@ -417,10 +422,6 @@ class FundingHistoryService:
             params["settle"] = instrument.settle.lower()
         if client_id == "bitget":
             params.update(uta=False, pageNo=1)
-        if client_id == "kucoinfutures":
-            params.update(uta=False, until=now_ms())
-        if client_id == "mexc":
-            params["page_num"] = 1
         if client_id == "bybit" and since is not None:
             # Do not let CCXT estimate a historical query window from today's
             # catalog funding interval; this is only a request boundary.
@@ -449,6 +450,33 @@ class FundingHistoryService:
                             raise HTTPException(502, "Malformed or oversized HTX public history response")
                         payloads = [{"symbol": instrument.native_symbol, "timestamp": row.get("funding_time"),
                                      "info": row} if isinstance(row, dict) else row for row in rows]
+                    elif client_id in {"mexc", "kucoinfutures"}:
+                        # Use CCXT's native public methods (same signing, request
+                        # weights, limiter and errors), not its unified parser's
+                        # filter_by_symbol_since_limit which hides conflicts.
+                        if client_id == "mexc":
+                            response = await client.contractPublicGetFundingRateHistory(
+                                {"symbol": _market["id"], "page_num": 1, "page_size": page_limit})
+                        else:
+                            response = await client.futuresPublicGetContractFundingRates(
+                                {"symbol": _market["id"], "from": since if since is not None else 0, "to": now_ms()})
+                        received = now_ms()
+                        data = response.get("data") if isinstance(response, dict) else None
+                        if client_id == "mexc":
+                            if (not isinstance(response, dict) or response.get("success") is not True
+                                    or response.get("code") != 0 or not isinstance(data, dict)
+                                    or data.get("currentPage") != 1):
+                                raise HTTPException(502, "Malformed MEXC native history envelope")
+                            rows = data.get("resultList")
+                        else:
+                            if not isinstance(response, dict) or response.get("code") != "200000":
+                                raise HTTPException(502, "Malformed KuCoin native history envelope")
+                            rows = data
+                        if not isinstance(rows, list) or len(rows) > page_limit:
+                            raise HTTPException(502, "Malformed or oversized native history page; nothing saved")
+                        payloads = [{"symbol": instrument.native_symbol,
+                                     "timestamp": row.get(NATIVE_HISTORY_TIME_KEYS[client_id]), "info": row}
+                                    if isinstance(row, dict) else row for row in rows]
                     else:
                         payloads = await client.fetch_funding_rate_history(instrument.native_symbol, since, page_limit, params)
                         received = now_ms()
@@ -546,6 +574,8 @@ class FundingHistoryService:
                             "funding_kind": "settled", "funding_interval_hours": period,
                             "period_source": "history.info.collectCycle" if period is not None else None,
                             "source": (f"ccxt:htx:public:{HTX_LINEAR_HISTORY_PATH}:{_market['id']}" if htx_linear
+                                       else f"ccxt:{client_id}:native_public_funding_history:{_market['id']}"
+                                       if client_id in {"mexc", "kucoinfutures"}
                                        else f"ccxt:{client_id}:fetch_funding_rate_history:{instrument.native_symbol}"),
                             "source_docs": HTX_LINEAR_HISTORY_DOCS if htx_linear else SETTLED_ENDPOINTS[client_id][1], "event_type": event_type,
                             "received_at": received, "first_received_at": received, "last_seen_at": received,

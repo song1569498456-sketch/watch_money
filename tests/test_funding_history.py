@@ -38,6 +38,16 @@ class HistoryClient:
         return deepcopy(self.response)
 
 
+    async def contractPublicGetFundingRateHistory(self, params):
+        rows = await self.fetch_funding_rate_history(params['symbol'], None, params['page_size'], params)
+        return {"success": True, "code": 0, "data": {"currentPage": 1,
+                "resultList": [row.get('info', row) if isinstance(row, dict) else row for row in rows]}}
+
+    async def futuresPublicGetContractFundingRates(self, params):
+        rows = await self.fetch_funding_rate_history(params['symbol'], params['from'], None, params)
+        return {"code": "200000", "data": [row.get('info', row) if isinstance(row, dict) else row for row in rows]}
+
+
 @pytest.fixture
 def setup_history(tmp_path, monkeypatch):
     monkeypatch.setattr("watch_money.funding_history.now_ms", lambda: NOW)

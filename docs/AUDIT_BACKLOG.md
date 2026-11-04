@@ -482,3 +482,15 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 未完成：真实轮转/限流、冷门盘口完整性与长期稳定、全资产证据/报价换算、24小时验收。保留dYdX分页不完整与其它平台限制。未重试受阻OKX WS、未修改账户/独立环境、不增加交易。下一项优先从实际有效盘口/身份覆盖报告继续挑缺口，而非仅扩历史名单。
 
 - 最终证据：1310项全量后端（57.05秒）通过；随后补充请求预算下界并验证最终51项Upbit/轻量专项（4.48秒），CI范围Ruff和diff通过。前序80项Upbit/轻量/Coinbase专项通过。无前端改动/浏览器复验，远端CI未确认。
+
+### R56 MEXC/KuCoin原生页截断前校验（2026-11-04）
+
+- 父线程在cb534c9使用CCXT 4.5.91离线对抗样本复现：同刻冲突两行经统一fetch_funding_rate_history(..., limit=1)先过滤成一行，R54应用冲突检查无法见到另一行；反序会接受不同率并记成修订。新测试先调用真实安装解析器证明len=1，再对服务验证两种顺序均拒收2行。不是实网冲突观测。
+- 修复：两平台直接调用同一CCXT client的原生公共方法contractPublicGetFundingRateHistory / futuresPublicGetContractFundingRates；不使用统一解析器的排序/限量/符号预过滤。保留SDK签名路由、原生请求权重/限流器、适配器semaphore、总超时、身份范围前后校验、凭证禁用和原错误转换；不修改client设置或自动重试。接收时间在方法返回即捕获，来源记录明确native_public_funding_history。
+- MEXC固定page_num=1/page_size=100，独立于显示limit；原生success/code/currentPage/resultList须匹配，超过100整页502不保存。KuCoin Classic直接from/to窗口，无page-size参数，完整data最多1000行，超过1000整页拒收，不截断伪装完整，不转UTA。100/1000是本地有界验收策略，不声称官方完整历史上限。SDK当前MEXC默认host为api.mexc.com，保持原统一路径同一client路由，未实网验证。
+- 完整有界原生页的合约/时间/费率/周期与同刻冲突检查在任何输出limit前执行；接受记录先保存、最终缓存查询才截取显示。summary.fetched_count/accepted_count/rejected_count反映原生页；count为显示条数、cached_matching_count单列。next_since保持null、不保证跨页边界完整。拒收页可返回已有local_cache_query，accepted_count=0，不把旧缓存当新接受；已缓存记录和revision/last_seen不被冲突页改写。
+- MEXC周期仍仅原始有效整数小时，KuCoin缺周期依据仍null；合约面值不乘费率。以前保存的历史/修订不自动清除或改写，若曾遇真实冲突需要原始证据再审，本批没有这种实网证据。
+- 新增24项离线回归（该文件共45项）：真实安装解析器limit=1×两平台×两顺序、超大页整页拒收、输出小于原生页仍全部校验/单位、非法原生信封、SDK公共HTTP路由/正权重限流调用、超时/权限/限流错误单次调用、旧缓存不修订。原21项及共享fixture改为原生信封；原“统一时间错配”样本改测原始未来时间，因为新路径不再有SDK统一时间层。
+- 复测`.venv/bin/pytest -q tests/test_mexc_kucoin_history.py tests/test_funding_history.py`：132 passed（5.52秒）；CI范围Ruff通过。未访问交易所行情主机、受阻OKX WS、账户或独立环境。全市场身份/实时覆盖及24小时限制仍开放。
+
+- 最终验证：1334项完整后端（59.40秒，1条上游TestClient弃用警告）、132项专项、CI范围Ruff/diff通过。无前端变更/浏览器复验，远端CI未确认。其它仍用统一历史解析的平台是否存在类似前置过滤风险，后续逐项复审，本批不宣称已全部排除。
