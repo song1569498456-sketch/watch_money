@@ -17,6 +17,7 @@ from copy import copy
 from time import perf_counter, thread_time
 
 from watch_money.models import now_ms
+from watch_money.async_work import finish_owned
 
 
 class ReceivedTickers(dict):
@@ -35,6 +36,7 @@ class BulkTickerParser:
         self.lock = asyncio.Lock()
         self.pending = 0
         self.closed = False
+        self._close_task = None
         self.metrics = {'completed': 0, 'failed': 0, 'fallbacks': 0, 'last': None}
         self.reviewed_ccxt_version = '4.5.91'
 
@@ -104,16 +106,7 @@ class BulkTickerParser:
                 received_at = now_ms()  # Decoded HTTP response, never parse completion.
                 rows = client.safe_list(response, 'data', [])
                 job = asyncio.get_running_loop().run_in_executor(self.executor, self._parse, parser, rows, resolved)
-                try:
-                    values, metrics = await asyncio.shield(job)
-                except asyncio.CancelledError:
-                    # A Python worker cannot be cancelled. Retain admission and
-                    # parser ownership until it really finishes, then cancel.
-                    try:
-                        await job
-                    except Exception:
-                        pass
-                    raise
+                values, metrics = await finish_owned(job)
                 self.metrics['completed'] += 1
                 self.metrics['last'] = {**metrics, 'received_at': received_at, 'finished_at': now_ms()}
                 return ReceivedTickers(values, received_at)
@@ -130,5 +123,9 @@ class BulkTickerParser:
 
     async def close(self):
         self.closed = True
-        async with self.lock:
-            self.executor.shutdown(wait=False)
+        if self._close_task is None:
+            async def shutdown():
+                async with self.lock:
+                    self.executor.shutdown(wait=True)
+            self._close_task = asyncio.create_task(shutdown())
+        await finish_owned(self._close_task)

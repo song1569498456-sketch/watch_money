@@ -83,3 +83,59 @@ async def test_small_control_frames_do_not_start_worker_and_bad_json_still_fails
         await stream._receive(socket)
     assert stream._decode_executor is None
     await stream.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('catalog', [False, True])
+async def test_repeated_cancel_close_and_waiting_decode_cannot_release_worker_early(monkeypatch, catalog):
+    from watch_money.adapters.dex_streaming import HyperliquidCatalogStream
+    stream = DexStreamAdapter(HyperliquidAdapter())
+    parent = HyperliquidCatalogStream(stream.rest_adapter) if catalog else stream
+    if catalog:
+        parent._streams.append(stream)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+    def blocked(raw):
+        calls.append(threading.get_ident())
+        entered.set()
+        assert release.wait(3)
+        finished.set()
+        return {'channel': 'pong'}
+    monkeypatch.setattr('watch_money.adapters.dex_streaming.json.loads', blocked)
+    async def timed_decode():
+        async with asyncio.timeout(.02):
+            return await stream._decode_hyperliquid('{}')
+    first = asyncio.create_task(timed_decode())
+    stream._tasks.append(first)
+    assert await asyncio.to_thread(entered.wait, 2)
+    try:
+        await asyncio.sleep(.04)
+        for _ in range(3):
+            first.cancel()
+            await asyncio.sleep(.005)
+        assert not first.done() and stream._decode_lock.locked()
+        assert stream._decode_future is not None and not stream._decode_future.cancelled()
+        waiting = asyncio.create_task(stream._decode_hyperliquid('{}'))
+        closing = asyncio.create_task(parent.close())
+        another_close = asyncio.create_task(parent.close())
+        for _ in range(3):
+            await asyncio.sleep(.005)
+            closing.cancel()
+        await asyncio.sleep(.005)
+        assert not closing.done() and not another_close.done() and not finished.is_set()
+        assert len(calls) == 1
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    with pytest.raises(RuntimeError, match='closing'):
+        await waiting
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    await another_close
+    assert finished.is_set() and len(calls) == 1
+    assert stream._decode_future is None and stream._decode_executor is None
+    assert not stream._tasks
+    # A fresh session can create a worker only after complete cleanup.
+    assert await stream._decode_hyperliquid('{}') == {'channel': 'pong'}
+    await stream.close()

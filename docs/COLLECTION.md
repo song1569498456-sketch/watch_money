@@ -241,3 +241,9 @@ HL 仅 >=8KiB 的 JSON 帧交给每连接一个解码线程；小帧保持快速
 官方 [REST funding-rate](https://www.okx.com/docs-v5/en/#public-data-rest-api-get-funding-rate) 将 `ts` 定义为数据返回时间；`fundingTime`/`nextFundingTime` 是结算时间，不是行情更新时间。官方 [资金费 WS](https://www.okx.com/docs-v5/en/#public-data-websocket-funding-rate-channel) 标注推送间隔 30–90 秒。此说明不保证 REST 每个请求获得小于 60 秒的新 `ts`，也不能证明实测 61–72 秒全部来自上游缓存。客户端等待、响应解码和同步解析亦可能贡献时延。
 
 继续记录原始 `info.ts`、本地接收/解析完成时间、请求耗时与相邻响应 `ts` 是否变化；现有 `funding_arrival_source_age_*` 诊断继续保留，资金费目前本地接收观测在 CCXT 返回后，因此包含其解析时间，不能直接称为网络 RTT。61/72 秒源年龄仍在 60 秒门槛之外；成功 HTTP 或更近本地接收时间不使旧源数据重新有效。新增边界回归验证，不改 TTL、不用结算时间代替 `ts`、不伪造 source 时间。实网覆盖和无空窗验收保持开放。
+
+### R28 解析取消与 shutdown 所有权
+
+CPU 工作开始后，超时/重复取消只标记调用方取消；每次等待都保护工作 future，等线程实际结束后再传播 CancelledError。CEX 解析锁与 pending、HL 解码锁与 future 在此期间保留。关闭由共享内部任务完成，多个 close 调用及 close 调用方被取消不会提前结束客户端/子连接清理。关闭中不允许新会话；清理完成后可以重连。
+
+这不是强制杀线程：若解析永久不返回，容量和 shutdown 也不会伪报完成。超时清理可能超过请求原定超时。当前解析输入有既有帧/目录边界，不通过额外无限线程掩盖阻塞。测试用可控阻塞线程验证重复取消与实际结束的先后，不触碰实网或账户。

@@ -181,6 +181,7 @@ class CexAdapter:
         self._clients: dict[str, Any] = {}
         from .bulk_tickers import BulkTickerParser
         self._ticker_parser = BulkTickerParser()
+        self._close_task = None
         self._markets: dict[str, tuple[str, dict]] = {}
         self._instruments: dict[str, Instrument] = {}
         self._catalog_observed_at: dict[str, int] = {}
@@ -206,9 +207,12 @@ class CexAdapter:
                 await self.on_payload(self.venue, f"rest:ccxt:{method}", payload)
 
     def _client(self, client_id: str) -> Any:
+        if self._close_task is not None and not self._close_task.done():
+            raise RuntimeError("CEX adapter is closing")
         if not self._clients and self._ticker_parser.closed:
             from .bulk_tickers import BulkTickerParser
             self._ticker_parser = BulkTickerParser()
+            self._close_task = None
         if client_id not in self._clients:
             self._clients[client_id] = self._factory(client_id)
         return self._clients[client_id]
@@ -895,6 +899,12 @@ class CexAdapter:
                          + (f":native_quantity_divided_by_contract_size={divisor}" if divisor != 1 else ""))
 
     async def close(self) -> None:
+        from watch_money.async_work import finish_owned
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_owned())
+        await finish_owned(self._close_task)
+
+    async def _close_owned(self):
         await self._ticker_parser.close()
         results = await asyncio.gather(*(client.close() for client in self._clients.values()),
                                        return_exceptions=True)

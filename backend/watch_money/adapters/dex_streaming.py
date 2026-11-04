@@ -15,6 +15,7 @@ from typing import Any
 from watch_money.adapters.dex import DydxAdapter, HyperliquidAdapter, LighterAdapter, number, timestamp
 from watch_money.adapters.streaming import StreamUnavailable
 from watch_money.models import Instrument, MarketSnapshot, now_ms
+from watch_money.async_work import finish_owned
 
 ENDPOINTS = {
     "hyperliquid": "wss://api.hyperliquid.xyz/ws",
@@ -406,6 +407,7 @@ class DexStreamAdapter:
         self._decode_lock = asyncio.Lock()
         self._decode_executor = None
         self._decode_future = None
+        self._close_task = None
 
     async def _bounded(self, awaitable, seconds, stage):
         try:
@@ -477,17 +479,19 @@ class DexStreamAdapter:
     async def _decode_hyperliquid(self, raw):
         # One job per connection, at most five catalog connections. Admission
         # stays held on cancellation until the CPU worker actually completes.
+        if self._close_task is not None:
+            if not self._close_task.done():
+                raise RuntimeError("Decoder is closing")
+            self._close_task = None
         async with self._decode_lock:
+            if self._close_task is not None:
+                raise RuntimeError("Decoder is closing")
             if self._decode_executor is None:
                 self._decode_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='hl-json')
             future = asyncio.get_running_loop().run_in_executor(self._decode_executor, json.loads, raw)
             self._decode_future = future
             try:
-                return await asyncio.shield(future)
-            except asyncio.CancelledError:
-                with suppress(Exception):
-                    await future
-                raise
+                return await finish_owned(future)
             finally:
                 self._decode_future = None
 
@@ -546,6 +550,9 @@ class DexStreamAdapter:
     async def stream(self, instruments: list[Instrument]) -> AsyncIterator[MarketSnapshot]:
         if self._running:
             raise RuntimeError("Cancel and close current DEX stream before replacing subscriptions")
+        if self._close_task is not None and not self._close_task.done():
+            raise RuntimeError("Previous DEX session is still closing")
+        self._close_task = None
         selected = self._selection(instruments)
         self._running = True
         self._subscriptions_sent.clear()
@@ -671,10 +678,17 @@ class DexStreamAdapter:
                 raise ConnectionOpenTimeout(f"{self.venue}: connection_open timed out") from exc
             raise
         finally:
-            await self.close()
-            self._running = False
+            try:
+                await self.close()
+            finally:
+                self._running = False
 
     async def close(self):
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_owned())
+        await finish_owned(self._close_task)
+
+    async def _close_owned(self):
         observer_queue, self._observer_queue = self._observer_queue, None
         if observer_queue is not None:
             self._payload_observer_dropped += observer_queue.qsize()
@@ -685,7 +699,7 @@ class DexStreamAdapter:
             await asyncio.gather(*tasks, return_exceptions=True)
         if self._decode_future is not None:
             with suppress(Exception):
-                await asyncio.shield(self._decode_future)
+                await finish_owned(self._decode_future)
         executor, self._decode_executor = self._decode_executor, None
         if executor is not None:
             executor.shutdown(wait=True)
@@ -712,6 +726,7 @@ class HyperliquidCatalogStream(DexStreamAdapter):
                  subscription_wait=asyncio.sleep, subscription_limit=1500, **kwargs):
         super().__init__(rest_adapter, **kwargs)
         self._streams: list[DexStreamAdapter] = []
+        self._catalog_close_task = None
         self._subscription_window = _SubscriptionWindow(limit=subscription_limit,
                                                        clock=subscription_clock, wait=subscription_wait)
 
@@ -726,6 +741,10 @@ class HyperliquidCatalogStream(DexStreamAdapter):
     async def stream(self, instruments: list[Instrument]) -> AsyncIterator[MarketSnapshot]:
         if self._running:
             raise RuntimeError("Cancel and close current DEX stream before replacing subscriptions")
+        if self._catalog_close_task is not None and not self._catalog_close_task.done():
+            raise RuntimeError("Previous catalog session is still closing")
+        self._catalog_close_task = None
+        self._close_task = None
         selected = list(self._selection(instruments).values())
         self._running = True
         events: asyncio.Queue = asyncio.Queue(maxsize=max(2, len(selected) * 2))
@@ -764,12 +783,19 @@ class HyperliquidCatalogStream(DexStreamAdapter):
                     raise event
                 yield event
         finally:
-            await self.close()
-            if token is not None:
-                self._subscription_window.seal(token)
-            self._running = False
+            try:
+                await self.close()
+            finally:
+                if token is not None:
+                    self._subscription_window.seal(token)
+                self._running = False
 
     async def close(self):
+        if self._catalog_close_task is None:
+            self._catalog_close_task = asyncio.create_task(self._close_catalog_owned())
+        await finish_owned(self._catalog_close_task)
+
+    async def _close_catalog_owned(self):
         await super().close()
         streams, self._streams = self._streams, []
         await asyncio.gather(*(stream.close() for stream in streams), return_exceptions=True)

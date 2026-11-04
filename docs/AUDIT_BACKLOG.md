@@ -212,3 +212,12 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 仍开放：真实同负载超时/资金费空窗、HTTP JSON 与小帧等剩余循环 CPU/GIL 争用、身份覆盖和24小时验收。仅公开接口/合成数据，无账户或交易操作，不重试受限Lighter。
 
 - 最终验证：897 项完整后端（37.00秒）通过，最后新增时间回归后的19项解析专项通过；Ruff/diff通过。上游TestClient弃用警告一条，无新增实网验收结论。
+
+### R28 重复取消不能释放仍运行的解析线程（2026-11-04）
+
+- 复现：cce59b4 首次取消后 cleanup 直接 await executor future；第二次取消可取消 asyncio 包装 future，提前清空 pending/解锁，close 返回时线程仍在运行。HL 解码器有相同模式。
+- 修复：`async_work.finish_owned` 在每次等待中都 shield 真正拥有的 future，记录并延迟传播调用者取消，直到工作实际完成；工作异常在取消胜出时仍取回。CEX 解析槽位/计数、HL 解码锁/future 均保持到完成。close 由单个共享内部任务拥有，重复或并发 close 不能取消内部清理；CEX 客户端、HL 子连接和 socket 清理完成后才传播取消。关闭进行中禁止重开，完整关闭后允许新会话，流 finally 始终释放 running 标记。
+- 新回归：超时先触发后连续三次取消；阻塞工作线程仍持槽位；一活动一等待容量与第三项拒绝；重复取消 close 及并发 close；工作完成后报错；CEX 客户端关闭；HL 单连接/catalog 子连接关闭和完成后重开。27 项解析/解码专项通过，无网络和账户访问。
+- 语义：取消仍会传播，不会伪装成功；Python 线程不能强制中断，因此若线程不结束，拥有者和 shutdown 保持等待，超时取消也可能超过原超时时限。不能通过丢弃 future 或释放容量假装任务已结束。此修复不代表实网 HL 超时或 OKX 时效空窗已解决。
+
+- 最终完整验证：903 项后端测试（44.65秒）、Ruff/diff通过，仅一条上游TestClient弃用警告。

@@ -223,3 +223,97 @@ async def test_parse_delay_does_not_rejuvenate_receipt(monkeypatch):
     finally:
         await parser.close()
         await client.close()
+
+
+@pytest.mark.parametrize('worker_error', [False, True])
+async def test_timeout_repeated_cancel_and_cancelled_close_keep_real_worker_owned(monkeypatch, worker_error):
+    client, _, response = client_and_response('okx')
+    parser = BulkTickerParser()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+    async def reply(_):
+        return response
+    def blocked(*_):
+        calls.append(threading.get_ident())
+        entered.set()
+        assert release.wait(3)
+        finished.set()
+        if worker_error:
+            raise ValueError('synthetic worker error after cancellation')
+        return {}, {}
+    monkeypatch.setattr(client, 'publicGetMarketTickers', reply)
+    monkeypatch.setattr(parser, '_parse', blocked)
+    async def timeout_fetch():
+        async with asyncio.timeout(.02):
+            await parser.fetch(client, None, {'type': 'spot'})
+    first = asyncio.create_task(timeout_fetch())
+    assert await asyncio.to_thread(entered.wait, 2)
+    try:
+        await asyncio.sleep(.04)  # Timeout has entered cleanup but cannot stop the thread.
+        for _ in range(3):
+            first.cancel()
+            await asyncio.sleep(.005)
+        assert not first.done() and parser.pending == 1 and parser.lock.locked()
+        queued = asyncio.create_task(parser.fetch(client, None, {'type': 'spot'}))
+        await asyncio.sleep(.005)
+        assert parser.pending == 2
+        with pytest.raises(BulkParseBusy):
+            await parser.fetch(client, None, {'type': 'spot'})
+        closing = asyncio.create_task(parser.close())
+        another_close = asyncio.create_task(parser.close())
+        for _ in range(3):
+            await asyncio.sleep(.005)
+            closing.cancel()
+        await asyncio.sleep(.005)
+        assert not closing.done() and not another_close.done() and not finished.is_set()
+        assert parser.pending == 2 and len(calls) == 1
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    with pytest.raises(BulkParseBusy):
+        await queued
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    await another_close
+    assert finished.is_set() and parser.pending == 0 and len(calls) == 1
+    assert parser._close_task.done()
+    await client.close()
+
+
+async def test_adapter_cancelled_shutdown_still_closes_client_before_propagating(monkeypatch):
+    from watch_money.adapters.cex import CexAdapter
+    client, _, response = client_and_response('okx')
+    adapter = CexAdapter('okx', client_factory=lambda _: client)
+    adapter._client('okx')
+    entered, release = threading.Event(), threading.Event()
+    closed = []
+    async def reply(_):
+        return response
+    async def close_client():
+        closed.append(True)
+    def blocked(*_):
+        entered.set()
+        assert release.wait(3)
+        return {}, {}
+    monkeypatch.setattr(client, 'publicGetMarketTickers', reply)
+    monkeypatch.setattr(client, 'close', close_client)
+    monkeypatch.setattr(adapter._ticker_parser, '_parse', blocked)
+    fetch = asyncio.create_task(adapter._ticker_parser.fetch(client, None, {'type': 'spot'}))
+    assert await asyncio.to_thread(entered.wait, 2)
+    closing = asyncio.create_task(adapter.close())
+    try:
+        for _ in range(3):
+            await asyncio.sleep(.005)
+            closing.cancel()
+        await asyncio.sleep(.005)
+        assert not closing.done() and not closed
+        with pytest.raises(RuntimeError, match='closing'):
+            adapter._client('okx')
+    finally:
+        release.set()
+    await fetch
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert closed == [True] and not adapter._clients
+    await adapter.close()
