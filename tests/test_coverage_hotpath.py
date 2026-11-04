@@ -143,3 +143,87 @@ async def test_health_setting_change_stops_old_scope_events_without_enrich(tmp_p
     collector.pause = stop
     await collector.watch_health()
     assert len(events) == 1 and events[0]['type'] == 'data_stale'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['refresh', 'remove_snapshot', 'retire', 'remove_instrument', 'still_stale'])
+async def test_health_reloads_after_yield_before_stale_alert(tmp_path, monkeypatch, change):
+    collector, clock = setup(tmp_path, monkeypatch)
+    collector.store.set('settings', Settings(enabled_venues=['x'], notifications_enabled=True).model_dump())
+    clock[0] += 61000
+    events = []
+    async def evaluate(event):
+        events.append(event)
+    collector.notifications = SimpleNamespace(evaluate=evaluate)
+    async def coverage():
+        pass
+    async def stop(_):
+        collector.stopping.set()
+    collector._refresh_status_coverage_async = coverage
+    collector.pause = stop
+    async def replace_during_yield():
+        if change == 'refresh':
+            collector.snapshots['0'] = collector.snapshots['0'].model_copy(update={
+                'source_at': clock[0], 'received_at': clock[0]})
+        elif change == 'remove_snapshot':
+            del collector.snapshots['0']
+        elif change == 'remove_instrument':
+            del collector.instruments['0']
+        elif change == 'retire':
+            collector.instruments['0'] = collector.instruments['0'].model_copy(update={'active': False})
+        else:
+            collector.snapshots['0'] = collector.snapshots['0'].model_copy(update={'bid': 9})
+    # health reaches its explicit yield first; replacement then precedes resume.
+    await asyncio.gather(collector.watch_health(), replace_during_yield())
+    assert len(events) == (1 if change == 'still_stale' else 0)
+
+
+@pytest.mark.asyncio
+async def test_final_stale_guard_rejects_replaced_version_and_real_notifications_dedupe(tmp_path, monkeypatch):
+    from watch_money.notifications import NotificationRule, NotificationService
+    collector, clock = setup(tmp_path, monkeypatch)
+    collector.store.set('settings', Settings(enabled_venues=['x'], notifications_enabled=True).model_dump())
+    clock[0] += 61000
+    service = NotificationService(tmp_path, clock=lambda: clock[0] / 1000)
+    service.save_rule(NotificationRule(name='stale', category='system', event_types=['data_stale'], cooldown_seconds=0))
+    collector.notifications = service
+    old = collector.snapshots['0']
+    def event():
+        return {'id': 'stale:0', 'category': 'system', 'type': 'data_stale', 'platforms': ['x'],
+                'source_at': clock[0], 'message': 'Stale market data: 0'}
+    fresh = old.model_copy(update={'source_at': clock[0], 'received_at': clock[0]})
+    collector.snapshots['0'] = fresh
+    await collector.event(event(), expected_snapshot=old)
+    await collector.event(event(), expected_snapshot=fresh)
+    assert not service.history()['notifications']
+    # Genuine later expiry still alerts; checking again does not duplicate it.
+    clock[0] += 61000
+    await collector.event(event(), expected_snapshot=fresh)
+    clock[0] += 5000
+    await collector.event(event(), expected_snapshot=fresh)
+    assert len(service.history()['notifications']) == 1
+    del collector.snapshots['0']
+    await collector.event(event(), expected_snapshot=fresh)
+    assert len(service.history()['notifications']) == 1
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancel_health_during_yield_does_not_enqueue(tmp_path, monkeypatch):
+    collector, clock = setup(tmp_path, monkeypatch)
+    collector.store.set('settings', Settings(enabled_venues=['x'], notifications_enabled=True).model_dump())
+    clock[0] += 61000
+    events = []
+    async def evaluate(event):
+        events.append(event)
+    async def coverage():
+        pass
+    collector.notifications = SimpleNamespace(evaluate=evaluate)
+    collector._refresh_status_coverage_async = coverage
+    task = asyncio.create_task(collector.watch_health())
+    # Parent resumes after health has yielded but before its scan resumes.
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events == []

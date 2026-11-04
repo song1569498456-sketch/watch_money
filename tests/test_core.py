@@ -1,7 +1,7 @@
 
 import pytest
 from watch_money.collector import Collector, enrich
-from watch_money.models import MarketSnapshot, VenueStatus, now_ms
+from watch_money.models import Instrument, MarketSnapshot, VenueStatus, now_ms
 from watch_money.storage import Storage
 
 
@@ -28,6 +28,8 @@ async def test_health_rules_emit_stale_and_disconnected_events(tmp_path):
             events.append(event)
 
     collector = Collector(store, {}, Notifications())
+    collector.instruments = {'x': Instrument(id='x', venue='fixture', native_symbol='X/USD',
+        base='X', quote='USD', asset_id='x', kind='spot')}
     collector.snapshots = {'x': MarketSnapshot(instrument_id='x', venue='fixture', source='fixture',
                                                source_at=now_ms() - 20_000, received_at=now_ms())}
     collector.statuses = {'fixture': VenueStatus(venue='fixture', state='error', last_received_at=now_ms())}

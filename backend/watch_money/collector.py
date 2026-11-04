@@ -747,9 +747,28 @@ class Collector:
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(self.stopping.wait(), timeout=seconds)
 
-    async def event(self, event):
-        if self.notifications and self.store.settings().notifications_enabled:
-            await self.notifications.evaluate(event)
+    def _current_stale_snapshot(self, instrument_id, settings):
+        snapshot = self.snapshots.get(instrument_id)
+        instrument = self.instruments.get(instrument_id)
+        if (snapshot is None or instrument is None or not instrument.active or snapshot.is_demo
+                or snapshot.venue not in settings.enabled_venues):
+            return None
+        primary = ('bid', 'ask') if snapshot.bid and snapshot.ask else tuple(
+            field for field in ('last', 'mark', 'index') if getattr(snapshot, field) is not None)[:1]
+        return snapshot if not primary or any(
+            field_stale(snapshot, field, settings.stale_seconds) for field in primary) else None
+
+    async def event(self, event, *, expected_snapshot=None):
+        settings = self.store.settings()
+        if not self.notifications or not settings.notifications_enabled:
+            return
+        if expected_snapshot is not None:
+            if (self.stopping.is_set() or not settings.collection_enabled or settings.demo_mode
+                    or self._current_stale_snapshot(expected_snapshot.instrument_id, settings) is not expected_snapshot):
+                return
+        # NotificationService.evaluate has no suspension before enqueueing. Keep
+        # the final identity/freshness check adjacent, with no await in between.
+        await self.notifications.evaluate(event)
 
     async def watch_health(self):
         while not self.stopping.is_set():
@@ -757,7 +776,7 @@ class Collector:
             settings = self.store.settings()
             if (self.notifications and settings.notifications_enabled and
                     settings.collection_enabled and not settings.demo_mode):
-                for index, snapshot in enumerate(tuple(self.snapshots.values())):
+                for index, instrument_id in enumerate(tuple(self.snapshots)):
                     if index % 128 == 0:
                         await asyncio.sleep(0)
                         current = self.store.settings()
@@ -765,19 +784,17 @@ class Collector:
                                 or current.enabled_venues != settings.enabled_venues
                                 or current.stale_seconds != settings.stale_seconds):
                             break
-                    if snapshot.venue not in settings.enabled_venues or snapshot.is_demo:
-                        continue
-                    primary = ('bid', 'ask') if snapshot.bid and snapshot.ask else tuple(
-                        field for field in ('last', 'mark', 'index') if getattr(snapshot, field) is not None)[:1]
-                    if not primary or any(field_stale(snapshot, field, settings.stale_seconds) for field in primary):
-                        current = self.store.settings()
-                        if (not current.notifications_enabled or not current.collection_enabled or current.demo_mode
-                                or snapshot.venue not in current.enabled_venues
-                                or current.stale_seconds != settings.stale_seconds):
-                            break
+                    # A prior yield (including another notification) may have
+                    # refreshed or removed this market. Never use the old object.
+                    current = self.store.settings()
+                    if (not current.notifications_enabled or not current.collection_enabled or current.demo_mode):
+                        break
+                    snapshot = self._current_stale_snapshot(instrument_id, current)
+                    if snapshot is not None:
                         await self.event({'id': f'stale:{snapshot.instrument_id}', 'category': 'system',
                                           'type': 'data_stale', 'platforms': [snapshot.venue],
-                                          'source_at': now_ms(), 'message': f'Stale market data: {snapshot.instrument_id}'})
+                                          'source_at': now_ms(), 'message': f'Stale market data: {snapshot.instrument_id}'},
+                                         expected_snapshot=snapshot)
                 for status in list(self.statuses.values()):
                     settings = self.store.settings()
                     if not settings.notifications_enabled or not settings.collection_enabled or settings.demo_mode:
