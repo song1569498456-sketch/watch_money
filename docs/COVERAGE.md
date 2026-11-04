@@ -141,3 +141,7 @@ Hyperliquid/Lighter/dYdX WS 已接 collector，包含订阅、心跳、取消、
 HTX线性CCXT已路由v5 market funding_rate_history，不直接沿用旧USDT文档或币本位realized_rate规则，本批明确501未审阅；官方旧USDT文档本次读取超时。Kraken已发现[公开历史接口](https://docs.kraken.com/api-reference/historical-funding-rates/historical-funding-rates)，但[官方线性合约说明](https://support.kraken.com/articles/4844359082772-linear-multi-collateral-derivatives-contract-specifications)涉及连续资金费，绝对金额与relativeFundingRate不同；仍不能接入当前“离散已结算”记录模型，保持未支持并待单独建模。上述均不是地区不可用结论，也没有尝试账户或地域替代。
 
 本批只做文档与本地合成/安装解析器测试；新历史实样、保留范围及单位仍待独立实测，没有修改正在运行的24小时环境、生产身份映射或账户。
+
+## R41 Hyperliquid历史补齐（2026-11-04）
+
+原生公开fundingHistory接入已有已结算历史入口，首个perp dex和HIP-3保留完整命名空间，原生time毫秒、fundingRate小数比例及官方1小时周期；不从premium或8h计算公式推算历史值。单请求500行/500小时上限、截断游标和目录变化检查，访问拒绝不绕过。没有用户参数、账户调用、实时费率或跨平台身份批准。普通与HIP-3合约历史真实样本、上游保留范围及完整历史仍待独立实测。官方来源和临时库复测步骤见FUNDING_VIEW R41；原24小时测试不变。

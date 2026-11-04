@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from .adapters.cex import CexAdapter, _number, _timestamp
 from .models import now_ms
+from .adapters.dex import HyperliquidAdapter
 
 router = APIRouter(prefix="/api/funding", tags=["funding-history"])
 
@@ -130,8 +131,88 @@ class FundingHistoryService:
                              "cursor_semantics": "forward_since_hint_only_not_gap_proof",
                              "direction": "positive_longs_pay_shorts_negative_shorts_pay_longs"}}
 
+    async def _refresh_hyperliquid(self, instrument, adapter, since, limit):
+        """One bounded market-history call; never userFunding or wallet data."""
+        docs = "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals#retrieve-historical-funding-rates"
+        native = instrument.native_symbol
+        namespace = native.split(":", 1)[0] if ":" in native else ""
+        if (instrument.kind != "perpetual" or not instrument.active
+                or instrument.id != f"hyperliquid:perpetual:{native}"
+                or namespace not in adapter._namespaces
+                or adapter._quotes.get(namespace) != instrument.settle
+                or instrument.quote != instrument.settle or not instrument.settle):
+            raise HTTPException(409, "Discover the exact Hyperliquid market and collateral namespace first")
+        end = now_ms()
+        page_limit = min(limit, 500)
+        start = since if since is not None else max(0, end - page_limit * 3600000)
+        if start > end:
+            raise HTTPException(422, "History start must not be in the future")
+        # Bound the time range as well as accepted rows; pagination is explicit.
+        end = min(end, start + 500 * 3600000)
+        try:
+            rows = await adapter.info("fundingHistory", coin=native, startTime=start, endTime=end)
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in {401, 403, 451}:
+                raise HTTPException(403, "Public history access restricted; no alternate route attempted") from None
+            if isinstance(exc, TimeoutError) or type(exc).__name__ in {"ReadTimeout", "ConnectTimeout"}:
+                raise HTTPException(504, "Public funding history request timed out") from None
+            raise HTTPException(502, {"error": "Public funding history request failed", "type": type(exc).__name__}) from None
+        received = now_ms()
+        current = self.collector.instruments.get(instrument.id)
+        if current != instrument or adapter._quotes.get(namespace) != instrument.settle:
+            raise HTTPException(409, "Market scope changed while retrieving history")
+        if not isinstance(rows, list) or len(rows) > 500:
+            raise HTTPException(502, "Malformed or oversized public funding history response")
+        records, reasons = [], {}
+        for row in rows:
+            reason = None
+            if not isinstance(row, dict):
+                row, reason = {}, "malformed_record"
+            stamp = _timestamp(row.get("time"))
+            rate = _number(row.get("fundingRate"))
+            if row.get("coin") != native:
+                reason = reason or "wrong_native_market"
+            if stamp is None or row.get("time") != stamp:
+                reason = reason or "invalid_native_millisecond_time"
+            elif not start <= stamp <= min(end, received):
+                reason = reason or "outside_requested_settlement_window"
+            if rate is None:
+                reason = reason or "missing_or_nonfinite_settled_rate"
+            if reason:
+                reasons[reason] = reasons.get(reason, 0) + 1
+                continue
+            records.append({"instrument_id": instrument.id, "venue": instrument.venue,
+                "symbol": native, "native_market_id": native, "settle": instrument.settle,
+                "settlement_at": stamp, "native_settlement_time": row["time"], "native_time_unit": "milliseconds",
+                "funding_rate": rate, "raw_funding_rate": str(row["fundingRate"]),
+                "rate_unit": "decimal_ratio_per_hourly_settlement", "funding_kind": "settled",
+                "funding_interval_hours": 1, "period_source": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/funding",
+                "long_cashflow_sign": -1 if rate > 0 else 1 if rate < 0 else 0,
+                "short_cashflow_sign": 1 if rate > 0 else -1 if rate < 0 else 0,
+                "source": f"hyperliquid:info:fundingHistory:{native}", "source_docs": docs,
+                "event_type": "regular", "received_at": received, "first_received_at": received,
+                "last_seen_at": received, "revision": 1, "is_demo": False})
+        # Stable chronological paging: rejected or unsorted responses cannot
+        # advance the cursor past valid rows omitted by the requested limit.
+        records.sort(key=lambda record: record["settlement_at"])
+        omitted = len(records) > page_limit
+        records = records[:page_limit]
+        await asyncio.to_thread(self._save, records)
+        latest = max((record["settlement_at"] for record in records), default=None)
+        return {"refreshed": True, "pages": 1, "page_limit": page_limit,
+                "requested_window_start": start, "requested_window_end": end,
+                "fetched_count": len(rows), "accepted_count": len(records),
+                "rejected_count": sum(reasons.values()), "next_since": latest + 1 if latest is not None else None,
+                "has_more": None, "truncated": omitted or len(rows) == 500 or limit > page_limit,
+                "issues": [f"rejected_{reason}:{count}" for reason, count in sorted(reasons.items())] + [
+                    "One public market-history page; no wallet data, missing intervals and retention remain unknown",
+                    "Hourly published rate is not an account payment or a guaranteed profit"]}
+
     async def _refresh(self, instrument, since: int | None, limit: int) -> dict:
         adapter = self.collector.adapters.get(instrument.venue)
+        if instrument.venue == "hyperliquid" and isinstance(adapter, HyperliquidAdapter):
+            return await self._refresh_hyperliquid(instrument, adapter, since, limit)
         if instrument.kind != "perpetual" or not isinstance(adapter, CexAdapter):
             raise HTTPException(501, "No reviewed public settled funding history for this market")
         try:

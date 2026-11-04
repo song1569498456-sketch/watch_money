@@ -57,3 +57,42 @@ current/predicted 分别标注估算/预测；即便某平台当前返回 settle
 现有历史页/refresh接口新增HTX币本位永续，官方来源见COVERAGE R40。只取原始realized_rate而非CCXT统一fundingRate；funding_time毫秒、contract_code、symbol、fee_asset逐项验证。保留rate_field=realized_rate、advertised_funding_rate、native_market_id、settle与时间单位；收付符号按小数比例，不按反向合约张数或USD面值缩放。历史周期缺失仍null，最多50条最新第一页、since本地过滤、next_since=null，拒绝把有限页当全历史。
 
 线性接口新版本尚未审查，返回明确未支持；Kraken连续历史模型也未加入。无身份批准、自动历史回填、账户或交易。当前测试数据均合成；API公共历史率与用户账户实际费用不同。
+
+## R41 Hyperliquid公共市场结算历史
+
+新增原生Hyperliquid fundingHistory，支持已发现的首个perp dex及HIP-3完整coin前缀，必须匹配目录ID、namespace和collateral/settle；请求后再次检查目录/抵押币没有改变。使用time原生毫秒、fundingRate原始小数比例，官方按小时支付，历史周期记1h；不把8h公式再次除8，也不将premium当资金费。没有user/address参数，不查询userFunding或账户支付。
+
+单手动刷新一请求、最多500行、查询窗口最多500小时，默认从当前时间往前min(limit,500)小时；原有15秒刷新总超时与单刷新锁生效。先按有效原生时间排序再截取limit，游标只基于保存的最后记录，保留拒绝计数、截断和缺口未知。缺coin、错前缀、非毫秒/未来/范围外时间及非有限率拒绝；403/451明确访问限制、不重试或替代地区。新历史单独入库，不注入当前费率/身份排行。
+
+官方依据：[fundingHistory](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals#retrieve-historical-funding-rates)、[每小时资金费](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/funding)、[时间范围分页上限](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint)。本批仅MockTransport验证，不是实网或24小时验收。
+
+### 独立实网复测（不要在正在验收的旧提交进程中执行）
+
+在授权可达网络、新提交的独立检出目录中执行下例。它使用临时数据库、仅公开目录和一条指定市场历史请求，不读取项目data目录。先用BTC，再把coin替换成公开发现的完整HIP-3名称；不要猜前缀或改成用户地址。保留打印结果与提交号，遇403/451停止，不换节点绕过。
+
+```bash
+PYTHONPATH=backend .venv/bin/python - <<'PYTEST'
+import asyncio, json, tempfile
+from types import SimpleNamespace
+from watch_money.adapters.dex import HyperliquidAdapter
+from watch_money.funding_history import FundingHistoryService
+
+async def main():
+    adapter = HyperliquidAdapter()
+    try:
+        catalog = await asyncio.wait_for(adapter.discover(), 90)
+        coin = 'BTC'
+        item = next(item for item in catalog if item.native_symbol == coin and item.active)
+        collector = SimpleNamespace(instruments={item.id: item}, adapters={'hyperliquid': adapter})
+        with tempfile.TemporaryDirectory(prefix='wm-public-history-') as directory:
+            service = FundingHistoryService(directory, collector)
+            report = await service.get(item.id, refresh=True, limit=24)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+    finally:
+        await adapter.close()
+
+asyncio.run(main())
+PYTEST
+```
+
+核对结果coin与完整native_market_id、原始time/settlement_at、费率原文、1h周期及正负收付；重复读取缓存不触网，重复refresh不增长重复记录。与独立公开POST fundingHistory相同coin/startTime/endTime的响应对照时，不把查询时点不同导致的新增结算算作错误。故障/空返回及缺口照实记录，不能据此认定全部历史或用户实际到账。
