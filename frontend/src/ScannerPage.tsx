@@ -3,6 +3,7 @@ import { Activity, ArrowRight, Calculator, ChevronDown, ChevronRight, Loader2, R
 import { api, num, pct, time } from "./api";
 import type { Instrument } from "./types";
 import "./ScannerPage.css";
+import { scanDeadline, scanElapsed } from "./scanFreshness";
 
 type CandidateReference = { buy_instrument_id: string; sell_instrument_id: string; strategy: string };
 type FieldState = { valid: boolean; issue: string | null; source: string | null;
@@ -25,7 +26,7 @@ type AssetGroup = { id: string; asset_id: string; asset_symbols: string[]; ident
   best_within_scan: boolean; scan_complete: boolean; directions: Candidate[]; directions_truncated: boolean;
   directions_returned: number; markets: Market[]; oldest_price_source_at: number | null;
   latest_price_received_at: number | null; max_price_age_seconds: number | null };
-type ScanResult = { as_of: number; enabled: boolean; candidates: Candidate[]; groups: AssetGroup[];
+type ScanResult = { as_of: number; stale_seconds?: number; enabled: boolean; candidates: Candidate[]; groups: AssetGroup[];
   available_platforms: string[]; stats: { catalog_markets: number; collector_catalog_markets: number;
     active_markets: number; excluded_by_settings: number; excluded_by_filters: number; eligible_groups: number;
     identity_groups: number; blocked_groups: number; scanned: number; possible_candidates: number; returned: number;
@@ -80,18 +81,18 @@ function Funding({ leg }: { leg: FundingLeg | null }) {
   return <div><small className="mono">原始 {pct(leg.raw_rate)} / {leg.interval_hours == null ? "周期未知" : `${num(leg.interval_hours, 4)}h`}</small>
     <small>{leg.kind ? fundingKinds[leg.kind] ?? leg.kind : "类型未知"} · {payment}</small><small className="muted">下次结算 {time(leg.next_funding_at)}</small></div>;
 }
-function Directions({ rows, markets, marketNames, sort, onSelectCandidate }: { rows: Candidate[]; markets: Map<string, Market>;
+function Directions({ rows, markets, marketNames, sort, expired, onSelectCandidate }: { expired: boolean; rows: Candidate[]; markets: Map<string, Market>;
   marketNames: Map<string, string>; sort: string; onSelectCandidate?: (candidate: CandidateReference) => void }) {
   return <div className="table-scroll scanner-directions"><table><thead><tr><th>组合</th><th>买入 / 做多 ask</th><th>卖出 / 做空 bid</th><th>盘口毛价差</th><th>两腿报价时间</th><th>详情 / 测算</th></tr></thead>
     <tbody>{rows.map((row) => {
       const buy = row.buy_market ?? markets.get(row.buy_instrument_id);
       const sell = row.sell_market ?? markets.get(row.sell_instrument_id);
-      const reliable = sort === "funding" ? row.funding_rankable : row.price_rankable;
+      const reliable = !expired && (sort === "funding" ? row.funding_rankable : row.price_rankable);
       return <tr key={row.id}><td><strong>{row.buy_venue} → {row.sell_venue}</strong><small>{strategies[row.strategy] ?? row.strategy}</small>
-        <small className={reliable ? "scanner-verified" : "warning"}>{reliable ? "来源与时效已核验" : "未进入可靠排行"}</small></td>
+        <small className={reliable ? "scanner-verified" : "warning"}>{reliable ? "来源与时效已核验" : (expired ? "查询结果已过期，需重新核验" : "未进入可靠排行")}</small></td>
         <td><strong className="mono">{num(row.buy_ask, 8)} {row.buy_quote}</strong><small className="muted">{buy?.native_symbol ?? marketNames.get(row.buy_instrument_id) ?? row.buy_instrument_id}</small></td>
         <td><strong className="mono">{num(row.sell_bid, 8)} {row.sell_quote}</strong><small className="muted">{sell?.native_symbol ?? marketNames.get(row.sell_instrument_id) ?? row.sell_instrument_id}</small></td>
-        <td className="mono"><strong>{pct(row.spread_rate)}</strong><small>反向 {pct(row.reverse_spread_rate)}{!row.reverse_price_rankable && " · 未核验"}</small>
+        <td className="mono"><strong>{pct(row.spread_rate)}</strong><small>反向 {pct(row.reverse_spread_rate)}{(expired || !row.reverse_price_rankable) && " · 未核验"}</small>
           <small className="muted">差额 {num(row.spread_absolute, 8)} {row.spread_quote ?? "币种不可直接比较"}</small></td>
         <td className="scanner-quote-times"><small title={`买入源事件 ${time(buy?.fields.ask.source_at)}；本地接收 ${time(buy?.fields.ask.received_at)}`}>买源 {shortTime(buy?.fields.ask.source_at)}<small>买收 {shortTime(buy?.fields.ask.received_at)}</small></small>
           <small title={`卖出源事件 ${time(sell?.fields.bid.source_at)}；本地接收 ${time(sell?.fields.bid.received_at)}`}>卖源 {shortTime(sell?.fields.bid.source_at)}<small>卖收 {shortTime(sell?.fields.bid.received_at)}</small></small></td>
@@ -106,10 +107,12 @@ function Directions({ rows, markets, marketNames, sort, onSelectCandidate }: { r
     })}</tbody></table></div>;
 }
 
-export function ScannerPage({ instruments, onSelectCandidate, favorites = [], toggleFavorite, onOpenAsset, active = true }: {
-  instruments: Instrument[]; favorites?: string[]; toggleFavorite?: (instrumentId: string) => void;
+export function ScannerPage({ instruments, onSelectCandidate, favorites = [], toggleFavorite, onOpenAsset, active = true, refreshKey = 0, staleSeconds = 60 }: {
+  refreshKey?: number; staleSeconds?: number; instruments: Instrument[]; favorites?: string[]; toggleFavorite?: (instrumentId: string) => void;
   onOpenAsset?: (assetId: string) => void; onSelectCandidate?: (candidate: CandidateReference) => void; active?: boolean;
 }) {
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => { setClock(Date.now()); if (!active) return; const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, [active]);
   const [sort, setSort] = useState("spread");
   const [marketType, setMarketType] = useState("all");
   const [view, setView] = useState("assets");
@@ -128,7 +131,9 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
   activeRef.current = active;
   const requestKey = JSON.stringify([sort, marketType, query, platforms]);
   const currentResults = dataKey === requestKey && search.trim() === query;
-  const canSelect = active && !!data && currentResults && !loading && !error;
+  const expired = !!data && Math.max(clock, Date.now()) > scanDeadline(data, staleSeconds);
+  const elapsed = data ? scanElapsed(data.as_of, Math.max(clock, Date.now())) : 0;
+  const canSelect = !expired && active && !!data && currentResults && !loading && !error;
   const marketNames = useMemo(() => new Map(instruments.map((item) => [item.id, item.native_symbol])), [instruments]);
   useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 250); return () => clearTimeout(timer); }, [search]);
   useEffect(() => {
@@ -148,10 +153,10 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
     };
     void load();
     return () => { current = false; };
-  }, [sort, marketType, reload, query, platforms]);
+  }, [sort, marketType, reload, query, platforms, refreshKey]);
   useEffect(() => {
     if (!active) return;
-    if (!hasRequested.current || dataKey !== requestKey) setReload((previous) => previous + 1);
+    if (!hasRequested.current || dataKey !== requestKey || (data && Date.now() > scanDeadline(data, staleSeconds))) setReload((previous) => previous + 1);
     if (!autoRefresh) return;
     const timer = setInterval(() => setReload((previous) => previous + 1), 30000);
     return () => clearInterval(timer);
@@ -187,12 +192,13 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
       </div>
       <div className="scanner-summary" aria-label="扫描覆盖">
         <span>市场 <strong>{num(stats?.active_markets, 0)}</strong></span><span>可比资产 <strong>{num(stats?.eligible_groups, 0)}</strong></span>
-        <span>可靠价差方向 <strong>{num(stats?.reliable_price_candidates, 0)}</strong></span>
+        <span>查询时可靠价差方向 <strong>{num(stats?.reliable_price_candidates, 0)}</strong></span>
         <span>已扫描 <strong>{num(stats?.scanned, 0)} / {num(stats?.possible_candidates, 0)}</strong></span>
         <span>身份待核验 <strong>{num(stats?.blocked_groups, 0)}</strong></span>
         <span className="scanner-check-time">检查于 {time(data?.as_of)}</span>
       </div>
       <div className="scanner-caption">按服务端全目录筛选类型后再扫描；只排行同报价币且源时间有效的方向。毛价差未扣费用，不代表可锁定收益。</div>
+      {expired && <div className="notice warning" role="status">查询结果已过期，排名与路径需重新核验；以下仅为查询时快照，请刷新扫描。</div>}
       {!error && (loading || !currentResults) && <div className="notice scanner-loading" role="status">
         {data ? "正在应用筛选 / 刷新，以下保留上次结果，暂不可发起组合测算。" : "正在读取市场与扫描结果。"}</div>}
       {error && <div className="notice error" role="alert">本次扫描失败：{error}{data ? "；以下仍为上次筛选结果，请刷新后再测算。" : ""}</div>}
@@ -208,7 +214,7 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
           <th>最佳已扫描路径</th><th>覆盖</th><th>更新时间</th><th>关注</th></tr></thead>
           <tbody>{data.groups.map((group) => {
             const markets = new Map(group.markets.map((market) => [market.instrument_id, market]));
-            const best = sort === "funding" ? group.best_funding_candidate : group.best_spread_candidate;
+            const best = expired ? null : sort === "funding" ? group.best_funding_candidate : group.best_spread_candidate;
             const symbol = group.asset_symbols.join(" / ") || group.asset_id;
             const representative = group.markets[0];
             const open = expanded.has(group.id);
@@ -221,14 +227,14 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
                 {!group.identity_confirmed && <small className="warning">身份待核验或冲突</small>}</td>
               <td><span className="scanner-market-type">{types.join(" / ")}</span></td>
               <td className="scanner-primary-rate mono"><strong>{best ? pct(sort === "funding" ? best.funding_8h_rate : best.spread_rate) : "未提供"}</strong>
-                <small className={best ? "muted" : "warning"}>{best ? (sort === "funding" ? "归一化 · 非结算收益" : "未扣成本") : groupReason(group, sort)}</small></td>
+                <small className={best ? "muted" : "warning"}>{best ? (sort === "funding" ? "归一化 · 非结算收益" : "未扣成本") : expired ? "查询结果已过期，需重新核验" : groupReason(group, sort)}</small></td>
               <td>{best ? <><strong>{best.buy_venue} <span className="muted">买</span> → {best.sell_venue} <span className="muted">卖</span></strong>
                 <small className="muted">{strategies[best.strategy] ?? best.strategy}</small></> : <span className="muted">暂无可靠路径</span>}</td>
               <td title={group.venues.join("、")}><strong>{group.venue_count} 平台 / {group.market_count} 市场</strong>
                 <small className="muted">{group.scanned_directions}/{group.possible_directions} 方向 · 排除 {group.excluded_from_price_ranking}</small>
                 {!group.scan_complete && <small className="warning">扫描截断</small>}</td>
               <td title={"有效价格最新接收 " + time(group.latest_price_received_at)}><span className="mono">{shortTime(group.latest_price_received_at)}</span>
-                <small className="muted">{group.max_price_age_seconds == null ? "年龄未知" : "最大年龄 " + num(group.max_price_age_seconds, 1) + " 秒"}</small></td>
+                <small className="muted">{group.max_price_age_seconds == null ? "年龄未知" : "最大年龄 " + num(group.max_price_age_seconds + elapsed, 1) + " 秒"}</small></td>
               <td><button className={"icon-button " + (representative && favorites.includes(representative.instrument_id) ? "favorite" : "")}
                 disabled={!toggleFavorite || !representative || !canSelect}
                 aria-label={(representative && favorites.includes(representative.instrument_id) ? "取消关注 " : "关注 ") + symbol + " 代表市场"}
@@ -237,10 +243,10 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
                   fill={representative && favorites.includes(representative.instrument_id) ? "currentColor" : "none"} /></button></td>
             </tr>
             {open && <tr className="scanner-expanded-row" id={"scanner-group-" + group.id}><td colSpan={7}>
-              <div className="scanner-group-note"><strong>{symbol} · 双向组合报价</strong><span>只在已扫描范围内选最佳，可靠 {group.reliable_price_directions}，排除 {group.excluded_from_price_ranking}。
+              <div className="scanner-group-note"><strong>{symbol} · 双向组合报价</strong><span>查询时已扫描范围内可靠 {group.reliable_price_directions}，排除 {group.excluded_from_price_ranking}。
                 {!group.scan_complete && "尚有未扫描方向。"} 源事件最早 {time(group.oldest_price_source_at)}。</span></div>
               {group.identity_blockers.length > 0 && <div className="notice">{group.identity_blockers.map(explain).join("；")}</div>}
-              {group.directions.length ? <Directions rows={group.directions} markets={markets} marketNames={marketNames} sort={sort}
+              {group.directions.length ? <Directions expired={expired} rows={group.directions} markets={markets} marketNames={marketNames} sort={sort}
                 onSelectCandidate={selectCandidate} /> : <div className="notice">当前身份与类型筛选下没有已扫描跨平台组合。</div>}
               {group.directions_truncated && <div className="notice">仅返回本资产 {group.directions_returned}/{group.scanned_directions} 个已扫描方向。</div>}
               <details className="scanner-market-details"><summary>各平台盘口与市场身份 · {group.market_count} 市场</summary>
@@ -257,7 +263,7 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
             </td></tr>}</Fragment>;
           })}</tbody>
         </table></div>}
-      {view === "directions" && !!data?.candidates.length && <Directions rows={data.candidates} markets={new Map()} marketNames={marketNames}
+      {view === "directions" && !!data?.candidates.length && <Directions expired={expired} rows={data.candidates} markets={new Map()} marketNames={marketNames}
         sort={sort} onSelectCandidate={selectCandidate} />}
       {(!data || !data.groups.length) && <div className="empty"><Activity size={25} /><h3>{loading ? "正在按资产扫描" : "当前筛选没有市场"}</h3>
         <p>调整资产、类型或平台筛选；未核验市场不会按 ticker 自动合并。</p></div>}

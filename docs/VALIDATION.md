@@ -1,5 +1,7 @@
 # 验证记录
 
+2026-11-04 界面真实性复审：顶部刷新联动当前价差/资金费查询；缓存排行随时间保守失效、更新年龄并在返回时重查；我的监控可查看和取消星标市场。资金费兼容类型分组已在上一批完成。完整677后端、31前端、构建/Ruff通过，导航12组浏览器通过。具体证据见 [browser-navigation.json](evidence/browser-navigation.json) 与 [审计清单](AUDIT_BACKLOG.md)。本批仍为本地合成验收。
+
 ## 数据独立复审批次（2026-11-04）
 
 根任务完整后端677 passed（19.38s，1条上游弃用提示）、前端29 passed、TS/Vite构建、Ruff通过。最后Hyperliquid节流间隔从1秒调整为2秒后专项25 passed；其后最终六套浏览器 baseline6 / followup12 / fee7 / navigation9 / funding6 / asset-verification8，共48组通过。资产证据浏览器使用真实本地API完成导入、预览、应用、重载、冲突降级和撤销；只有公共拉取失败通过浏览器模拟。

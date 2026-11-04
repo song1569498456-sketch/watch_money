@@ -38,8 +38,8 @@ function countdown(timestamp: number | null | undefined, now: number) {
 }
 
 type FundingCandidate = { buy_instrument_id: string; sell_instrument_id: string; strategy: "perp_spread" };
-export const FundingPage = memo(function FundingPage({ active = true, onSelectCandidate }: {
-  active?: boolean; onSelectCandidate?: (candidate: FundingCandidate) => void;
+export const FundingPage = memo(function FundingPage({ active = true, refreshKey = 0, onSelectCandidate }: {
+  active?: boolean; refreshKey?: number; onSelectCandidate?: (candidate: FundingCandidate) => void;
 }) {
   const [data, setData] = useState<FundingResult | null>(null);
   const [venues, setVenues] = useState<string[]>([]);
@@ -89,7 +89,7 @@ export const FundingPage = memo(function FundingPage({ active = true, onSelectCa
     }).catch((caught) => { if (current) setError((caught as Error).message); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [requestQuery, reload]);
+  }, [requestQuery, reload, refreshKey]);
   const groups = useMemo(() => data ? fundingGroups(data) : [], [data]);
   const marketMap = useMemo(() => new Map([...groups.flatMap((group) => group.cells), ...(data?.rows ?? [])].map((row) => [row.instrument_id, row])), [data, groups]);
   useEffect(() => {

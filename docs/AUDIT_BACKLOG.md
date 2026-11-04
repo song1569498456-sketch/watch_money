@@ -96,3 +96,12 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 最终563 Python / 18 Node、build/Ruff/diffcheck见 [followup-validation.json](evidence/followup-validation.json)；本审计者只额外独立跑上述9项，不重复full。root最终整合浏览器baseline6/followup12/fee7组均通过；旧171或中间总数不替代最终结果。每批至少更新对应 ID：问题是否重现、改动范围、命令/结果、mock或真实来源、尚缺什么；新问题先开项，修复后凭对应定向测试和集成证据升级状态，不能收到即 done。
 
 本批整合验收：677后端、29前端、48组浏览器、构建/Ruff通过；最后HL节流调整另25项通过。详见 [data-review-validation.json](evidence/data-review-validation.json)。成功数据均为合成或本地模拟，公开真实探测仍受代理限制。
+
+## 界面真实性复审（刷新、时效与关注）
+
+- U02 已修复：顶部刷新同时触发价差/资金费查询，保留筛选。`main.tsx`、`ScannerPage.tsx`、`FundingPage.tsx`；真实本地接口浏览器断言两个查询均重发。
+- U03 已修复：服务端返回扫描TTL，前端按查询时刻及已核验字段最早失效点保守废止整个缓存排行（不在局部结果上重新宣称最佳）；每秒更新最大年龄，过期撤下可靠路径/标记并停用测算交接，保留查询时原始报价。返回过期结果自动重查，不必开启自动刷新。`scanFreshness.ts`、`scanner.py`，2项纯函数用例及浏览器模拟时间流逝/返回检查通过。
+- U04 已核实：current/predicted/settled分组比较在62f1815已修复，本轮前端与后端回归继续通过，不重复实现。
+- U05 已修复：我的监控新增简洁的关注市场列表，标明星标是单市场、不是组合监控；可查看资产详情或取消关注，缺目录项保留ID及状态。浏览器完整关注/查找/取消通过。
+
+本批完整677后端、31前端、构建/Ruff通过，导航浏览器12组通过；成功数据为合成本地样本，未增加实网或24小时验收声明。

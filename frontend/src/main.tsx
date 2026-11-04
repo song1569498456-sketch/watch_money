@@ -212,6 +212,7 @@ function App() {
   const [statuses, setStatuses] = useState<VenueStatus[]>([]);
   const [coverage, setCoverage] = useState<Coverage[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [queryRefresh, setQueryRefresh] = useState(0);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -463,7 +464,7 @@ function App() {
               aria-label="刷新全部数据"
               title="刷新全部数据"
               disabled={loading}
-              onClick={() => void load()}
+              onClick={() => { setQueryRefresh((value) => value + 1); void load(); }}
             >
               <RefreshCw size={17} className={loading ? "spin" : ""} />
             </button>
@@ -566,8 +567,8 @@ function App() {
               toggleFavorite={toggleFavorite}
             />
           )}
-          <div hidden={page !== "scanner"}><ScannerPage active={page === "scanner"} instruments={markets.instruments} favorites={favorites} toggleFavorite={toggleFavorite} onOpenAsset={openAsset} onSelectCandidate={selectCandidate} /></div>
-          {visited.has("funding") && <div hidden={page !== "funding"}><FundingPage active={page === "funding"} onSelectCandidate={selectCandidate} /></div>}
+          <div hidden={page !== "scanner"}><ScannerPage refreshKey={queryRefresh} staleSeconds={settings?.stale_seconds ?? 60} active={page === "scanner"} instruments={markets.instruments} favorites={favorites} toggleFavorite={toggleFavorite} onOpenAsset={openAsset} onSelectCandidate={selectCandidate} /></div>
+          {visited.has("funding") && <div hidden={page !== "funding"}><FundingPage refreshKey={queryRefresh} active={page === "funding"} onSelectCandidate={selectCandidate} /></div>}
           {page === "status" && <><button className="button secondary" onClick={() => navigate("settings")}><ArrowLeft size={14} />返回设置</button><Status statuses={statuses} coverage={coverage} now={now} /></>}
           {page === "settings" && (
             <>
@@ -603,7 +604,7 @@ function App() {
               toast={setToast}
             />
           )}
-          {page === "monitoring" && <Opportunities mode="monitoring" instruments={markets.instruments} snapshots={snapshots} toast={setToast} />}
+          {page === "monitoring" && <><section className="panel"><div className="panel-heading"><div><h2>关注的市场 · {favorites.length}</h2><p>星标保存单个市场，不会自动创建组合监控。组合监控见下方。</p></div></div>{favorites.length === 0 ? <p className="muted">尚未关注市场；可在价差组合或市场详情点击星标。</p> : favorites.map((id) => { const item = markets.instruments.find((row) => row.id === id); return <div className="journey-actions" key={id}><span className="break">{item ? `${item.venue} · ${item.native_symbol}` : id}{!item && " · 当前目录未提供"}</span>{item && <button className="text-button" onClick={() => openAsset(item.asset_id)}>查看资产详情</button>}<button className="text-button" onClick={() => toggleFavorite(id)}>取消关注</button></div>; })}</section><Opportunities mode="monitoring" instruments={markets.instruments} snapshots={snapshots} toast={setToast} /></>}
           {page === "notifications" && <Notifications toast={setToast} />}
           <footer>
             <span>

@@ -408,7 +408,7 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
                        -(row[best_key][rate_key] if row[best_key] else 0), row["asset_id"]))
     scanned = len(candidates)
     returned = min(limit, scanned)
-    return {"as_of": as_of, "candidates": candidates[:limit], "groups": summaries[:limit],
+    return {"as_of": as_of, "stale_seconds": stale_seconds, "candidates": candidates[:limit], "groups": summaries[:limit],
             "available_platforms": sorted({item.venue for item in active_catalog}),
             "filters": {"q": q, "platforms": sorted(selected_platforms), "market_type": market_type}, "stats": {
         "catalog_markets": len(catalog), "active_markets": len(active),
