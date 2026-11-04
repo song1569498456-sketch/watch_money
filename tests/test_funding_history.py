@@ -50,7 +50,7 @@ def setup_history(tmp_path, monkeypatch):
         adapter = CexAdapter(venue, client_factory=lambda _: client)
         adapter._markets[item.id] = (client_id, {"symbol": item.native_symbol,
                                                "info": {"fundingIntervalHours": 8}})
-        if client_id in {'okx', 'bybit'}:
+        if client_id in {'okx', 'bybit', 'binanceusdm', 'binancecoinm'}:
             adapter._markets[item.id][1].update(id='PEPE-USDT-SWAP' if client_id == 'okx' else 'PEPEUSDT',
                                                 swap=True, settle='USDT')
         collector = SimpleNamespace(instruments={item.id: item}, adapters={venue: adapter})
@@ -61,7 +61,8 @@ def setup_history(tmp_path, monkeypatch):
 
 
 def entry(timestamp=EVENT, rate="0.0001", **updates):
-    return {"timestamp": timestamp, "fundingRate": rate, **updates}
+    return {"timestamp": timestamp, "fundingRate": rate,
+            "info": {"symbol": "PEPEUSDT", "fundingTime": timestamp, "fundingRate": rate}, **updates}
 
 
 @pytest.mark.asyncio
@@ -117,8 +118,8 @@ async def test_dedup_and_revised_rates_keep_audit_and_first_observation(setup_hi
 @pytest.mark.asyncio
 async def test_same_timestamp_special_and_regular_events_are_not_mutual_revisions(setup_history):
     service, item, client, _ = setup_history()
-    client.response = [entry(info={"fundingRate": "0.0001", "rateType": "Regular"}),
-                       entry(rate="0.0002", info={"fundingRate": "0.0002", "rateType": "Special"})]
+    client.response = [entry(info={"symbol": "PEPEUSDT", "fundingTime": EVENT, "fundingRate": "0.0001", "rateType": "Regular"}),
+                       entry(rate="0.0002", info={"symbol": "PEPEUSDT", "fundingTime": EVENT, "fundingRate": "0.0002", "rateType": "Special"})]
     records = (await service.get(item.id, refresh=True))["records"]
     assert len(records) == 2 and {row["event_type"] for row in records} == {"regular", "special"}
     assert all(row["revision"] == 1 for row in records)

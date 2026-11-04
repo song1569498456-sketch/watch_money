@@ -189,3 +189,7 @@ dYdX历史新增显式before_height向前查询，与本地缓存高度筛选一
 ## R52 撤回不安全的dYdX自动高度游标
 
 官方响应缺唯一事件cursor，高度不保证唯一；next_before_height恒null且pagination_incomplete=true。只保留人工高度筛选，不能保证边界完整。刷新返回实际本页，普通缓存读取单独标明；同页高度/时间冲突拒收且不生成修订。R50的自动减一提示和连续翻页步骤已撤回，详见FUNDING_VIEW R52。未新增实网证据。
+
+## R53 Binance原生历史复核
+
+USDⓈ-M/COIN-M历史加强原生symbol/fundingTime/fundingRate校验、单位和来源记录；USDⓈ-M Special独立保存，COIN-M未知特殊类型拒收。同页冲突不修订，满页与拒收停止时间游标，历史周期未知、完整性不承诺。只做离线验证，无实网/生产身份变更；dYdX R52限制不变。详见FUNDING_VIEW R53。

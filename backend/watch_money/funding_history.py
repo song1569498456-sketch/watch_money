@@ -356,7 +356,7 @@ class FundingHistoryService:
             raise HTTPException(409, "Discover this market before refreshing funding history") from None
         if client_id not in SETTLED_ENDPOINTS:
             raise HTTPException(501, "Historical settled-rate endpoint semantics not yet reviewed for this service")
-        if client_id in {"okx", "bybit"}:
+        if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"}:
             if (not _market.get("id") or _market.get("swap") is not True
                     or _market.get("symbol") != instrument.native_symbol
                     or _market.get("settle") != instrument.settle):
@@ -460,7 +460,7 @@ class FundingHistoryService:
         check_scope()
         if not isinstance(payloads, list):
             raise HTTPException(502, "Malformed public funding history response")
-        if client_id in {"okx", "bybit"} and len(payloads) > page_limit:
+        if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"} and len(payloads) > page_limit:
             raise HTTPException(502, "Oversized public history page; no partial cursor inferred")
         records = []
         rejected = 0
@@ -471,13 +471,15 @@ class FundingHistoryService:
                 reason = "malformed_record"
                 payload = {}
             timestamp = _timestamp(payload.get("timestamp"))
+            if timestamp is None:
+                reason = reason or "missing_settlement_timestamp"
             raw = payload.get("info")
             raw = raw if isinstance(raw, dict) else {}
             # OKX fundingRate is predicted even in history; only realizedRate
             # proves the actual charged rate. Guard against parser regressions.
             value = raw.get("realizedRate") if client_id == "okx" else raw.get("fundingRate", payload.get("fundingRate"))
-            if client_id in {"okx", "bybit"}:
-                native_time = raw.get("fundingTime" if client_id == "okx" else "fundingRateTimestamp")
+            if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"}:
+                native_time = raw.get("fundingRateTimestamp" if client_id == "bybit" else "fundingTime")
                 native_id = raw.get("instId" if client_id == "okx" else "symbol")
                 if native_id != _market["id"]:
                     reason = reason or "wrong_native_market"
@@ -487,6 +489,10 @@ class FundingHistoryService:
                 if client_id == "okx" and raw.get("instType") not in (None, "SWAP"):
                     reason = reason or "wrong_native_product"
                 value = raw.get("realizedRate" if client_id == "okx" else "fundingRate")
+                if client_id.startswith("binance"):
+                    allowed_types = {"Regular", "Special"} if client_id == "binanceusdm" else {"Regular"}
+                    if raw.get("rateType", "Regular") not in allowed_types:
+                        reason = reason or "unreviewed_native_event_type"
             if client_id in {"gate", "bitget"}:
                 # Independently validate the native settlement clock against
                 # CCXT. Never use response time or today's period as history.
@@ -538,9 +544,9 @@ class FundingHistoryService:
                             "revision": 1, "is_demo": False,
                             **({"native_market_id": _market["id"], "settle": instrument.settle,
                                 "rate_unit": "decimal_ratio_per_settlement", "native_time_unit": "milliseconds",
-                                "native_settlement_time": raw.get("fundingTime" if client_id == "okx" else "fundingRateTimestamp"),
+                                "native_settlement_time": raw.get("fundingRateTimestamp" if client_id == "bybit" else "fundingTime"),
                                 "rate_field": "realizedRate" if client_id == "okx" else "fundingRate"}
-                               if client_id in {"okx", "bybit"} else {}),
+                               if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"} else {}),
                             **({"native_market_id": _market["id"], "settle": instrument.settle,
                                 "rate_unit": "decimal_ratio_per_settlement",
                                 "native_settlement_time": raw.get("t" if client_id == "gate" else "fundingTime"),
@@ -553,13 +559,27 @@ class FundingHistoryService:
                                 "advertised_funding_rate": str(raw["funding_rate"])
                                     if _number(raw.get("funding_rate")) is not None else None}
                                if client_id == "htx" else {})})
+        if client_id.startswith("binance"):
+            groups = {}
+            for row in records:
+                groups.setdefault((row["settlement_at"], row["event_type"]), []).append(row)
+            records = []
+            for group in groups.values():
+                if len({row["raw_funding_rate"] for row in group}) > 1:
+                    rejected += len(group)
+                    reasons["conflicting_native_event"] = reasons.get("conflicting_native_event", 0) + len(group)
+                else:
+                    records.extend(group)
         await asyncio.to_thread(self._save, records)
         latest = max((row["settlement_at"] for row in records), default=None)
         next_since = latest + 1 if latest is not None and latest < received else None
         issues = [f"rejected_{reason}:{count}" for reason, count in sorted(reasons.items())]
-        if client_id in {"okx", "bybit"} and rejected:
+        if client_id in {"okx", "bybit", "binanceusdm", "binancecoinm"} and rejected:
             next_since = None
             issues.append("Rejected native records prevent a safe continuation hint")
+        if client_id.startswith("binance") and len(payloads) >= page_limit:
+            next_since = None
+            issues.append("Full page may split same-time events; no safe time-only continuation hint")
         if since is not None and next_since is None:
             issues.append("no_forward_cursor_progress")
         if client_id in {"bitget", "htx"}:

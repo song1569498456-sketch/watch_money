@@ -450,3 +450,13 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 仅离线、未访问行情主机/受阻OKX连接、未改账户或独立环境。R50“读取next_before_height继续”的复测步骤已被撤回；复测应人工指定已知高度并核对records_scope，不声称能遍历所有事件。完整历史需要官方可证明的事件唯一标识或分页协议，当前为明确阻塞；24小时仍未验收。
 
 - 最终验证：1255项完整后端（51.79秒，1条上游TestClient弃用警告）、136项历史专项、CI范围Ruff/diff通过。无前端/浏览器变更、实网与远端CI未确认。
+
+### R53 Binance两类合约历史边界（2026-11-04）
+
+- 官方[USDⓈ-M历史](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History)及[COIN-M历史](https://developers.binance.com/docs/derivatives/coin-margined-futures/market-data/rest-api/Get-Funding-Rate-History-of-Perpetual-Futures)确认symbol/fundingTime/fundingRate、起止毫秒包含边界和单页上限。新增原生symbol与已发现swap目录一致、原始时间与统一毫秒一致、原始费率不可用时拒收，不从统一字段补齐。记录保留原始合约/时间/费用币和小数比例，历史周期仍null，不乘合约面值。
+- USDⓈ-M官方rateType区分Regular与股票分红额外资金费Special，继续按事件类型分别存储，不混成同一次修订；COIN-M未核实Special则拒收。未知显式类型不猜，缺rateType沿用历史普通记录兼容。没有增加股票目录、账户收入、交易或收益预测功能。
+- 同页相同结算时间/类型但原始率冲突的全部拒收，不按顺序选择；重复相同记录仍去重。任何拒收停止next_since；满页也停止时间+1提示，防止边界同时间另一个事件被跳过。每次一页，无自动回填，不保证完整事件历史。
+- 新16项离线回归覆盖安装版fapi/dapi公共路由、startTime及无凭证、正反合约原生单位/符号、错ID/时间/率、未知类型、COIN-M Special、冲突顺序与满页边界；既有普通/特殊同刻独立记录及修订测试保留。旧默认fixture补原生字段，不放宽验证。
+- 只读官方文档和离线替身，未请求行情主机、受阻OKX连接或私有接口；dYdX R52分页不可证明完整的限制继续保留。下一项优先核查MEXC/KuCoin历史原生字段及历史周期依据；没有公开可证语义就保持未知。生产身份、跨平台真实覆盖和24小时仍开放。
+
+- 最终验证：1271项完整后端（53.38秒，1条上游TestClient弃用警告）、152项历史专项、CI范围Ruff/diff通过；无前端/浏览器或实网验证，远端CI未确认。

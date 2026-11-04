@@ -159,3 +159,11 @@ PYTEST
 - 同页重复高度（含前导零等价表示）或同一结算时间的记录全部按ambiguous_native_event_identity拒收，不按返回顺序选赢家，不保存或写修订；即便缓存已有记录也不会被该页改写，刷新返回空页而不是旧缓存。单独下一次观测的来源变化仍沿用R45审计修订，不把它当已证明的链上更正。
 - 新7项回归覆盖旧缓存+since+limit=1连续手动300/200/100页面、两种响应顺序/同高度同或异时间、已有缓存保护及高度等价拼写；旧自动cursor断言改为停止，既有时区fixture为独立事件补不同高度。保留单页上限/身份/原生时间/取消边界。
 - 仅离线、未访问行情主机/受阻OKX连接、未改账户或独立环境。R50“读取next_before_height继续”的复测步骤已被撤回；复测应人工指定已知高度并核对records_scope，不声称能遍历所有事件。完整历史需要官方可证明的事件唯一标识或分页协议，当前为明确阻塞；24小时仍未验收。
+
+### R53 Binance两类合约历史边界（2026-11-04）
+
+- 官方[USDⓈ-M历史](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History)及[COIN-M历史](https://developers.binance.com/docs/derivatives/coin-margined-futures/market-data/rest-api/Get-Funding-Rate-History-of-Perpetual-Futures)确认symbol/fundingTime/fundingRate、起止毫秒包含边界和单页上限。新增原生symbol与已发现swap目录一致、原始时间与统一毫秒一致、原始费率不可用时拒收，不从统一字段补齐。记录保留原始合约/时间/费用币和小数比例，历史周期仍null，不乘合约面值。
+- USDⓈ-M官方rateType区分Regular与股票分红额外资金费Special，继续按事件类型分别存储，不混成同一次修订；COIN-M未核实Special则拒收。未知显式类型不猜，缺rateType沿用历史普通记录兼容。没有增加股票目录、账户收入、交易或收益预测功能。
+- 同页相同结算时间/类型但原始率冲突的全部拒收，不按顺序选择；重复相同记录仍去重。任何拒收停止next_since；满页也停止时间+1提示，防止边界同时间另一个事件被跳过。每次一页，无自动回填，不保证完整事件历史。
+- 新16项离线回归覆盖安装版fapi/dapi公共路由、startTime及无凭证、正反合约原生单位/符号、错ID/时间/率、未知类型、COIN-M Special、冲突顺序与满页边界；既有普通/特殊同刻独立记录及修订测试保留。旧默认fixture补原生字段，不放宽验证。
+- 只读官方文档和离线替身，未请求行情主机、受阻OKX连接或私有接口；dYdX R52分页不可证明完整的限制继续保留。下一项优先核查MEXC/KuCoin历史原生字段及历史周期依据；没有公开可证语义就保持未知。生产身份、跨平台真实覆盖和24小时仍开放。
