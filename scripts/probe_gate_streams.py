@@ -23,10 +23,51 @@ def scope(item):
     return "spot" if item.kind == "spot" else "futures:" + (item.settle or "unknown").lower()
 
 
-async def probe(adapter, stream, *, seconds, max_markets, scopes):
+def coverage(selected, latest, scopes, at):
+    def empty():
+        return {key: 0 for key in ("selected", "observed", "timed_bbo", "fresh_bbo",
+                                  "unobserved", "missing_bbo", "untrusted_time", "stale_bbo", "invalid_bbo")}
+    by_scope = {key: empty() for key in sorted(scopes)}
+    for item in selected:
+        row = by_scope.setdefault(scope(item), empty())
+        row["selected"] += 1
+        patch = latest.get(item.id)
+        if patch is None:
+            row["unobserved"] += 1
+            continue
+        row["observed"] += 1
+        states = [funding_field_state(patch, item, field, at, 60) for field in ("bid", "ask")]
+        row["timed_bbo"] += int(
+            all(
+                state["trusted"] and getattr(patch, field) is not None
+                for field, state in zip(("bid", "ask"), states)
+            )
+        )
+        row["fresh_bbo"] += int(all(state["rankable"] for state in states))
+        # Mutually exclusive diagnosis; trusted/timed is not necessarily fresh.
+        if all(state["rankable"] for state in states):
+            continue
+        if patch.bid is None or patch.ask is None:
+            reason = "missing_bbo"
+        elif any(not state["trusted"] for state in states):
+            reason = "untrusted_time"
+        elif any(state["issue"] and state["issue"].endswith("_stale") for state in states):
+            reason = "stale_bbo"
+        else:
+            reason = "invalid_bbo"
+        row[reason] += 1
+    return by_scope
+
+
+async def probe(adapter, stream, *, seconds, max_markets, scopes, sample_seconds=15):
+    if not 0 < seconds <= 600 or not 0.001 <= sample_seconds <= 600:
+        raise ValueError("Probe duration and sample interval must be bounded and positive")
+    # Bound history independently of message rate and caller sampling frequency.
+    sample_seconds = max(sample_seconds, seconds / 120)
     started = now_ms()
     latest, selected, samples = {}, [], []
     count = 0
+    timeline = []
     error_type = None
     elapsed = 0
     catalog_count = requested_count = eligible_count = 0
@@ -45,13 +86,28 @@ async def probe(adapter, stream, *, seconds, max_markets, scopes):
         started_stream = monotonic()
         iterator = stream.stream(selected).__aiter__()
         pending = None
+        next_sample = started_stream
+
+        def sample():
+            sample_at = now_ms()
+            timeline.append({"checked_at": sample_at,
+                             "elapsed_seconds": round(monotonic() - started_stream, 3),
+                             "received_patches": count,
+                             "coverage_by_scope": coverage(selected, latest, scopes, sample_at)})
+
         try:
             while monotonic() - started_stream < seconds:
+                tick = monotonic()
+                if tick >= next_sample:
+                    sample()
+                    next_sample = monotonic() + sample_seconds
                 remaining = seconds - (monotonic() - started_stream)
-                pending = asyncio.create_task(anext(iterator))
-                done, _ = await asyncio.wait({pending}, timeout=max(0.001, remaining))
+                if pending is None:
+                    pending = asyncio.create_task(anext(iterator))
+                done, _ = await asyncio.wait(
+                    {pending}, timeout=max(0.001, min(remaining, next_sample - monotonic())))
                 if not done:
-                    break
+                    continue
                 patch = pending.result()
                 pending = None
                 count += 1
@@ -64,7 +120,8 @@ async def probe(adapter, stream, *, seconds, max_markets, scopes):
                         }
                     )
         finally:
-            checked_at = now_ms()
+            sample()
+            checked_at = timeline[-1]["checked_at"]
             elapsed = monotonic() - started_stream
             live_diagnostics = stream.diagnostics()
             if pending is not None:
@@ -82,22 +139,7 @@ async def probe(adapter, stream, *, seconds, max_markets, scopes):
             except Exception as exc:
                 cleanup_errors.append(type(exc).__name__)
     at = checked_at if checked_at is not None else now_ms()
-    by_scope = {key: {"selected": 0, "observed": 0, "timed_bbo": 0, "fresh_bbo": 0} for key in sorted(scopes)}
-    for item in selected:
-        row = by_scope.setdefault(scope(item), {"selected": 0, "observed": 0, "timed_bbo": 0, "fresh_bbo": 0})
-        row["selected"] += 1
-        patch = latest.get(item.id)
-        if patch is None:
-            continue
-        row["observed"] += 1
-        states = [funding_field_state(patch, item, field, at, 60) for field in ("bid", "ask")]
-        row["timed_bbo"] += int(
-            all(
-                state["trusted"] and getattr(patch, field) is not None
-                for field, state in zip(("bid", "ask"), states)
-            )
-        )
-        row["fresh_bbo"] += int(all(state["rankable"] for state in states))
+    by_scope = coverage(selected, latest, scopes, at)
     return {
         "scope": "public Gate BBO only; no user database touched",
         "started_at": started,
@@ -114,6 +156,9 @@ async def probe(adapter, stream, *, seconds, max_markets, scopes):
         "truncated": len(selected) < eligible_count,
         "received_patches": count,
         "coverage_by_scope": by_scope,
+        "coverage_samples": timeline,
+        "coverage_sample_interval_seconds": sample_seconds,
+        "coverage_sampling_limit": "At most 122 samples, including startup and final; gaps between samples are not continuous coverage proof.",
         "source_streams": live_diagnostics,
         "closed_source_streams": stream.diagnostics(),
         "first_patch_samples": samples,

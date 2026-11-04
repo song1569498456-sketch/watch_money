@@ -1,0 +1,38 @@
+{
+  "provenance": "parent-reported independent public live test; summary only, raw frames not included",
+  "tested_commit": "6da269a",
+  "duration_seconds": 180,
+  "rejections": 0,
+  "reconnects": 0,
+  "final_fresh_bbo": {
+    "spot": {
+      "fresh": 1579,
+      "selected": 2186
+    },
+    "futures:usdt": {
+      "fresh": 911,
+      "selected": 1070
+    },
+    "futures:btc": {
+      "fresh": 1,
+      "selected": 1
+    },
+    "futures:usd1": {
+      "fresh": null,
+      "selected": 0,
+      "status": "no discovered contracts; untested"
+    }
+  },
+  "raw_patch_comparisons": 65,
+  "comparison_fields": [
+    "namespace",
+    "price",
+    "source timestamp"
+  ],
+  "fractional_contract_quantities_observed": true,
+  "limits": [
+    "Short stream-path test, not 24-hour acceptance.",
+    "Spot acknowledgement fix in 5d33823 awaits independent retest.",
+    "Fresh BBO is not verified cross-platform identity or funding-rate freshness."
+  ]
+}
