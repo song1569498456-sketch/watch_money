@@ -1,0 +1,39 @@
+{
+  "provenance": "SYNTHETIC official-schema fixtures via httpx.MockTransport; no exchange requests and no real coverage proof",
+  "execution": "tests/test_identity_rehearsal.py fixture helpers, persisted public records, sanitized capture, strict-policy apply/revoke in disposable DB",
+  "policy_version": "official-spot-contract-v1",
+  "before": {
+    "confirmed_cross_platform_groups": 0,
+    "confirmed_cross_platform_markets": 0,
+    "catalog_markets": 2
+  },
+  "after_temporary_apply": {
+    "confirmed_cross_platform_groups": 1,
+    "confirmed_cross_platform_markets": 2,
+    "catalog_markets": 2
+  },
+  "after_temporary_revoke": {
+    "confirmed_cross_platform_groups": 0,
+    "confirmed_cross_platform_markets": 0,
+    "catalog_markets": 2
+  },
+  "baseline_coverage_restored": true,
+  "source_public_metadata_unchanged": true,
+  "plan_counts": {
+    "eligible_groups": 1,
+    "eligible_markets": 2,
+    "blocked_groups": 0,
+    "already_verified_groups": 0
+  },
+  "guard_same_ticker_same_address_different_chain": {
+    "eligible_evidence_count": 0,
+    "confirmed_groups": 0,
+    "blocked_reasons": {
+      "two_distinct_official_venues_required": 2
+    }
+  },
+  "limits": [
+    "This does not validate the external 199 candidate groups / 440 markets.",
+    "No live database mappings or user account information changed."
+  ]
+}

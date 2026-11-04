@@ -1,0 +1,62 @@
+{
+  "provenance": "source_database_metadata; fresh public requests only if explicitly enabled",
+  "actual_catalog_available": false,
+  "fresh_public_refresh_requested": false,
+  "before": {
+    "confirmed_cross_platform_groups": 0,
+    "confirmed_cross_platform_markets": 0,
+    "catalog_markets": 0
+  },
+  "after_temporary_apply": {
+    "confirmed_cross_platform_groups": 0,
+    "confirmed_cross_platform_markets": 0,
+    "catalog_markets": 0
+  },
+  "after_temporary_revoke": {
+    "confirmed_cross_platform_groups": 0,
+    "confirmed_cross_platform_markets": 0,
+    "catalog_markets": 0
+  },
+  "temporary_applied_evidence_count": 0,
+  "baseline_coverage_restored": true,
+  "plan_token": "4278ee44bec81c905b408a9535c3c25d07b553d279e4442c9616403fd80a5c04",
+  "policy_version": "official-spot-contract-v1",
+  "plan_counts": {
+    "eligible_groups": 0,
+    "eligible_markets": 0,
+    "blocked_groups": 0,
+    "already_verified_groups": 0
+  },
+  "blocked_reasons": {},
+  "fresh_public_refresh_skipped_empty_catalog": false,
+  "platform_sources": {
+    "gate": {
+      "state": "not_observed"
+    },
+    "bitget": {
+      "state": "not_observed"
+    },
+    "kucoin": {
+      "state": "not_observed"
+    },
+    "coinbase": {
+      "state": "not_observed"
+    }
+  },
+  "limits": [
+    "No live database mappings were changed.",
+    "Candidate groups are not approved coverage.",
+    "External 199 candidate groups / 440 markets are not imported or counted without their source data.",
+    "Identity coverage alone does not establish price freshness, executable profit or perpetual underlying identity.",
+    "Only previously unverified eligible groups may be batch approved; existing approvals require separate review."
+  ],
+  "guard_validation": "See tests/test_identity_rehearsal.py and tests/test_identity_batch.py; fixture checks are synthetic, not live-source observations.",
+  "source_protection": {
+    "open_mode": "SQLite mode=ro + query_only; SELECT whitelisted identity tables only",
+    "public_metadata_sha256_before": "85fbef98b38805cbbcb9d7e8ee282f830b1bec418f25563455ce3a7e79d6cf69",
+    "public_metadata_sha256_after": "85fbef98b38805cbbcb9d7e8ee282f830b1bec418f25563455ce3a7e79d6cf69",
+    "public_metadata_unchanged": true,
+    "scope": "Sanitized identity metadata only; private tables were not inspected or hashed. Concurrent external writes can change this result."
+  },
+  "recorded_at": 1793827094227
+}

@@ -453,9 +453,10 @@ class AssetVerificationService:
                 "ready": sum(row["status"] == "ready" for row in proposals),
                 "blocked": sum(row["status"] != "ready" for row in proposals)}
 
-    def apply(self, evidence_ids: list[str], preview_token: str) -> dict:
+    def apply(self, evidence_ids: list[str], preview_token: str, *, _guard=None) -> dict:
         with self.store.lock, self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            policy = _guard() if _guard is not None else None
             preview = self.preview(evidence_ids)
             if preview["preview_token"] != preview_token:
                 raise ValueError("Preview changed; review the new preview before applying")
@@ -468,7 +469,7 @@ class AssetVerificationService:
                     "verified_at": self.clock(), "expires_at": group["expires_at"]} for identity in group["instrument_ids"]}
                 self.store.map_assets(group["instrument_ids"], group["canonical_asset_id"], evidence=evidence, connection=db)
             self._audit(db, "asset_verification_apply", {"evidence_ids": sorted(set(evidence_ids)),
-                                                       "preview_token": preview_token})
+                                                       "preview_token": preview_token, **({"policy": policy} if policy else {})})
         self.collector.instruments = self.store.instruments()
         return {"applied_groups": len(preview["proposals"]),
                 "applied_markets": sum(len(row["instrument_ids"]) for row in preview["proposals"]),
@@ -661,3 +662,23 @@ def revoke_evidence(payload: RevokeSelection, request: Request):
         return _service(request).revoke(payload.evidence_ids, payload.reason)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
+
+
+class BatchPlanSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plan_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@router.get("/batch-plan")
+def batch_plan(request: Request):
+    from .identity_batch import build_plan
+    return build_plan(_service(request))
+
+
+@router.post("/batch-apply")
+def batch_apply(payload: BatchPlanSelection, request: Request):
+    from .identity_batch import apply_plan
+    try:
+        return apply_plan(_service(request), payload.plan_token)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
