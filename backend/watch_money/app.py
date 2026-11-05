@@ -64,6 +64,7 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     from .funding_history import router as funding_history_router
     from .fee_profiles import router as fees_router
     from .asset_verification import AssetVerificationService, router as asset_verification_router
+    from .identity_catalog import IdentityCatalogService, router as identity_catalog_router
     notifications = NotificationService(data_dir)
     notifications.set_enabled(store.settings().notifications_enabled)
     collector = Collector(store, adapters, notifications)
@@ -80,11 +81,14 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
         if run_collectors:
             await collector.start()
         await monitors.start()
+        if run_collectors:
+            await app.state.identity_catalog.start()
         try:
             yield
         finally:
             await monitors.stop()
             await query_work.close()
+            await app.state.identity_catalog.close()
             await app.state.asset_verification.close()
             await collector.stop()
             await notifications.stop()
@@ -107,6 +111,8 @@ def create_app(data_dir: str | Path | None = None, start_collector: bool | None 
     app.include_router(fees_router)
     app.state.asset_verification = AssetVerificationService(store, collector)
     app.include_router(asset_verification_router)
+    app.state.identity_catalog = IdentityCatalogService(app.state.asset_verification)
+    app.include_router(identity_catalog_router)
 
     @app.get('/api/health')
     def health():

@@ -1,0 +1,11 @@
+{
+  "mode": "isolated synthetic persisted catalog; refresh browser-mocked; no provider request",
+  "passed": 5,
+  "checks": [
+    "missing_key_and_candidate_not_verified_coverage_visible",
+    "complete_paging_and_filter_resets_page",
+    "automatic_preference_persists_without_account_or_network_changes",
+    "mocked_refresh_returns_to_saved_candidate_review",
+    "mobile_no_overflow_no_js_errors_no_external_requests"
+  ]
+}

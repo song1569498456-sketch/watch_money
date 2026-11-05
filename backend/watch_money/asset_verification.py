@@ -246,7 +246,7 @@ class AssetVerificationService:
         db.execute("INSERT INTO audit(at,action,payload) VALUES(?,?,?)",
                    (self.clock(), action, json.dumps(payload, allow_nan=False)))
 
-    def _insert(self, records: list[dict], *, supersede_public=False):
+    def _insert(self, records: list[dict], *, supersede_public=False, renew_unchanged=False, observed_venues=()):
         inserted = 0
         with self.store.lock, self.store.connect() as db:
             previous = self._records()
@@ -257,6 +257,12 @@ class AssetVerificationService:
                     old = previous_by_id.get(old_id)
                     if old is None or old["instrument_id"] != record["instrument_id"]:
                         raise ValueError("Superseded evidence must belong to the same instrument")
+            if renew_unchanged:
+                observed_ids = {r['instrument_id'] for r in records if r['evidence_kind'] == 'public_contract_metadata'}
+                for old in previous:
+                    if (old['status'] == 'active' and old['evidence_kind'] == 'public_contract_metadata'
+                            and old['venue'] in observed_venues and old['instrument_id'] not in observed_ids):
+                        db.execute("UPDATE asset_identity_evidence SET status='not_observed' WHERE id=?", (old['id'],))
             for record in records:
                 old_ids = list(record.get("supersedes_evidence_ids", []))
                 if supersede_public:
@@ -267,10 +273,56 @@ class AssetVerificationService:
                     db.execute("UPDATE asset_identity_evidence SET status='superseded' WHERE id=?", (old_id,))
                 inserted += db.execute("INSERT OR IGNORE INTO asset_identity_evidence VALUES(?,?,'active')",
                                        (record["id"], json.dumps(record, allow_nan=False))).rowcount
+            if renew_unchanged:
+                self._renew_unchanged(db, previous_by_id, records)
             self._audit(db, "asset_evidence_import", {"evidence_ids": [row["id"] for row in records],
                                                     "superseded": supersede_public})
         self.collector.instruments = self.store.instruments()
         return {"evidence_ids": [row["id"] for row in records], "imported": inserted, "submitted": len(records)}
+
+    def _renew_unchanged(self, db, previous, records):
+        """Renew only existing, still-valid approvals; never approve a new target."""
+        catalog = self.store.instruments()
+        attempts = {v: json.loads(r) for v, r in db.execute("SELECT venue,record FROM asset_identity_sources")}
+        def signature(fact):
+            return {k: v for k, v in fact.items() if k not in {"id", "status", "observed_at", "expires_at"}}
+        indexed = defaultdict(list)
+        for fact in records:
+            indexed[_digest(signature(fact))].append(fact)
+        renewed = []
+        for identity, encoded in list(db.execute("SELECT instrument_id,metadata FROM asset_mapping_verifications")):
+            metadata = json.loads(encoded)
+            item = catalog.get(identity)
+            mapping = db.execute("SELECT asset_id FROM mappings WHERE instrument_id=?", (identity,)).fetchone()
+            if (not item or not mapping or metadata.get("status") != "verified"
+                    or metadata.get("expires_at", 0) <= self.clock()
+                    or metadata.get("catalog_fingerprint") != catalog_fingerprint(item)
+                    or mapping[0] != metadata.get("canonical_asset_id")):
+                continue
+            fresh = []
+            for old_id in metadata.get("evidence_ids", []):
+                old = previous.get(old_id)
+                matches = indexed.get(_digest(signature(old)), []) if old and old['status'] == 'active' else []
+                if len(matches) != 1:
+                    break
+                fact = matches[0]
+                attempt = attempts.get(fact['venue'], {})
+                if (fact['evidence_kind'] != 'public_contract_metadata' or fact['blockers']
+                        or attempt.get('state') != 'observed' or attempt.get('received_at') != fact['observed_at']):
+                    break
+                fresh.append(fact)
+            if not fresh or len(fresh) != len(metadata.get('evidence_ids', [])):
+                continue
+            # A new conflicting record outside the prior group must prevent renewal.
+            if any(f['instrument_id'] in {r['instrument_id'] for r in fresh}
+                   and (f['canonical_asset_id'] != metadata['canonical_asset_id'] or f['blockers']) for f in records):
+                continue
+            metadata.update(evidence_ids=sorted(f['id'] for f in fresh), verified_at=self.clock(),
+                            expires_at=min(f['expires_at'] for f in fresh))
+            db.execute("UPDATE asset_mapping_verifications SET metadata=? WHERE instrument_id=?", (json.dumps(metadata), identity))
+            renewed.append(identity)
+        if renewed:
+            self._audit(db, "asset_identity_unchanged_renewal", {"instrument_ids": renewed})
 
     def add_evidence(self, items: list[EvidenceInput]) -> dict:
         catalog = self.store.instruments()
@@ -288,7 +340,7 @@ class AssetVerificationService:
             records.append(record)
         return self._insert(records)
 
-    async def public_refresh(self, venues: list[str]) -> dict:
+    async def public_refresh(self, venues: list[str], *, renew_unchanged=False) -> dict:
         if any(venue not in SOURCES for venue in venues):
             raise ValueError("Only reviewed public contract registries are supported: " + ", ".join(SOURCES))
         if self.client is None:
@@ -350,6 +402,8 @@ class AssetVerificationService:
                                unmatched_currency_markets=len(scoped) - len(matched))
             except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
                 attempt["error_type"] = type(exc).__name__
+                if isinstance(exc, httpx.HTTPStatusError):
+                    attempt["http_status"] = exc.response.status_code
             attempts.append(attempt)
             with self.store.lock, self.store.connect() as db:
                 db.execute("INSERT INTO asset_identity_sources VALUES(?,?) ON CONFLICT(venue) DO UPDATE SET record=excluded.record",
@@ -375,7 +429,8 @@ class AssetVerificationService:
                       "catalog_fingerprint": catalog_fingerprint(instrument), "blockers": []}
             record["id"] = _digest(record)
             records.append(record)
-        imported = self._insert(records, supersede_public=True) if records else {"evidence_ids": [], "imported": 0}
+        imported = self._insert(records, supersede_public=True, renew_unchanged=renew_unchanged,
+            observed_venues=[a['venue'] for a in attempts if a['state'] == 'observed']) if records or renew_unchanged else {"evidence_ids": [], "imported": 0}
         return {**imported, "sources": attempts, "mappings_changed": False}
 
     def preview(self, evidence_ids: list[str] | None = None) -> dict:
