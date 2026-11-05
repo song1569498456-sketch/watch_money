@@ -1,17 +1,31 @@
 """Opt-in bounded scheduling evidence. Never inspect locals, arguments or environment."""
 from collections import deque
 from copy import deepcopy
+import os
 from pathlib import Path
-import resource
 import sys
 import threading
 import time
 
+try:
+    import resource
+except ImportError:  # Windows has no Unix resource module.
+    resource = None
+
 
 def resources():
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    result = {key: getattr(usage, key) for key in
-              ('ru_utime', 'ru_stime', 'ru_maxrss', 'ru_nvcsw', 'ru_nivcsw')}
+    if resource is not None:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        result = {key: getattr(usage, key) for key in
+                  ('ru_utime', 'ru_stime', 'ru_maxrss', 'ru_nvcsw', 'ru_nivcsw')}
+        result['provider'] = 'resource.getrusage'
+    else:
+        usage = os.times()
+        # Keep genuine cumulative CPU counters. Unknown Unix-only counters are
+        # null, never fabricated zeros or differently defined memory measures.
+        result = {'ru_utime': usage.user, 'ru_stime': usage.system,
+                  'ru_maxrss': None, 'ru_nvcsw': None, 'ru_nivcsw': None,
+                  'provider': 'os.times'}
     # Fixed cgroup v2 counters only; absent/unreadable counters remain unknown.
     for name, keys in {'cpu.stat': {'usage_usec', 'nr_throttled', 'throttled_usec'},
                        'memory.events': {'high', 'max', 'oom', 'oom_kill'}}.items():
@@ -98,7 +112,8 @@ class StallProbe:
                     'events': deepcopy(list(self.events)),
                     'meaning': 'Stacks at capture, not causal proof. Shared gaps may be GIL, CPU throttling, '
                                'process/host suspension or scheduling. No network latency measurement. '
-                               'Resources are cumulative; compare successive captures. maxrss is KiB on Linux.'}
+                               'Resources are cumulative; compare successive captures. maxrss is KiB on Linux. '
+                               'Unavailable platform counters are null; provider identifies the CPU source.'}
 
     def close(self):
         self.stop.set()

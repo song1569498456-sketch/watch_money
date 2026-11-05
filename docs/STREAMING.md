@@ -40,6 +40,8 @@ The queue is bounded to twice the requested instrument count, applying backpress
 
 ## Runtime and verification
 
+The full `ticker` name override is restricted to Binance spot, USD-M and COIN-M clients. Other clients retain their SDK topic defaults: Bybit single and multiple ticker subscriptions use `tickers.{symbol}` for spot, linear and inverse products. Applying Binance's singular name globally makes otherwise reachable Bybit public subscriptions fail.
+
 Public subscriptions require no account API key. Clients enable rate limiting, `newUpdates`, inherited proxy settings and a verified SSL context honoring `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`. Because aiohttp's WSS environment lookup differs from HTTPS lookup, the module explicitly selects inherited `WSS_PROXY`, then inherited `HTTPS_PROXY`/`HTTP_PROXY`, as CCXT's `wssProxy`. Proxy values and credentials are never written to source metadata or logs by this module. TLS verification remains enabled. The same cloud network restriction described in [CEX_SOURCES.md](CEX_SOURCES.md) still blocks exchange data hosts; no WebSocket connection or heartbeat has been validated live.
 
 Default production ticker hosts, in addition to the REST catalog/handshake hosts in CEX_SOURCES:

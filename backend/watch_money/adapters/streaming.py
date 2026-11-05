@@ -29,8 +29,11 @@ def _stream_client_factory(client_id: str) -> Any:
         "aiohttp_trust_env": True,
         "ssl_context": ssl.create_default_context(cafile=ca_file),
         "newUpdates": True,
-        "options": {"watchTickers": {"name": "ticker"}, "watchTicker": {"name": "ticker"}},
     }
+    # Only Binance needs the full ticker instead of its default miniTicker.
+    # Other clients own their native topic names (e.g. Bybit's tickers.*).
+    if client_id in {"binance", "binanceusdm", "binancecoinm"}:
+        config["options"] = {"watchTickers": {"name": "ticker"}, "watchTicker": {"name": "ticker"}}
     # aiohttp's WebSocket env lookup uses WSS_PROXY, not HTTPS_PROXY. Make the
     # inherited HTTPS proxy explicit for WSS while keeping TLS verification.
     proxy = (os.environ.get("WSS_PROXY") or os.environ.get("wss_proxy")

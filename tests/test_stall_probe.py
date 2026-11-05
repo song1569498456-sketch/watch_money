@@ -9,6 +9,21 @@ from watch_money.query_work import QueryWork
 from watch_money.stall_probe import StallProbe, resources, stacks
 
 
+def test_cpu_diagnostics_without_unix_resource_keep_unknown_counters_null(monkeypatch):
+    from watch_money import stall_probe
+
+    monkeypatch.setattr(stall_probe, 'resource', None)
+    before = time.process_time()
+    result = stall_probe.resources()
+    after = time.process_time()
+    assert result['provider'] == 'os.times'
+    assert result['ru_utime'] >= 0 and result['ru_stime'] >= 0
+    # os.times and process_time both report genuine cumulative process CPU.
+    assert before - .1 <= result['ru_utime'] + result['ru_stime'] <= after + .1
+    assert all(result[key] is None for key in ('ru_maxrss', 'ru_nvcsw', 'ru_nivcsw'))
+    json.dumps(result, allow_nan=False)
+
+
 def test_capture_has_no_locals_source_or_absolute_paths():
     secret_marker = 'test-private-value-must-not-appear'
     captured = stacks(threading.get_ident())
