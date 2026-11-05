@@ -50,6 +50,25 @@ test('same-query retry keeps context but excludes its old success/error/finally 
   assert.equal(retry.controller.signal.aborted, false);
 });
 
+test('background refresh invalidates callbacks while preserving displayed scope until filters or visibility change', () => {
+  const gate = new QueryGeneration();
+  gate.update('BTC + configured venues', true, 0);
+  const displayedScope = gate.scopeVersion;
+  const first = gate.begin();
+  gate.update('BTC + configured venues', true, 1);
+  assert.equal(gate.scopeVersion, displayedScope);
+  assert.equal(gate.accepts(first), false);
+  assert.equal(gate.accepts(gate.begin()), true);
+  gate.update('ETH + configured venues', true, 1);
+  assert.notEqual(gate.scopeVersion, displayedScope);
+  const changedScope = gate.scopeVersion;
+  gate.update('ETH + configured venues', false, 1);
+  assert.notEqual(gate.scopeVersion, changedScope);
+  const hiddenScope = gate.scopeVersion;
+  gate.update('ETH + configured venues', true, 1);
+  assert.notEqual(gate.scopeVersion, hiddenScope);
+});
+
 test('changed settings or pending raw search invalidates a cached result before debounce fires', () => {
   const gate = new QueryGeneration();
   gate.update(JSON.stringify({ query: 'PEPE', input: 'PEPE', refreshKey: 1 }), true);

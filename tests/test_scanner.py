@@ -267,7 +267,44 @@ def test_scan_and_output_budgets_are_separate_and_truncation_is_explicit():
     assert (stats["possible_candidates"], stats["scanned"], stats["returned"]) == (20, 5, 3)
     assert stats["unscanned"] == 15 and stats["omitted_by_limit"] == 2
     assert stats["enumeration_truncated"] and stats["result_truncated"] and stats["truncated"]
-    assert stats["selection"] == "bounded_prefix"
+    assert stats["selection"] == "bounded_asset_round_robin"
+
+
+@pytest.mark.parametrize("market_type", ["all", "spot_perp"])
+def test_large_first_asset_cannot_exhaust_other_asset_scan_budgets(market_type):
+    # Model the expanded catalog: BTC alone exceeds the entire evaluation cap.
+    markets = [market(f"BTC:{venue}:{index}", venue, "BTC",
+                      kind="perpetual" if index % 2 else "spot")
+               for venue in ["alpha", "beta"] for index in range(12)]
+    markets += [market(f"{asset}:{venue}", venue, asset,
+                       kind="spot" if venue == "alpha" else "perpetual")
+                for asset in ["ETH", "SOL"] for venue in ["alpha", "beta"]]
+    result = run(markets, max_candidates=6, market_type=market_type)
+    groups = {tuple(row["asset_symbols"]): row for row in result["groups"]}
+    assert result["stats"]["scanned"] == 6
+    assert result["stats"]["enumeration_truncated"]
+    for asset in ["BTC", "ETH", "SOL"]:
+        assert groups[(asset,)]["scanned_directions"] == 2
+        assert groups[(asset,)]["best_spread_candidate"] is not None
+    assert groups[("ETH",)]["scan_complete"] and groups[("SOL",)]["scan_complete"]
+    assert not groups[("BTC",)]["scan_complete"]
+    assert len({row["id"] for row in result["candidates"]}) == 6
+
+
+def test_same_quote_directions_get_priority_but_other_quotes_remain_counted_and_explained():
+    markets = [market("alpha-usdt", "alpha"), market("beta-eur", "beta", quote="EUR"),
+               market("beta-usdt", "beta")]
+    limited = run(markets, max_candidates=1)
+    row = limited["candidates"][0]
+    assert row["buy_quote"] == row["sell_quote"] == "USDT"
+    assert row["price_rankable"]
+    assert limited["stats"]["possible_candidates"] == 4
+    full = run(markets)
+    assert full["stats"]["scanned"] == 4 and full["stats"]["selection"] == "global"
+    cross_quote = [row for row in full["candidates"] if row["buy_quote"] != row["sell_quote"]]
+    assert len(cross_quote) == 2
+    assert all(not row["price_rankable"] and "quote_fx_not_provided" in row["missing"]
+               for row in cross_quote)
 
 
 def test_global_sort_ranks_both_directions_without_ignoring_negative_spreads():

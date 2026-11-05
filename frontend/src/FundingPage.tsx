@@ -76,7 +76,8 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
     return params.toString();
   }, [sort, view, basis, limit, query, rankingVenue, platformsKey]);
   const requestVersion = requests.current.update(JSON.stringify([requestQuery, search.trim(), refreshKey]), active, reload);
-  const currentResults = dataVersion === requestVersion && search.trim() === query;
+  const currentResults = dataVersion === requests.current.scopeVersion && search.trim() === query;
+  const blockingLoad = loading && !currentResults;
   const historyVersion = historyRequests.current.update(JSON.stringify([requestQuery, search.trim(), refreshKey, selected?.row.instrument_id]), active);
   useEffect(() => {
     if (!active) return;
@@ -95,10 +96,10 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
     const gate = requests.current;
     const token = gate.begin();
     pending.current = true;
-    setLoading(true); setError("");
+    setLoading(true);
     void api<FundingResult>(`/api/funding?${requestQuery}`, "GET", undefined, { signal: token.controller.signal }).then((result) => {
       if (!gate.accepts(token)) return;
-      setData(result); setDataVersion(token.version); setClock(Date.now());
+      setData(result); setDataVersion(gate.scopeVersion); setClock(Date.now()); setError("");
       setVenues(result.venues ?? [...new Set([...result.rows.map((row) => row.venue), ...result.groups.flatMap((group) => group.venues)])].sort());
     }).catch((caught) => { if (gate.accepts(token)) setError((caught as Error).message); })
       .finally(() => { if (gate.accepts(token)) { pending.current = false; setLoading(false); } });
@@ -128,7 +129,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
   const selectedPair = selectedGroup ? fundingComparison(selectedGroup, activeVenues, data?.as_of ?? clock, clock) : null;
   const selectedCompatible = !!selected && currentResults && active && marketMap.has(selected.row.instrument_id)
     && activeVenues.includes(selected.row.venue);
-  const canSelect = selectedCompatible && !loading && !error;
+  const canSelect = selectedCompatible && !error;
   const showRanking = (venue?: string) => { setRankingVenue(venue ?? activeVenues[0] ?? venues[0] ?? ""); setSort("rate"); setView("ranking"); };
   const openMarket = (row: FundingMarket) => {
     if (!active || !currentResults) return;
@@ -172,7 +173,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
     <section className="panel" aria-labelledby="funding-heading">
       <div className="panel-heading"><div><h2 id="funding-heading">全市场资金费率</h2><p>默认按同资产跨平台比较；8h费差仅供比较，不代表实际结算收益。</p></div>
         <label className="inline-checks"><input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />5 秒查询最新数据</label>
-        <button type="button" className="button secondary" disabled={loading} onClick={() => setReload((old) => old + 1)}>{loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}手动刷新</button></div>
+        <button type="button" className="button secondary" disabled={blockingLoad} onClick={() => setReload((old) => old + 1)}>{blockingLoad ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}手动刷新</button></div>
       <div className="funding-toolbar">
         <div className="funding-view-tabs"><button type="button" className={`button secondary ${view === "matrix" ? "selected" : ""}`} aria-pressed={view === "matrix"}
           onClick={() => { setView("matrix"); setSort("spread"); }}>同资产跨平台矩阵</button><button type="button" className={`button secondary ${view === "ranking" ? "selected" : ""}`}
@@ -187,7 +188,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
         <select aria-label="资金费率返回条数" value={limit} onChange={(event) => setLimit(Number(event.target.value))}>{[100, 500, 1000, 5000].map((count) => <option key={count} value={count}>最多 {count} 项</option>)}</select>
       </div>
       <div className="funding-caption" role="status">数据检查时间 {time(data?.as_of)}。有效性随字段TTL变为过期，页面计时不会刷新源时间。<span>“无市场”仅指当前已发现目录与可确认身份范围内未列出市场，不证明平台不存在该资产；未核验身份不计算跨平台费差。</span></div>
-      {!error && (loading || !currentResults) && <div className="notice" role="status">{data ? "正在核验当前筛选与设置；以下保留上次查询结果，暂不可发起组合测算。" : "正在读取当前资金费目录。"}</div>}
+      {!error && (blockingLoad || !currentResults) && <div className="notice" role="status">{data ? "正在核验当前筛选与设置；以下保留上次查询结果，暂不可发起组合测算。" : "正在读取当前资金费目录。"}</div>}
       {error && <div className="notice error" role="alert">资金费视图获取失败：{error}{data ? "；保留上次检查结果。" : ""}</div>}
       {data?.enabled === false && <div className="notice">演示模式下不展示真实资金费视图。</div>}
       {(stats?.rows_truncated || stats?.matrix_groups_truncated) && <div className="notice">本次返回已截断：市场 {stats.rows_returned}/{stats.rows_total}，矩阵资产 {stats.matrix_groups_returned}/{stats.matrix_groups_total}。当前排序仅展示本次返回范围；可增加条数或搜索资产，不能据此判断全部市场最优。</div>}
@@ -208,7 +209,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
             <td className="mono">{state.code === "fresh" ? rate(row.normalized_8h_rate) : "—"}</td><td>{kindLabel[row.kind ?? row.observed?.funding_kind ?? ""] ?? "类型未知"}<small>{countdown(row.next_funding_at ?? row.observed?.next_funding_at, clock)}</small></td>
             <td><small>源事件 {time(row.field_validity?.funding_rate?.source_at)}</small><small>本地接收 {time(row.field_validity?.funding_rate?.received_at)}</small><button type="button" className="text-button" disabled={!currentResults || !active} onClick={() => openMarket(row)}>查看详情</button></td></tr>;
         })}</tbody></table></div>}
-      {(!data || (view === "matrix" ? !matrix.length : !ranking.length)) && <div className="empty"><Database size={25} /><h3>{loading ? "正在读取资金费目录" : view === "matrix" && !activeVenues.length ? "请选择平台" : "本次范围暂无永续市场"}</h3><p>可调整平台、搜索词或返回条数。缺少行情与确定没有市场分别展示。</p></div>}
+      {(!data || (view === "matrix" ? !matrix.length : !ranking.length)) && <div className="empty"><Database size={25} /><h3>{blockingLoad ? "正在读取资金费目录" : view === "matrix" && !activeVenues.length ? "请选择平台" : "本次范围暂无永续市场"}</h3><p>可调整平台、搜索词或返回条数。缺少行情与确定没有市场分别展示。</p></div>}
       <div className="panel-foot">8h仅用于同口径比较；实际周期、类型、结算时点与持仓规模不同，费用和执行条件另行核对。</div>
     </section>
     {selected && <aside className="funding-detail panel" aria-label="资金费详情">
