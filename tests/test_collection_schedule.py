@@ -139,7 +139,7 @@ async def test_okx_source_age_refresh_does_not_mask_stale_source_or_fetch_failur
                            'fundingTimestamp': NOW + 3600_000}
     store = Storage(tmp_path)
     store.save_instruments(items)
-    store.set('settings', Settings(enabled_venues=['okx'], history_enabled=False).model_dump())
+    store.set('settings', Settings(enabled_venues=['okx'], history_enabled=False, broad_poll_seconds=30, funding_poll_seconds=30).model_dump())
     collector = Collector(store, {'okx': adapter})
     collector.discovered.add('okx')
     # A recent price envelope is no evidence that the separate rate is recent.
@@ -270,7 +270,7 @@ async def test_catalog_plan_change_clears_old_completed_cycle_before_new_request
     adapter, client, items = adapter_for(2, kind="spot")
     store = Storage(tmp_path)
     store.save_instruments(items)
-    store.set("settings", Settings(enabled_venues=["okx"], history_enabled=False).model_dump())
+    store.set("settings", Settings(enabled_venues=["okx"], history_enabled=False, broad_poll_seconds=30, funding_poll_seconds=30).model_dump())
     collector = Collector(store, {"okx": adapter})
     collector.discovered.add("okx")
     added = items[0].model_copy(update={"id": "new-market", "native_symbol": "NEW/USDT", "base": "NEW"})
@@ -300,11 +300,12 @@ async def test_catalog_plan_change_clears_old_completed_cycle_before_new_request
 
 
 @pytest.mark.asyncio
-async def test_full_catalog_price_and_funding_sweeps_ignore_old_hundred_market_boundary(tmp_path):
+@pytest.mark.parametrize("period", [5, 30])
+async def test_full_catalog_price_and_funding_sweeps_ignore_old_hundred_market_boundary(tmp_path, period):
     adapter, client, items = adapter_for(1000)
     store = Storage(tmp_path)
     store.save_instruments(items)
-    store.set("settings", Settings(enabled_venues=["okx"], history_enabled=False).model_dump())
+    store.set("settings", Settings(enabled_venues=["okx"], history_enabled=False, broad_poll_seconds=period, funding_poll_seconds=period).model_dump())
     collector = Collector(store, {"okx": adapter})
     collector.discovered.add("okx")
 
@@ -312,7 +313,7 @@ async def test_full_catalog_price_and_funding_sweeps_ignore_old_hundred_market_b
         status = collector.statuses["okx"]
         if status.light_last_cycle_at is not None and status.funding_last_cycle_at is not None:
             collector.stopping.set()
-        if delay >= 10:
+        if delay >= period-.5:
             await collector.stopping.wait()
         else:
             await asyncio.sleep(.001)
@@ -325,7 +326,7 @@ async def test_full_catalog_price_and_funding_sweeps_ignore_old_hundred_market_b
     assert status.light_bulk_markets == status.funding_bulk_markets == 1000
     assert status.light_fresh_markets == status.funding_fresh_markets == 1000
     assert status.light_coverage_ratio == status.funding_coverage_ratio == 1
-    assert status.light_estimated_cycle_seconds == status.funding_estimated_cycle_seconds == 30
+    assert status.light_estimated_cycle_seconds == status.funding_estimated_cycle_seconds == period
     assert Settings().stale_seconds == 60
 
 

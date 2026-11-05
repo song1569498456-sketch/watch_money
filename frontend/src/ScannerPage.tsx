@@ -1,3 +1,4 @@
+import { useMarketRefresh } from "./useMarketRefresh";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowRight, Calculator, ChevronDown, ChevronRight, Loader2, RefreshCw, Search, Star } from "lucide-react";
 import { api, num, pct, time } from "./api";
@@ -122,7 +123,7 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [platforms, setPlatforms] = useState<string[]>([]);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [reload, setReload] = useState(0);
   const [assetPage, setAssetPage] = useState({ scope: "", offset: 0 });
   const pageScope = JSON.stringify([sort, marketType, search.trim(), platforms]);
@@ -136,6 +137,8 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const requests = useRef(new QueryGeneration());
+  const pending = useRef(false);
+  useMarketRefresh(active, autoRefresh, pending, setReload);
   const requestKey = JSON.stringify([sort, marketType, query, platforms, refreshKey, groupOffset]);
   const requestVersion = requests.current.update(JSON.stringify([requestKey, search.trim()]), active, reload);
   const currentResults = dataVersion === requestVersion && search.trim() === query;
@@ -148,6 +151,7 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
     if (!active || search.trim() !== query) { setLoading(false); return; }
     const gate = requests.current;
     const token = gate.begin();
+    pending.current = true;
     const load = async () => {
       setLoading(true); setError("");
       try {
@@ -156,16 +160,11 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
           "GET", undefined, { signal: token.controller.signal });
         if (gate.accepts(token)) { setData(result); setDataVersion(token.version); }
       } catch (e) { if (gate.accepts(token)) setError((e as Error).message); }
-      finally { if (gate.accepts(token)) setLoading(false); }
+      finally { if (gate.accepts(token)) { pending.current = false; setLoading(false); } }
     };
     void load();
-    return () => gate.cancel(token);
+    return () => { pending.current = false; gate.cancel(token); };
   }, [requestVersion]);
-  useEffect(() => {
-    if (!active || !autoRefresh) return;
-    const timer = setInterval(() => setReload((previous) => previous + 1), 30000);
-    return () => clearInterval(timer);
-  }, [active, autoRefresh]);
   const stats = data?.stats;
   const available = data?.available_platforms ?? [...new Set(instruments.map((item) => item.venue))].sort();
   const selectCandidate = canSelect ? onSelectCandidate : undefined;
@@ -193,7 +192,7 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
               onChange={() => setPlatforms((previous) => previous.length ? previous.includes(venue) ? previous.filter((name) => name !== venue)
                 : [...previous, venue] : available.filter((name) => name !== venue))} />{venue}</label>)}
             <button className="text-button" onClick={() => setPlatforms([])}>恢复全部平台</button><small className="muted">至少保留一个平台</small></div></details>
-        <label className="inline-checks"><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />30 秒刷新</label>
+        <label className="inline-checks"><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />5 秒查询最新数据</label>
       </div>
       <div className="scanner-summary" aria-label="扫描覆盖">
         <span>市场 <strong>{num(stats?.active_markets, 0)}</strong></span><span>可比资产 <strong>{num(stats?.eligible_groups, 0)}</strong></span>

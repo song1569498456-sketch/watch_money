@@ -218,8 +218,8 @@ class VenueStatus(Model):
 class Settings(Model):
     enabled_venues: list[str] = Field(default_factory=lambda: ['binance', 'okx', 'bybit', 'bitget', 'gate', 'mexc', 'kucoin', 'coinbase', 'kraken', 'htx', 'deribit', 'upbit', 'hyperliquid', 'lighter', 'dydx', 'paradex', 'aster', 'edgex', 'variational', 'gmx', 'jupiter-perps', 'drift', 'uniswap', 'pancakeswap', 'aerodrome', 'curve', 'raydium', 'orca'])
     watch_assets: list[str] = Field(default_factory=lambda: ['BTC', 'ETH', 'SOL'])
-    poll_seconds: float = Field(default=15, ge=5, le=3600)
-    refresh_ms: int = Field(default=1000, ge=500, le=60000)
+    poll_seconds: float = Field(default=5, ge=5, le=3600)
+    refresh_ms: int = Field(default=5000, ge=500, le=60000)
     stale_seconds: float = Field(default=60, ge=5, le=86400)
     retention_days: int = Field(default=30, ge=1, le=3650)
     collection_enabled: bool = True
@@ -229,8 +229,8 @@ class Settings(Model):
     demo_mode: bool = False
     prefer_websocket: bool = True
     broad_collection_enabled: bool = True
-    broad_poll_seconds: float = Field(default=30, ge=10, le=3600)
-    funding_poll_seconds: float = Field(default=30, ge=10, le=3600)
+    broad_poll_seconds: float = Field(default=5, ge=5, le=3600)
+    funding_poll_seconds: float = Field(default=5, ge=5, le=3600)
     discovery_seconds: float = Field(default=1800, ge=300, le=21600)
     broad_batch_size: int = Field(default=100, ge=1, le=100)
     broad_symbol_batch_size: int = Field(default=20, ge=1, le=100)
