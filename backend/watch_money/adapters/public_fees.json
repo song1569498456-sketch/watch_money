@@ -1,0 +1,463 @@
+{
+  "schema_version": 1,
+  "reviewed_profiles": [
+    {
+      "venue": "okx",
+      "kind": "spot",
+      "liquidity": "maker",
+      "rate": 0.0008,
+      "source": "https://www.okx.com/learn/how-to-use-okx",
+      "conditions": "Public standard crypto spot reference; no VIP/OKB discount, promotions or regional schedule assumed. Fee deduction asset not independently verified.",
+      "scope": {
+        "quote_currencies": [
+          "USDT",
+          "BTC",
+          "ETH",
+          "BNB"
+        ]
+      },
+      "fee_currency": null,
+      "tier": "standard",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "okx",
+      "kind": "spot",
+      "liquidity": "taker",
+      "rate": 0.001,
+      "source": "https://www.okx.com/learn/how-to-use-okx",
+      "conditions": "Public standard crypto spot reference; no VIP/OKB discount, promotions or regional schedule assumed. Fee deduction asset not independently verified.",
+      "scope": {
+        "quote_currencies": [
+          "USDT",
+          "BTC",
+          "ETH",
+          "BNB"
+        ]
+      },
+      "fee_currency": null,
+      "tier": "standard",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "okx",
+      "kind": "perpetual",
+      "liquidity": "maker",
+      "rate": 0.0002,
+      "source": "https://www.okx.com/help/how-to-calculate-the-contract-transaction-fee",
+      "conditions": "Lv.1 USDT-margined linear perpetual reference only; no VIP discount. Excludes coin-margined/quanto and region-specific schedules.",
+      "scope": {
+        "quote_currencies": [
+          "USDT"
+        ],
+        "settlement_currencies": [
+          "USDT"
+        ],
+        "linear": true
+      },
+      "fee_currency": "USDT",
+      "tier": "Lv.1",
+      "source_verified": true,
+      "updated_at": 1787702400000,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "okx",
+      "kind": "perpetual",
+      "liquidity": "taker",
+      "rate": 0.0005,
+      "source": "https://www.okx.com/help/how-to-calculate-the-contract-transaction-fee",
+      "conditions": "Lv.1 USDT-margined linear perpetual reference only; no VIP discount. Excludes coin-margined/quanto and region-specific schedules.",
+      "scope": {
+        "quote_currencies": [
+          "USDT"
+        ],
+        "settlement_currencies": [
+          "USDT"
+        ],
+        "linear": true
+      },
+      "fee_currency": "USDT",
+      "tier": "Lv.1",
+      "source_verified": true,
+      "updated_at": 1787702400000,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "binance",
+      "kind": "spot",
+      "liquidity": "maker",
+      "rate": 0.001,
+      "source": "https://www.binance.com/en/fee/trading",
+      "conditions": "Regular User base crypto spot schedule without BNB/referral discounts or promotions; USDC special schedule and fiat excluded. Fee deduction asset not independently verified.",
+      "scope": {
+        "quote_currencies": [
+          "USDT",
+          "BTC",
+          "ETH",
+          "BNB"
+        ]
+      },
+      "fee_currency": null,
+      "tier": "standard",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "binance",
+      "kind": "spot",
+      "liquidity": "taker",
+      "rate": 0.001,
+      "source": "https://www.binance.com/en/fee/trading",
+      "conditions": "Regular User base crypto spot schedule without BNB/referral discounts or promotions; USDC special schedule and fiat excluded. Fee deduction asset not independently verified.",
+      "scope": {
+        "quote_currencies": [
+          "USDT",
+          "BTC",
+          "ETH",
+          "BNB"
+        ]
+      },
+      "fee_currency": null,
+      "tier": "standard",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "bybit",
+      "kind": "spot",
+      "liquidity": "maker",
+      "rate": 0.001,
+      "source": "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
+      "conditions": "VIP 0 crypto-to-crypto reference; excludes fiat, Adventure/xStocks and regional differences. Instrument metadata cannot confirm standard zone.",
+      "scope": {
+        "quote_currencies": [
+          "USDT",
+          "BTC",
+          "ETH"
+        ],
+        "requires_market_review": true
+      },
+      "fee_currency": null,
+      "tier": "VIP 0",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "bybit",
+      "kind": "spot",
+      "liquidity": "taker",
+      "rate": 0.001,
+      "source": "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
+      "conditions": "VIP 0 crypto-to-crypto reference; excludes fiat, Adventure/xStocks and regional differences. Instrument metadata cannot confirm standard zone.",
+      "scope": {
+        "quote_currencies": [
+          "USDT",
+          "BTC",
+          "ETH"
+        ],
+        "requires_market_review": true
+      },
+      "fee_currency": null,
+      "tier": "VIP 0",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "bybit",
+      "kind": "perpetual",
+      "liquidity": "maker",
+      "rate": 0.0002,
+      "source": "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
+      "conditions": "VIP 0 regular USDT linear perpetual reference; excludes pre-market, Innovation Zone, inverse and regional differences. Zone requires review.",
+      "scope": {
+        "quote_currencies": [
+          "USDT"
+        ],
+        "settlement_currencies": [
+          "USDT"
+        ],
+        "linear": true,
+        "requires_market_review": true
+      },
+      "fee_currency": "USDT",
+      "tier": "VIP 0",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "bybit",
+      "kind": "perpetual",
+      "liquidity": "taker",
+      "rate": 0.00055,
+      "source": "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
+      "conditions": "VIP 0 regular USDT linear perpetual reference; excludes pre-market, Innovation Zone, inverse and regional differences. Zone requires review.",
+      "scope": {
+        "quote_currencies": [
+          "USDT"
+        ],
+        "settlement_currencies": [
+          "USDT"
+        ],
+        "linear": true,
+        "requires_market_review": true
+      },
+      "fee_currency": "USDT",
+      "tier": "VIP 0",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "bitget",
+      "kind": "spot",
+      "liquidity": "maker",
+      "rate": 0.001,
+      "source": "https://www.bitget.com/support/articles/12560603892734",
+      "conditions": "Standard crypto spot base rate before VIP/BGB discounts and promotions; regional rates not verified. Fee deduction asset not independently verified.",
+      "scope": {
+        "quote_currencies": [
+          "USDT",
+          "BTC",
+          "ETH",
+          "BNB"
+        ]
+      },
+      "fee_currency": null,
+      "tier": "standard",
+      "source_verified": true,
+      "updated_at": 1787184000000,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "bitget",
+      "kind": "spot",
+      "liquidity": "taker",
+      "rate": 0.001,
+      "source": "https://www.bitget.com/support/articles/12560603892734",
+      "conditions": "Standard crypto spot base rate before VIP/BGB discounts and promotions; regional rates not verified. Fee deduction asset not independently verified.",
+      "scope": {
+        "quote_currencies": [
+          "USDT",
+          "BTC",
+          "ETH",
+          "BNB"
+        ]
+      },
+      "fee_currency": null,
+      "tier": "standard",
+      "source_verified": true,
+      "updated_at": 1787184000000,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "bitget",
+      "kind": "perpetual",
+      "liquidity": "maker",
+      "rate": 0.0002,
+      "source": "https://www.bitget.com/support/articles/12560603892734",
+      "conditions": "Standard USDT linear futures reference before VIP/BGB discounts or promotions; no coin-margined, special-product or regional schedule inferred.",
+      "scope": {
+        "quote_currencies": [
+          "USDT"
+        ],
+        "settlement_currencies": [
+          "USDT"
+        ],
+        "linear": true
+      },
+      "fee_currency": "USDT",
+      "tier": "standard",
+      "source_verified": true,
+      "updated_at": 1787184000000,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "bitget",
+      "kind": "perpetual",
+      "liquidity": "taker",
+      "rate": 0.0006,
+      "source": "https://www.bitget.com/support/articles/12560603892734",
+      "conditions": "Standard USDT linear futures reference before VIP/BGB discounts or promotions; no coin-margined, special-product or regional schedule inferred.",
+      "scope": {
+        "quote_currencies": [
+          "USDT"
+        ],
+        "settlement_currencies": [
+          "USDT"
+        ],
+        "linear": true
+      },
+      "fee_currency": "USDT",
+      "tier": "standard",
+      "source_verified": true,
+      "updated_at": 1787184000000,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "hyperliquid",
+      "kind": "spot",
+      "liquidity": "maker",
+      "rate": 0.0004,
+      "source": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+      "conditions": "Tier 0 base spot schedule; no staking/referral discounts. Quote-asset pairs and aligned quote assets have adjustments not inferable from instrument metadata.",
+      "scope": {
+        "requires_market_review": true
+      },
+      "fee_currency": null,
+      "tier": "Tier 0",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "hyperliquid",
+      "kind": "spot",
+      "liquidity": "taker",
+      "rate": 0.0007,
+      "source": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+      "conditions": "Tier 0 base spot schedule; no staking/referral discounts. Quote-asset pairs and aligned quote assets have adjustments not inferable from instrument metadata.",
+      "scope": {
+        "requires_market_review": true
+      },
+      "fee_currency": null,
+      "tier": "Tier 0",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "hyperliquid",
+      "kind": "perpetual",
+      "liquidity": "maker",
+      "rate": 0.00015,
+      "source": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+      "conditions": "Tier 0 native USDC perps only; no staking/referral discount or aligned-quote adjustments. HIP-3 deployer fees and growth-mode adjustments excluded.",
+      "scope": {
+        "quote_currencies": [
+          "USDC"
+        ],
+        "settlement_currencies": [
+          "USDC"
+        ],
+        "linear": true,
+        "exclude_namespaces": true
+      },
+      "fee_currency": "USDC",
+      "tier": "Tier 0",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "hyperliquid",
+      "kind": "perpetual",
+      "liquidity": "taker",
+      "rate": 0.00045,
+      "source": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+      "conditions": "Tier 0 native USDC perps only; no staking/referral discount or aligned-quote adjustments. HIP-3 deployer fees and growth-mode adjustments excluded.",
+      "scope": {
+        "quote_currencies": [
+          "USDC"
+        ],
+        "settlement_currencies": [
+          "USDC"
+        ],
+        "linear": true,
+        "exclude_namespaces": true
+      },
+      "fee_currency": "USDC",
+      "tier": "Tier 0",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "lighter",
+      "kind": "spot",
+      "liquidity": "maker",
+      "rate": 0,
+      "source": "https://docs.lighter.xyz/trading/trading-fees",
+      "conditions": "Standard Account regular orders only. TWAP/advanced/RFQ, binary options and Plus/Premium/Advanced accounts excluded; no account type verified.",
+      "scope": {},
+      "fee_currency": null,
+      "tier": "Standard Account / regular orders",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "lighter",
+      "kind": "spot",
+      "liquidity": "taker",
+      "rate": 0,
+      "source": "https://docs.lighter.xyz/trading/trading-fees",
+      "conditions": "Standard Account regular orders only. TWAP/advanced/RFQ, binary options and Plus/Premium/Advanced accounts excluded; no account type verified.",
+      "scope": {},
+      "fee_currency": null,
+      "tier": "Standard Account / regular orders",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "lighter",
+      "kind": "perpetual",
+      "liquidity": "maker",
+      "rate": 0,
+      "source": "https://docs.lighter.xyz/trading/trading-fees",
+      "conditions": "Standard Account regular orders only. TWAP/advanced/RFQ, binary options and Plus/Premium/Advanced accounts excluded; no account type verified.",
+      "scope": {},
+      "fee_currency": null,
+      "tier": "Standard Account / regular orders",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    },
+    {
+      "venue": "lighter",
+      "kind": "perpetual",
+      "liquidity": "taker",
+      "rate": 0,
+      "source": "https://docs.lighter.xyz/trading/trading-fees",
+      "conditions": "Standard Account regular orders only. TWAP/advanced/RFQ, binary options and Plus/Premium/Advanced accounts excluded; no account type verified.",
+      "scope": {},
+      "fee_currency": null,
+      "tier": "Standard Account / regular orders",
+      "source_verified": true,
+      "updated_at": null,
+      "checked_at": 1793808600000,
+      "evidence": "Official public standard-tier table read on 2026-11-04; no account API."
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "scope": "7000 synthetic spot markets per exchange, real installed CCXT parser, mocked public HTTP. Same response/metadata per baseline and worker run; not live acceptance.",
+  "venues": {
+    "okx": {
+      "baseline_inline": {
+        "wall_ms": 162.258,
+        "loop_samples": 3,
+        "max_loop_delay_ms": 157.365
+      },
+      "bounded_worker": {
+        "wall_ms": 169.483,
+        "loop_samples": 19,
+        "max_loop_delay_ms": 5.316
+      },
+      "identical_all_metrics": true,
+      "markets": 7000,
+      "parser": {
+        "completed": 1,
+        "failed": 0,
+        "fallbacks": 0,
+        "last": {
+          "parse_wall_ms": 168.135,
+          "parse_cpu_ms": 165.968,
+          "rows": 7000,
+          "received_at": 1793824008509,
+          "finished_at": 1793824008678
+        },
+        "pending": 0,
+        "capacity": 1,
+        "max_pending": 2,
+        "closed": false,
+        "reviewed_ccxt_version": "4.5.91",
+        "installed_ccxt_version": "4.5.91"
+      }
+    },
+    "bitget": {
+      "baseline_inline": {
+        "wall_ms": 184.141,
+        "loop_samples": 3,
+        "max_loop_delay_ms": 179.229
+      },
+      "bounded_worker": {
+        "wall_ms": 152.66,
+        "loop_samples": 18,
+        "max_loop_delay_ms": 5.386
+      },
+      "identical_all_metrics": true,
+      "markets": 7000,
+      "parser": {
+        "completed": 1,
+        "failed": 0,
+        "fallbacks": 0,
+        "last": {
+          "parse_wall_ms": 152.027,
+          "parse_cpu_ms": 150.833,
+          "rows": 7000,
+          "received_at": 1793824009341,
+          "finished_at": 1793824009494
+        },
+        "pending": 0,
+        "capacity": 1,
+        "max_pending": 2,
+        "closed": false,
+        "reviewed_ccxt_version": "4.5.91",
+        "installed_ccxt_version": "4.5.91"
+      }
+    }
+  }
+}

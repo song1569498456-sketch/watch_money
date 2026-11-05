@@ -1,0 +1,31 @@
+{
+  "provenance": "parent-reported independent verification; summary only, no raw payloads supplied",
+  "tested_commit": "4d89f2e",
+  "deribit": {
+    "perpetuals_compared": 144,
+    "excluded_dated_futures": 64,
+    "matched_fields": [
+      "price",
+      "source timestamp",
+      "base currency volume"
+    ],
+    "targeted_tests_passed": 51
+  },
+  "receipt_boundary": {
+    "reproduced": "synthetic source ahead 10ms at return, observer waits 40ms; old fallback incorrectly became rankable",
+    "live_observed": false
+  },
+  "long_run": {
+    "elapsed_seconds": 830,
+    "completed_24_hours": false,
+    "stop_reason": "local proxy returned HTTP 403; guard stopped",
+    "root_cause": "undetermined",
+    "retry_or_bypass": false,
+    "connection_phase": "OKX public ticker WebSocket connection via local environment proxy",
+    "retained_error_detail": "proxy address only; no underlying status details retained",
+    "prior_timer_delay_seconds": 51.7,
+    "other_venues_coverage_declined": true,
+    "attribution": "Cannot distinguish proxy policy, exchange response, transient infrastructure or shared environment delay; not a confirmed single-venue failure",
+    "next_requirement": "User environment or support provider must investigate acceptance prerequisites before another authorized 24-hour attempt"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "kind": "synthetic_pressure_clear_regression",
+  "base_commit": "43728059f9db2fbdac6e0e5ba1dc94022e1d6b0f",
+  "reproduced_failures_before_fix": 8,
+  "new_tests_passed": 12,
+  "independent_review_tests_passed": 12,
+  "python_full": {
+    "passed": 818,
+    "seconds": 28.29,
+    "warnings": 1
+  },
+  "ruff": "passed",
+  "diff_check": "passed",
+  "frontend_changed": false,
+  "browser_rerun": false,
+  "exchange_network_probes": false,
+  "capacity_changed": false,
+  "checks": [
+    "both and individual side clear at equal source timestamp",
+    "opposite-side clear union",
+    "older positive cannot restore",
+    "newer event restores before and after compaction",
+    "per-side receipt and provenance agree with sequential collector",
+    "300-frame repeated compaction remains bounded",
+    "raw input unchanged"
+  ]
+}

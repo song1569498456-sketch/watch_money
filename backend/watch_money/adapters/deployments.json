@@ -1,0 +1,314 @@
+{
+  "schema_version": 1,
+  "verification": "Official source text retrieved and address matched; no RPC or bytecode verification. Protocol scope is not pool membership proof.",
+  "deployments": [
+    {
+      "protocol": "uniswap",
+      "chain": "ethereum",
+      "version": "v3",
+      "address": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      "address_role": "factory",
+      "source_url": "https://raw.githubusercontent.com/Uniswap/v3-periphery/main/deploys.md",
+      "source_sha256": "7daa52b28d2fc15eb5888a86b5261604a7d32cb43113cde8ca8ea1516d24b8de",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "uniswap"
+      ],
+      "version_labels": [
+        "v3"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "concentrated-liquidity"
+    },
+    {
+      "protocol": "uniswap",
+      "chain": "arbitrum",
+      "version": "v3",
+      "address": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      "address_role": "factory",
+      "source_url": "https://raw.githubusercontent.com/Uniswap/v3-periphery/main/deploys.md",
+      "source_sha256": "7daa52b28d2fc15eb5888a86b5261604a7d32cb43113cde8ca8ea1516d24b8de",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "uniswap"
+      ],
+      "version_labels": [
+        "v3"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "concentrated-liquidity"
+    },
+    {
+      "protocol": "uniswap",
+      "chain": "base",
+      "version": "v3",
+      "address": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+      "address_role": "factory",
+      "source_url": "https://raw.githubusercontent.com/Uniswap/sdks/main/sdks/sdk-core/src/addresses.ts",
+      "source_sha256": "b2f1091143dfdbf465723bebd7154435f24ef0b2db6312805a002aadd714f8b8",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "uniswap"
+      ],
+      "version_labels": [
+        "v3"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "concentrated-liquidity"
+    },
+    {
+      "protocol": "pancakeswap",
+      "chain": "bsc",
+      "version": "v2",
+      "address": "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+      "address_role": "factory",
+      "source_url": "https://raw.githubusercontent.com/pancakeswap/pancake-swap-sdk/master/src/constants.ts",
+      "source_sha256": "1d16cb07eb1e207af4a487830bda4b5342ed160d42739de86c5f531f5dcd2ae6",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "pancakeswap"
+      ],
+      "version_labels": [
+        "v2"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "constant-product"
+    },
+    {
+      "protocol": "aerodrome",
+      "chain": "base",
+      "version": "v1",
+      "address": "0x420DD381b31aEf6683db6B902084cB0FFECe40Da",
+      "address_role": "factory",
+      "source_url": "https://raw.githubusercontent.com/aerodrome-finance/contracts/main/README.md",
+      "source_sha256": "4a27e9c4a346d39b9d196d8d04209a1c38d707bffd7fffb7f90b852b4748417e",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "aerodrome"
+      ],
+      "version_labels": [
+        "v1"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "stable-or-volatile"
+    },
+    {
+      "protocol": "curve",
+      "chain": "ethereum",
+      "version": "stable-ng",
+      "address": "0x6A8cbed756804B16E05E741eDaBd5cB544AE21bf",
+      "address_role": "factory",
+      "source_url": "https://raw.githubusercontent.com/curvefi/curve-js/master/src/constants/network_constants.ts",
+      "source_sha256": "d5c40bf43474f38994faa440ba5976d58bd016fc38d09aab4e36cfb4f2398979",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "curve"
+      ],
+      "version_labels": [
+        "stable-ng"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "stableswap-ng"
+    },
+    {
+      "protocol": "raydium",
+      "chain": "solana",
+      "version": "amm-v4",
+      "address": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+      "address_role": "program",
+      "source_url": "https://raw.githubusercontent.com/raydium-io/raydium-sdk-V2/master/src/common/programId.ts",
+      "source_sha256": "ded5ae021aa50ee17cc36441d5fcb4d1a242676fe77fd4308b066f688f9b23b4",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "raydium"
+      ],
+      "version_labels": [
+        "v4"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "constant-product"
+    },
+    {
+      "protocol": "raydium",
+      "chain": "solana",
+      "version": "clmm",
+      "address": "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+      "address_role": "program",
+      "source_url": "https://raw.githubusercontent.com/raydium-io/raydium-sdk-V2/master/src/common/programId.ts",
+      "source_sha256": "ded5ae021aa50ee17cc36441d5fcb4d1a242676fe77fd4308b066f688f9b23b4",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "raydium"
+      ],
+      "version_labels": [
+        "clmm"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "concentrated-liquidity"
+    },
+    {
+      "protocol": "raydium",
+      "chain": "solana",
+      "version": "cpmm",
+      "address": "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+      "address_role": "program",
+      "source_url": "https://raw.githubusercontent.com/raydium-io/raydium-sdk-V2/master/src/common/programId.ts",
+      "source_sha256": "ded5ae021aa50ee17cc36441d5fcb4d1a242676fe77fd4308b066f688f9b23b4",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "raydium",
+        "raydium-cpmm"
+      ],
+      "version_labels": [
+        "cpmm"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "constant-product"
+    },
+    {
+      "protocol": "orca",
+      "chain": "solana",
+      "version": "whirlpools",
+      "address": "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+      "address_role": "program",
+      "source_url": "https://raw.githubusercontent.com/orca-so/whirlpools/main/README.md",
+      "source_sha256": "d9414e3ebe98df6953613dd954ba8839839cd1c2ce54474090598a4cbb9ed1c7",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "dex_ids": [
+        "orca",
+        "orca-whirlpools"
+      ],
+      "version_labels": [
+        "whirlpools"
+      ],
+      "version_specific_dex_ids": [],
+      "pool_type": "concentrated-liquidity"
+    }
+  ],
+  "required_hosts": [
+    "api.hyperliquid.xyz",
+    "mainnet.zklighter.elliot.ai",
+    "edgex-prod-v2.edgex.exchange",
+    "indexer.dydx.trade",
+    "api.prod.paradex.trade",
+    "fapi.asterdex.com",
+    "sapi.asterdex.com",
+    "arbitrum-api.gmxinfra.io",
+    "arbitrum.gmxapi.io",
+    "omni-client-api.prod.ap-northeast-1.variational.io",
+    "api.dexscreener.com",
+    "perps-api.jup.ag"
+  ],
+  "solana_readers": {
+    "drift_v2_metadata": {
+      "source_url": "https://raw.githubusercontent.com/drift-labs/protocol-v2/master/sdk/src/idl/drift.json",
+      "source_sha256": "79b423239fc268c03c60cd1d5e3fb50766b9d1f685744df3ca94d63b30519490",
+      "source_verified_at": "2026-11-04",
+      "program_id": "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH",
+      "verification": "IDL field offsets match original program Rust Size: State=992, PerpMarket=1216; minimal metadata only. Trailing account growth allowed; exact length not assumed.",
+      "State": {
+        "fields": {
+          "numberOfMarkets": {
+            "offset": 966,
+            "size": 2,
+            "type": "u16"
+          },
+          "numberOfSpotMarkets": {
+            "offset": 968,
+            "size": 2,
+            "type": "u16"
+          },
+          "exchangeStatus": {
+            "offset": 974,
+            "size": 1,
+            "type": "u8"
+          }
+        },
+        "source_account_bytes": 992
+      },
+      "PerpMarket": {
+        "fields": {
+          "selfPubkey": {
+            "offset": 8,
+            "size": 32,
+            "type": "publicKey"
+          },
+          "name": {
+            "offset": 1000,
+            "size": 32,
+            "type": "name"
+          },
+          "marketIndex": {
+            "offset": 1160,
+            "size": 2,
+            "type": "u16"
+          },
+          "status": {
+            "offset": 1162,
+            "size": 1,
+            "type": "enum",
+            "variants": [
+              "Initialized",
+              "Active",
+              "FundingPaused",
+              "AmmPaused",
+              "FillPaused",
+              "WithdrawPaused",
+              "ReduceOnly",
+              "Settlement",
+              "Delisted"
+            ]
+          },
+          "contractType": {
+            "offset": 1163,
+            "size": 1,
+            "type": "enum",
+            "variants": [
+              "Perpetual",
+              "Future",
+              "Prediction"
+            ]
+          },
+          "pausedOperations": {
+            "offset": 1165,
+            "size": 1,
+            "type": "u8"
+          },
+          "quoteSpotMarketIndex": {
+            "offset": 1166,
+            "size": 2,
+            "type": "u16"
+          }
+        },
+        "source_account_bytes": 1216
+      }
+    }
+  },
+  "perpetual_deployments": [
+    {
+      "protocol": "drift",
+      "chain": "solana",
+      "version": "original-v2",
+      "program_id": "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH",
+      "source_url": "https://raw.githubusercontent.com/drift-labs/protocol-v2/master/sdk/src/config.ts",
+      "source_sha256": "024fa79894de421e9faafe4b03939b53531bea047803ab5d9a07526cdfe0b3be",
+      "lifecycle": "unverified",
+      "source_verified_at": "2026-11-04",
+      "onchain_verified": false,
+      "successor_reported_lifecycle": "paused",
+      "successor_claim_source_url": "https://raw.githubusercontent.com/velocity-exchange/velocity-v1/master/docs/DRIFT-TO-VELOCITY.md",
+      "successor_claim_source_sha256": "57d8ffbb4d699255b987ad81cbbf719bf1d48eb34135ed8d984a465176b31191",
+      "lifecycle_verification_note": "Successor/fork repository claim is not independently corroborated current lifecycle evidence for canonical Drift; no live RPC status verified."
+    }
+  ]
+}

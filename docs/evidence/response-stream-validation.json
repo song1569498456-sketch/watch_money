@@ -1,0 +1,40 @@
+{
+  "mode": "synthetic_local_validation_not_live_exchange_acceptance",
+  "response_commit": "7dd8cdc6a567919d3b472b933236446ce7fa373b",
+  "python_full": {
+    "passed": 806,
+    "seconds": 28.2,
+    "warnings": 1
+  },
+  "final_close_and_collector_regressions": {
+    "passed": 19
+  },
+  "frontend_tests": 31,
+  "production_build": "passed",
+  "ruff": "passed",
+  "diff_check": "passed",
+  "browser_checks": {
+    "smoke": 6,
+    "navigation": 12,
+    "funding_matrix": 6
+  },
+  "performance_evidence": [
+    "api-blocking-diagnostic.json",
+    "api-blocking-after.json"
+  ],
+  "unchanged": [
+    "60-second market freshness policy",
+    "source timestamp semantics",
+    "heartbeat timeout budget",
+    "no account/trading functions"
+  ],
+  "open": [
+    "real Hyperliquid timeout causes and recovery under load",
+    "OKX transient full funding staleness",
+    "24-hour acceptance",
+    "verified identity coverage",
+    "Lighter jurisdiction restriction"
+  ],
+  "network_exchange_probes": false,
+  "future_at_arrival_gate": "Source time after original field receipt remains unrankable after wall clock catches up; normal subsequent observations recover."
+}

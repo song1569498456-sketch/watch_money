@@ -1,0 +1,44 @@
+[
+  {
+    "venue": "binance",
+    "url": "https://api.binance.com/api/v3/time",
+    "at": "2026-11-04T14:47:20.328375+00:00",
+    "reachable": false,
+    "error": "ProxyError"
+  },
+  {
+    "venue": "okx",
+    "url": "https://openapi.okx.com/api/v5/public/time",
+    "at": "2026-11-04T14:47:20.376283+00:00",
+    "reachable": false,
+    "error": "ProxyError"
+  },
+  {
+    "venue": "bybit",
+    "url": "https://api.bybit.com/v5/market/time",
+    "at": "2026-11-04T14:47:20.376891+00:00",
+    "reachable": false,
+    "error": "ProxyError"
+  },
+  {
+    "venue": "bitget",
+    "url": "https://api.bitget.com/api/v2/public/time",
+    "at": "2026-11-04T14:47:20.377163+00:00",
+    "reachable": false,
+    "error": "ProxyError"
+  },
+  {
+    "venue": "hyperliquid",
+    "url": "https://api.hyperliquid.xyz/info",
+    "at": "2026-11-04T14:47:20.377426+00:00",
+    "reachable": false,
+    "error": "ProxyError"
+  },
+  {
+    "venue": "lighter",
+    "url": "https://mainnet.zklighter.elliot.ai/api/v1/orderBooks",
+    "at": "2026-11-04T14:47:20.377773+00:00",
+    "reachable": false,
+    "error": "ProxyError"
+  }
+]

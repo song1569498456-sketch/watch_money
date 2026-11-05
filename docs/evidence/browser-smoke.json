@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "checks": [
+    "live default has explicit empty state, zero fabricated snapshots",
+    "explicit demo toggle, search, favorite persistence, spot/perp detail",
+    "calculator missing inputs stays net=null; save/replay and real local monitor creation is discoverable in independent My Monitors navigation",
+    "local test message queued, persisted and sent; no external channels",
+    "390px mobile layout has no document horizontal overflow",
+    "zero browser JavaScript errors across tested pages"
+  ],
+  "data_mode": "explicit illustrative demo + local test only"
+}

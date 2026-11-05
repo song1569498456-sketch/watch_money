@@ -1,0 +1,11 @@
+{
+  "provenance": "synthetic loopback fixture and mocked depth response; no live exchange",
+  "checks": [
+    "exchange generation distinct from last change label",
+    "missing native clock explicit",
+    "budget rejection visible",
+    "390px no page overflow",
+    "field clock diagnosis visible in settings",
+    "no page errors"
+  ]
+}

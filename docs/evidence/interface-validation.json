@@ -1,0 +1,49 @@
+{
+  "checked_at": "2026-11-04T17:00:37.876862+00:00",
+  "python_tests": {
+    "passed": 575,
+    "warnings": 1,
+    "duration_seconds": 17.8
+  },
+  "frontend_tests": {
+    "passed": 25
+  },
+  "typecheck_vite_build": "passed",
+  "ruff": "E4,E7,E9,F passed",
+  "diff_check": "passed",
+  "browser_results": {
+    "browser-smoke.json": {
+      "passed": true,
+      "checks": 6,
+      "at": null
+    },
+    "browser-followup.json": {
+      "passed": true,
+      "checks": 12,
+      "at": null
+    },
+    "browser_fee.json": {
+      "passed": true,
+      "checks": 7,
+      "at": 1793811166965
+    },
+    "browser-navigation.json": {
+      "passed": true,
+      "checks": 9,
+      "at": 1793811381327
+    },
+    "browser_funding_matrix.json": {
+      "passed": true,
+      "checks": 6,
+      "at": 1793811557736
+    }
+  },
+  "evidence_kind": "isolated synthetic fixtures and local mock services; no live exchange acceptance",
+  "live_exchange_acceptance": false,
+  "real_24h_acceptance": false,
+  "external_notifications": "mock only",
+  "notes": [
+    "One navigation click timed out once; independent repeat and root final navigation run passed without a reproduced product defect.",
+    "Only in-session search/filter/sort/expansion/scroll state is restored; reload persistence is not claimed."
+  ]
+}

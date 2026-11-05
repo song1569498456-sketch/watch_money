@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "fixture": "synthetic_fee_references_not_live",
+  "checks": [
+    "four independent maker/taker legs load instrument-scoped effective profiles; one role change leaves other legs unchanged",
+    "sell instrument switch clears only sell open/close/holding; out-of-scope effective null never uses non-null table default",
+    "same venue product switch clears manual fee and holding values and loads the new perpetual profile",
+    "default request costs retain actual source/conditions and checked-at when publication update time is unknown",
+    "mixed manual/default request retains per-field source times; one manual edit does not rejuvenate default evidence",
+    "explicit zero and manual fees are user assumptions dated at calculation time",
+    "configuration saves explicit local overrides without verified/account fields and restores the public default via reset"
+  ],
+  "count": 7,
+  "account_api_used": false,
+  "at": 1793813761157
+}

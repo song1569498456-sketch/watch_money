@@ -1,0 +1,48 @@
+{
+  "kind": "synthetic_local_cpu_benchmark",
+  "checked_at": 1793817266123,
+  "baseline_revision": "eaeb822",
+  "python": "3.12.14",
+  "excluded": [
+    "exchange/network",
+    "websocket decode",
+    "merge_patch",
+    "snapshot disk writes"
+  ],
+  "settings_reads": "real local SQLite + Settings validation in both versions",
+  "limitations": "Fixed patch count and target arrival rate, not a real transport. Timer lag is local scheduling lag, not measured network latency or a proven live-disconnect cause.",
+  "before": {
+    "markets": 347,
+    "patches": 3000,
+    "target_patches_per_second": 300.0,
+    "settings_reads": 6001,
+    "signature_checks": 3001,
+    "signature_rows": 1041347,
+    "wall_seconds": 10.000631,
+    "cpu_seconds": 4.859568,
+    "cpu_us_per_patch": 1619.856,
+    "timer_period_ms": 10,
+    "timer_samples": 936,
+    "timer_lag_p50_ms": 0.48,
+    "timer_lag_p90_ms": 1.238,
+    "timer_lag_max_ms": 14.311,
+    "selected_market_snapshots": 347
+  },
+  "after": {
+    "markets": 347,
+    "patches": 3000,
+    "target_patches_per_second": 300.0,
+    "settings_reads": 10,
+    "signature_checks": 10,
+    "signature_rows": 3470,
+    "wall_seconds": 9.999592,
+    "cpu_seconds": 0.543388,
+    "cpu_us_per_patch": 181.129,
+    "timer_period_ms": 10,
+    "timer_samples": 931,
+    "timer_lag_p50_ms": 0.522,
+    "timer_lag_p90_ms": 0.882,
+    "timer_lag_max_ms": 67.963,
+    "selected_market_snapshots": 347
+  }
+}

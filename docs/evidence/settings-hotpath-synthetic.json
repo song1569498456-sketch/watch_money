@@ -1,0 +1,6 @@
+{
+  "scope": "local synthetic same-process 5000 settings reads; not exchange acceptance",
+  "reads": 5000,
+  "previous_sqlite_read_and_validate_seconds": 0.586075,
+  "committed_cached_copy_seconds": 0.08223
+}

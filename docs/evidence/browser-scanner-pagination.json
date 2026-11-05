@@ -1,0 +1,14 @@
+{
+  "kind": "synthetic_isolated_no_exchange_requests",
+  "checks": [
+    "first_page_has_100_of_1005_groups",
+    "last_page_beyond_1000_is_reachable_and_bounded",
+    "return_preserves_page_and_revalidates",
+    "search_resets_offset_before_query",
+    "type_filter_resets_offset_and_reports_empty_scope",
+    "mobile_no_page_overflow_and_live_query_warning_visible",
+    "no_browser_runtime_errors"
+  ],
+  "passed": 7,
+  "catalog_groups": 1005
+}

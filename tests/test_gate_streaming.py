@@ -1,0 +1,421 @@
+"""Synthetic Gate wire schemas; no live connectivity or production approval proof."""
+import asyncio
+import json
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
+import pytest
+
+from watch_money.adapters.gate_streaming import CHANNEL, ENDPOINT, GateSpotStreamAdapter, _Inbox, gate_spot_patch
+from watch_money.models import Instrument
+
+AT = 1_800_000_000_000
+
+
+def item(symbol='PEPE'):
+    return Instrument(id=f'gate:{symbol}', venue='gate', native_symbol=f'{symbol}/USDT',
+                      asset_id=symbol, base=symbol, quote='USDT', kind='spot')
+
+
+def frame(symbol='PEPE', **updates):
+    row = {'s': f'{symbol}_USDT', 't': AT, 'u': 5, 'b': '100', 'B': '2', 'a': '101', 'A': '3'}
+    row.update(updates)
+    return {'channel': CHANNEL, 'event': 'update', 'time_ms': AT + 999, 'result': row}
+
+
+def rest():
+    return SimpleNamespace(_resolve=lambda instrument: ('gate', {'id': instrument.native_symbol.replace('/', '_')}))
+
+
+@pytest.fixture(autouse=True)
+def clock(monkeypatch):
+    monkeypatch.setattr('watch_money.adapters.gate_streaming.now_ms', lambda: AT + 1000)
+
+
+def test_native_book_time_not_envelope_receipt():
+    patch = gate_spot_patch(item(), frame(), AT + 1000)
+    assert patch.source_at == AT
+    assert patch.field_timestamps == {'bid': AT, 'ask': AT}
+    assert patch.received_at == AT + 1000
+    assert patch.bid == 100 and patch.ask == 101
+    assert patch.field_sources['bid'].startswith('gate:spot.book_ticker:PEPE_USDT')
+
+
+@pytest.mark.parametrize('updates', [{'t': None}, {'t': AT / 1000}, {'t': AT + 1001}, {'t': True},
+                                     {'b': None}, {'B': 'nan'}, {'a': '-1'}, {'A': None}, {'u': None}])
+def test_missing_malformed_or_future_book_fields_rejected(updates):
+    assert gate_spot_patch(item(), frame(**updates), AT + 1000) is None
+
+
+@pytest.mark.parametrize('updates,clears', [({'b': '0'}, ['bid']), ({'A': '0'}, ['ask']),
+                                          ({'B': '0', 'A': '0'}, ['bid', 'ask'])])
+def test_explicit_zero_side_clear(updates, clears):
+    patch = gate_spot_patch(item(), frame(**updates), AT + 1000)
+    assert patch.cleared_fields == clears
+    for field in clears:
+        assert getattr(patch, field) is None
+        assert patch.field_sources[field].endswith(':explicit_unavailable')
+
+
+def test_crossed_book_retains_invalid_status():
+    assert not gate_spot_patch(item(), frame(b='102'), AT + 1000).valid
+
+
+@pytest.mark.asyncio
+async def test_bounded_inbox_equal_time_clears_and_later_recovery():
+    inbox = _Inbox(1)
+    empty = gate_spot_patch(item(), frame(B='0'), AT + 1)
+    positive = gate_spot_patch(item(), frame(a='102'), AT + 2)
+    for _ in range(100):
+        inbox.put(empty)
+        inbox.put(positive)
+    assert len(inbox.pending) == 1
+    merged = await inbox.get()
+    assert merged.bid is None and merged.ask == 102
+    assert merged.field_received_at['bid'] == AT + 1
+    inbox.put(merged)
+    inbox.put(gate_spot_patch(item(), frame(t=AT + 1), AT + 3))
+    assert (await inbox.get()).bid == 100
+
+
+class Socket:
+    def __init__(self, frames=(), auto_pong=True):
+        self.incoming = asyncio.Queue()
+        for value in frames:
+            self.incoming.put_nowait(value)
+        self.sent = []
+        self.closed = False
+        self.auto_pong = auto_pong
+
+    async def recv(self):
+        value = await self.incoming.get()
+        if isinstance(value, Exception):
+            raise value
+        return json.dumps(value)
+
+    async def send(self, raw):
+        value = json.loads(raw)
+        self.sent.append(value)
+        if value['channel'] == 'spot.ping' and self.auto_pong:
+            self.incoming.put_nowait({'channel': 'spot.pong'})
+
+
+def factory(socket):
+    @asynccontextmanager
+    async def connect(endpoint):
+        assert endpoint == ENDPOINT
+        try:
+            yield socket
+        finally:
+            socket.closed = True
+    return connect
+
+
+@pytest.mark.asyncio
+async def test_exact_native_identity_catalog_subscription_and_close():
+    socket = Socket([frame('WRONG'), frame('SMALL')])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket), subscription_batch=1, subscription_delay=0)
+    items = [item('PEPE'), item('SMALL')]
+    stream = adapter.stream(items)
+    patch = await asyncio.wait_for(anext(stream), 1)
+    assert patch.instrument_id == 'gate:SMALL'
+    await asyncio.sleep(.01)
+    assert [request['payload'] for request in socket.sent] == [['PEPE_USDT'], ['SMALL_USDT']]
+    assert all('auth' not in request for request in socket.sent)
+    await stream.aclose()
+    assert socket.closed and not adapter._tasks and not adapter._running
+    assert not adapter.supports_instrument(item().model_copy(update={'kind': 'perpetual'}))
+
+
+@pytest.mark.asyncio
+async def test_future_and_older_frames_cannot_pollute_watermark():
+    socket = Socket([frame(t=AT + 9999), frame(t=AT, b='100'), frame(t=AT - 1, b='99'), frame(t=AT + 1, u=6, b='101')])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    stream = adapter.stream([item()])
+    patch = await asyncio.wait_for(anext(stream), 1)
+    assert patch.source_at == AT + 1 and patch.bid == 101
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reader_keeps_clear_barrier_after_consumption():
+    socket = Socket([frame(B='0')])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    stream = adapter.stream([item()])
+    assert (await anext(stream)).bid is None
+    socket.incoming.put_nowait(frame(a='102'))
+    assert (await anext(stream)).bid is None
+    socket.incoming.put_nowait(frame(t=AT + 1, u=6))
+    assert (await anext(stream)).bid == 100
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_observer_backpressure_does_not_block_heartbeat_or_original_receipt():
+    socket = Socket([frame(t=AT + n, u=5 + n, b=str(90 + n)) for n in range(100)])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket), heartbeat_seconds=.01, heartbeat_timeout=.1)
+    blocked = asyncio.Event()
+    async def observer(*args):
+        await blocked.wait()
+    adapter.on_payload = observer
+    stream = adapter.stream([item()])
+    patch = await asyncio.wait_for(anext(stream), 1)
+    await asyncio.sleep(.05)
+    assert adapter.payload_observer_dropped > 0
+    assert any(value['channel'] == 'spot.ping' for value in socket.sent)
+    assert patch.received_at == AT + 1000
+    assert len(adapter._observer_queue._queue) <= 16
+    await stream.aclose()
+    assert socket.closed
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_failure_reaches_consumer_and_cancellation_closes():
+    socket = Socket(auto_pong=False)
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket), heartbeat_seconds=.001, heartbeat_timeout=.01)
+    stream = adapter.stream([item()])
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(anext(stream), 1)
+    assert socket.closed
+    socket = Socket()
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    stream = adapter.stream([item()])
+    pending = asyncio.create_task(anext(stream))
+    await asyncio.sleep(.01)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert socket.closed and not adapter._tasks
+
+
+@pytest.mark.asyncio
+async def test_error_ack_propagates_without_error_payload_leak():
+    socket = Socket([{'channel': CHANNEL, 'event': 'subscribe', 'error': {'message': 'private-ish server content'}}])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    with pytest.raises(RuntimeError, match='rejected public subscription'):
+        await anext(adapter.stream([item()]))
+    assert socket.closed
+
+
+@pytest.mark.asyncio
+async def test_lower_sequence_rejected_and_future_does_not_advance_sequence():
+    socket = Socket([frame(u=8), frame(u=999, t=AT + 9999), frame(u=7, b='99'), frame(u=9, a='102')])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    stream = adapter.stream([item()])
+    patch = await anext(stream)
+    assert patch.bid == 100 and patch.ask == 102
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_waits_for_connection_teardown():
+    entered, release = asyncio.Event(), asyncio.Event()
+    socket = Socket()
+    @asynccontextmanager
+    async def connect(endpoint):
+        try:
+            yield socket
+        finally:
+            entered.set()
+            await release.wait()
+            socket.closed = True
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=connect)
+    stream = adapter.stream([item()])
+    pending = asyncio.create_task(anext(stream))
+    await asyncio.sleep(.01)
+    pending.cancel()
+    await entered.wait()
+    pending.cancel()
+    await asyncio.sleep(0)
+    assert not pending.done() and not socket.closed
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert socket.closed and not adapter._running
+
+
+@pytest.mark.asyncio
+async def test_external_close_unblocks_waiting_consumer():
+    socket = Socket()
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    stream = adapter.stream([item()])
+    pending = asyncio.create_task(anext(stream))
+    await asyncio.sleep(.01)
+    await adapter.close()
+    with pytest.raises(RuntimeError, match='closed'):
+        await asyncio.wait_for(pending, 1)
+    assert socket.closed
+
+
+@pytest.mark.asyncio
+async def test_duplicate_advances_sequence_without_refreshing_receipt():
+    socket = Socket([frame(u=5), frame(u=10), frame(u=9, b='99')])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    stream = adapter.stream([item()])
+    patch = await anext(stream)
+    assert patch.bid == 100
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_same_sequence_cannot_renew_book_clock():
+    socket = Socket([frame(u=5), frame(t=AT + 10, u=5, b='99')])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    stream = adapter.stream([item()])
+    patch = await asyncio.wait_for(anext(stream), 1)
+    assert patch.source_at == AT and patch.bid == 100
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_burst_yields_to_event_loop():
+    socket = Socket([frame() for _ in range(1000)])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    inbox, pong = _Inbox(1), asyncio.Event()
+    reader = asyncio.create_task(adapter._reader(socket, {'PEPE_USDT': item()}, inbox, pong))
+    await asyncio.sleep(0)
+    # Reader yielded before exhausting buffered duplicate frames.
+    assert socket.incoming.qsize() > 0
+    reader.cancel()
+    await asyncio.gather(reader, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_correlates_only_echoed_subscription_ids():
+    class AckSocket(Socket):
+        async def send(self, raw):
+            await super().send(raw)
+            request = json.loads(raw)
+            if request['channel'] == CHANNEL:
+                ack = {'id': request['id'], 'channel': CHANNEL, 'event': 'subscribe',
+                       'error': None, 'result': {'status': 'success'}}
+                self.incoming.put_nowait(ack)
+                self.incoming.put_nowait(ack)  # duplicate must not double market count
+                self.incoming.put_nowait({key: value for key, value in ack.items() if key != 'id'})
+                self.incoming.put_nowait({**ack, 'id': 99999})
+                self.incoming.put_nowait(frame())
+    socket = AckSocket()
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket), subscription_batch=1, subscription_delay=0)
+    stream = adapter.stream([item(), item('OTHER')])
+    await anext(stream)
+    await asyncio.sleep(.01)
+    diag = adapter.diagnostics()
+    assert diag['selected_markets'] == diag['sent_markets'] == diag['acknowledged_markets'] == 2
+    assert diag['planned_batches'] == diag['sent_batches'] == diag['acknowledged_batches'] == 2
+    assert diag['duplicate_acknowledgements'] == 2
+    assert diag['uncorrelated_acknowledgements'] == 4
+    assert diag['unique_observed_markets'] == diag['unique_accepted_markets'] == 1
+    assert diag['acknowledged_markets'] > diag['unique_accepted_markets']
+    assert 'id' in socket.sent[0] and 'auth' not in socket.sent[0]
+    diag['sent_markets'] = 999
+    assert adapter.diagnostics()['sent_markets'] == 2
+    await stream.aclose()
+    assert adapter.diagnostics()['state'] == 'closed'
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_reasons_and_source_extrema_do_not_renew_data():
+    malformed = frame()
+    malformed['result'].pop('B')
+    socket = Socket([frame(), frame(u=4), frame(u=6), frame(u=6, t=AT + 1),
+                     frame(u=99, t=AT + 2000), frame(t=None), frame(t=AT // 1000),
+                     malformed, frame('UNKNOWN'), frame(u=7, t=AT + 2, b='102')])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    stream = adapter.stream([item()])
+    patch = await anext(stream)
+    diag = adapter.diagnostics()
+    for reason in ('stale_order', 'same_sequence_newer_time', 'future_time', 'missing_time',
+                   'invalid_time', 'malformed', 'unknown_symbol'):
+        assert diag['rejected_' + reason] == 1
+    assert diag['received_frames'] == diag['bbo_frames'] == 10
+    assert diag['duplicate_bbo_frames'] == 1
+    assert diag['accepted_patches'] == 2
+    assert diag['crossed_bbo_frames'] == 1
+    assert diag['unique_observed_markets'] == diag['unique_accepted_markets'] == 1
+    assert diag['accepted_source_at_min'] == AT and diag['accepted_source_at_max'] == AT + 2
+    assert diag['accepted_receipt_at_min'] == diag['accepted_receipt_at_max'] == AT + 1000
+    assert not patch.valid
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_reset_on_reconnect_and_do_not_accept_previous_ack():
+    sockets = [Socket([frame()]), Socket()]
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=lambda endpoint: factory(sockets.pop(0))(endpoint))
+    stream = adapter.stream([item()])
+    await anext(stream)
+    await asyncio.sleep(.01)
+    old_id = adapter._request_id
+    assert adapter.diagnostics()['generation'] == 1
+    await stream.aclose()
+    socket = sockets[0]
+    socket.incoming.put_nowait({'id': old_id, 'channel': CHANNEL, 'event': 'subscribe',
+                               'error': None, 'result': {'status': 'success'}})
+    socket.incoming.put_nowait(frame(t=None))
+    socket.incoming.put_nowait(frame('OTHER'))
+    stream = adapter.stream([item(), item('OTHER')])
+    await anext(stream)
+    diag = adapter.diagnostics()
+    assert diag['generation'] == 2 and diag['received_frames'] == 3
+    assert diag['uncorrelated_acknowledgements'] == 1 and diag['acknowledged_markets'] == 0
+    assert diag['unique_observed_markets'] == 2 and diag['unique_accepted_markets'] == 1
+    assert diag['rejected_missing_time'] == 1
+    assert len(adapter._subscriptions) <= diag['planned_batches']
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rejected_subscription_is_reported_without_public_payload_content():
+    socket = Socket([{'channel': CHANNEL, 'event': 'subscribe', 'error': {'code': 2, 'message': 'detail'}}])
+    adapter = GateSpotStreamAdapter(rest(), connection_factory=factory(socket))
+    with pytest.raises(RuntimeError):
+        await anext(adapter.stream([item()]))
+    diag = adapter.diagnostics()
+    assert diag['rejected_subscriptions'] == 1 and diag['state'] == 'failed'
+    assert diag['acknowledged_markets'] == 0 and diag['closed_at'] is not None
+    assert 'detail' not in json.dumps(diag)
+
+
+@pytest.mark.parametrize('kind', ['spot', 'futures'])
+@pytest.mark.parametrize('explicit_null', [False, True])
+def test_live_reported_44_success_ack_shape_optional_error(kind, explicit_null):
+    """Parent captured 44 matching-ID successes without error; IDs here synthetic.
+
+    This reproduces the reported wire shape, not a claim to store exact raw
+    captured frames (which were not supplied to this workspace).
+    """
+    from watch_money.adapters.gate_streaming import GateFuturesStreamAdapter
+    adapter = (GateSpotStreamAdapter(rest()) if kind == 'spot' else
+               GateFuturesStreamAdapter(rest(), settle='usdt'))
+    for request_id in range(1, 45):
+        count = 36 if request_id == 44 else 50
+        adapter._subscriptions[request_id] = {'market_count':count,'acknowledged':False}
+        ack = {'id':request_id,'channel':adapter.channel,'event':'subscribe','result':{'status':'success'}}
+        if explicit_null:
+            ack['error'] = None
+        adapter._acknowledge(ack)
+    diag = adapter.diagnostics()
+    assert diag['acknowledged_batches'] == 44
+    assert diag['acknowledged_markets'] == 2186
+    assert diag['uncorrelated_acknowledgements'] == 0
+    assert diag['unique_accepted_markets'] == 0  # acknowledgement is not quote coverage
+
+
+@pytest.mark.parametrize('error', [{'code':2,'message':'synthetic error'}, {}, False, 'denied'])
+def test_success_label_cannot_override_non_null_error(error):
+    adapter = GateSpotStreamAdapter(rest())
+    adapter._subscriptions[1] = {'market_count':50,'acknowledged':False}
+    adapter._acknowledge({'id':1,'error':error,'result':{'status':'success'}})
+    assert adapter.diagnostics()['acknowledged_batches'] == 0
+    assert adapter.diagnostics()['uncorrelated_acknowledgements'] == 1
+
+
+@pytest.mark.parametrize('ack', [{}, {'id':1}, {'id':True,'result':{'status':'success'}},
+                                 {'id':99,'result':{'status':'success'}},
+                                 {'id':1,'result':{'status':'failed'}},
+                                 {'id':1,'result':{'status':'success','unexpected':1}}])
+def test_optional_error_does_not_relax_request_or_success_validation(ack):
+    adapter = GateSpotStreamAdapter(rest())
+    adapter._subscriptions[1] = {'market_count':50,'acknowledged':False}
+    adapter._acknowledge(ack)
+    assert adapter.diagnostics()['acknowledged_batches'] == 0

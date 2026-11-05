@@ -1,0 +1,14 @@
+{
+  "fixture": "synthetic_funding_matrix_not_live",
+  "count": 6,
+  "checks": [
+    "default cross-platform matrix computes 0.0060 percentage-point 8h difference with correct platforms and retains 1h/8h raw periods",
+    "no market, uncollected, stale and unknown period are distinct; unverified same-ticker identities remain separate; tiny nonzero rates stay nonzero",
+    "platform checkbox sends server-side platforms scope before budget and recomputes high/low pair without excluded venue",
+    "single-platform ranking queries one venue and switches raw/8h ordering without cross-platform contamination",
+    "search is server-scoped; details retain type/time/source and only explicit user action fetches settled history",
+    "390px platform picker stays within viewport and matrix scrolls inside its own container without body overflow"
+  ],
+  "history_requests": 1,
+  "at": 1793821433222
+}

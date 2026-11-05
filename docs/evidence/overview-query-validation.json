@@ -1,0 +1,39 @@
+{
+  "kind": "synthetic_local_overview_and_query_admission_validation",
+  "python_full": {
+    "passed": 833,
+    "seconds": 34.65,
+    "warnings": 1
+  },
+  "final_slowest_execution_regression": {
+    "passed": 6
+  },
+  "frontend_tests": 34,
+  "browser_checks": {
+    "overview_freshness_actual_local_api_and_overload": 5,
+    "smoke": 6,
+    "navigation": 12,
+    "funding_matrix": 6
+  },
+  "build": "passed",
+  "ruff": "passed",
+  "diff_check": "passed",
+  "network_exchange_probes": false,
+  "freshness_threshold_changed": false,
+  "diagnostics_endpoint": "/api/query-work",
+  "query_admission": {
+    "workers": 1,
+    "max_queued_http": 2,
+    "queue_timeout_seconds": 1,
+    "overload_status": 503,
+    "websocket_busy_behavior": "skip_build_preserve_previous_source_times"
+  },
+  "open": [
+    "real integrated CPU/loop/source timeout causality",
+    "OKX full funding staleness under load",
+    "R24 older WS state temporarily replacing newer HTTP state during platform switch",
+    "24-hour acceptance",
+    "verified identity coverage",
+    "Lighter jurisdiction restriction"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "fixture": "7000 local synthetic perpetual markets; no network/account access; fixed event clock for compute comparison; not live stability acceptance",
+  "samples": [
+    {
+      "phase": "cold",
+      "milliseconds": 350.89,
+      "reclassified_markets": 7000
+    },
+    {
+      "phase": "unchanged",
+      "milliseconds": 10.637,
+      "reclassified_markets": 0
+    },
+    {
+      "phase": "unchanged",
+      "milliseconds": 10.249,
+      "reclassified_markets": 0
+    },
+    {
+      "phase": "unchanged",
+      "milliseconds": 10.272,
+      "reclassified_markets": 0
+    }
+  ],
+  "cache_entries": 7000,
+  "cold_recompute_same_status": true,
+  "cold_background_loop_samples": 17,
+  "cold_background_loop_max_delay_ms": 10.345,
+  "price_and_funding_fresh_markets": 7000
+}

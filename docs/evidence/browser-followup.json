@@ -1,0 +1,19 @@
+{
+  "passed": true,
+  "data_mode": "isolated synthetic browser fixtures and mocked native response; no live data",
+  "checks": [
+    "synthetic PEPE identity candidates remain distinct, searchable and unconfirmed",
+    "raw comparative and upcoming metrics coexist with independent visible provenance and times",
+    "funding chart deduplicates carried funding events and separates current/predicted/settled/local snapshot series",
+    "explicit two-leg exit prices and zero exit basis reach mutually exclusive payload fields; missing fees keep net profit unknown",
+    "notional calculation posts base size from multi-level asks only; insufficient, future or missing buy depth blocks calculation without price fallback",
+    "native pool state action disabled without saved chain RPC",
+    "invalid DEX JSON blocked; arbitrary ticker, queries, funding/discovery settings saved without losing broad/recording settings",
+    "browser-mocked native estimate preserves decimal string and shows non-executable JSON; no RPC request",
+    "expanded asset group hands off exact buy/sell instruments and strategy without submitting a calculation",
+    "whole-catalog synthetic PEPE scan exposes direction/spread, blocked identity count and net=null; sorting/optional refresh controls work",
+    "browser-mocked enumeration truncation visibly limits ranking claims, then restores actual fixture scan",
+    "synthetic cross-venue funding matrix and single-platform raw ranking render; detail-only mocked settled history stays distinct from local snapshots",
+    "scanner mobile document has no horizontal overflow; zero browser JavaScript errors"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "date": "2026-11-04",
+  "python": {
+    "passed": 774,
+    "seconds": 27.78,
+    "warnings": 1
+  },
+  "frontend_tests": 31,
+  "build": "passed",
+  "ruff": "passed",
+  "browser": {
+    "baseline": 6,
+    "followup": 13,
+    "navigation": 12,
+    "funding": 6,
+    "total": 37,
+    "passed": true
+  },
+  "mode": "synthetic fixtures and isolated local browsers; no live exchange success claimed",
+  "performance_evidence": [
+    "stream-selection-load.json",
+    "stream-integration-load.json"
+  ],
+  "remaining": [
+    "live integrated Hyperliquid disconnect cause not established",
+    "OKX simultaneous stale window cause not established",
+    "199 groups / 440 spot markets externally previewed, not applied",
+    "external Lighter restricted jurisdiction code20558; not reprobed",
+    "24h acceptance incomplete"
+  ]
+}

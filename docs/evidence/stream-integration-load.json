@@ -1,0 +1,34 @@
+{
+  "kind": "synthetic_collector_merge_storage_load",
+  "at": 1793817398313,
+  "markets": 347,
+  "patches": 4500,
+  "target_producer_rate": 300,
+  "injected_disconnects": 1,
+  "real_backoff_seconds": 5,
+  "included": [
+    "actual merge_patch including raw metric provenance",
+    "actual SQLite snapshot/history writes every 5s",
+    "independent paced producer queue",
+    "catalog selection",
+    "real collector reconnect backoff"
+  ],
+  "excluded": [
+    "real exchange/network/WebSocket decoding",
+    "other venue collectors",
+    "browser push and HTTP workload"
+  ],
+  "wall_seconds": 15.147,
+  "cpu_seconds": 0.908,
+  "queue_peak": 1504,
+  "processed": 4500,
+  "reconnects": 1,
+  "last_error_type": "ConnectionError",
+  "max_processed_patch_gap_seconds": 5.008,
+  "final_fresh_book_markets": 347,
+  "timer_samples": 1415,
+  "timer_lag_p90_ms": 0.883,
+  "timer_lag_max_ms": 4.759,
+  "limitations": "Synthetic recovery only; not a reproduction or causal explanation of the reported live disconnect.",
+  "measurement_environment": "shared workspace; full pytest ran concurrently during this recorded run; no CPU/process isolation"
+}
