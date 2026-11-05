@@ -107,6 +107,19 @@ def main():
                         scans = [r for r in api.get('/__refresh_test').json()['calls'] if r['path'] == '/api/scanner']
                         intervals = [b['at']-a['at'] for a, b in zip(scans, scans[1:])]
                         assert intervals and max(intervals) >= 4, scans
+                        assert api.get('/api/scanner').json()['stats']['selection'] == 'global_extrema'
+                        expect(page.get_by_text('无需逐一枚举方向。', exact=False)).to_be_visible()
+                        with page.expect_response(lambda r: '/api/scanner?' in r.url and 'comparison_mode=directions' in r.url):
+                            page.get_by_role('button', name='所有方向', exact=True).click()
+                        expect(page.get_by_role('checkbox', name='方向明细仅手动刷新', exact=True)).to_be_disabled()
+                        detail_calls = len([r for r in api.get('/__refresh_test').json()['calls'] if r['path'] == '/api/scanner'])
+                        page.wait_for_timeout(6200)
+                        assert len([r for r in api.get('/__refresh_test').json()['calls'] if r['path'] == '/api/scanner']) == detail_calls
+                        with page.expect_response(lambda r: '/api/scanner?' in r.url and 'comparison_mode=directions' in r.url):
+                            page.get_by_role('button', name='刷新扫描', exact=True).click()
+                        with page.expect_response(lambda r: '/api/scanner?' in r.url and 'comparison_mode=extrema' in r.url):
+                            page.get_by_role('button', name='资产聚合', exact=True).click()
+                        scans = [r for r in api.get('/__refresh_test').json()['calls'] if r['path'] == '/api/scanner']
                         api.post('/__refresh_test')
                         page.get_by_role('button', name='资金费', exact=True).click()
                         page.wait_for_timeout(5500)
@@ -125,10 +138,12 @@ def main():
                         assert len([r for r in api.get('/__refresh_test').json()['calls'] if r['path'] == '/api/funding']) == 2
                         assert not errors, errors
                         browser.close()
-                        result = {'mode': 'isolated synthetic markets; real local HTTP; funding server delayed 7s', 'passed': 7,
+                        result = {'mode': 'isolated synthetic markets; real local HTTP; funding server delayed 7s', 'passed': 10,
                             'checks': ['scanner_default_auto_query_at_5s', 'funding_slow_request_not_aborted_or_overlapped',
                                        'funding_next_query_after_completion', 'inactive_scanner_does_not_poll', 'user_can_pause_funding_queries',
-                                       'scanner_background_keeps_table_and_layout', 'funding_background_keeps_table_and_layout'],
+                                       'scanner_background_keeps_table_and_layout', 'funding_background_keeps_table_and_layout',
+                                       'default_price_query_uses_global_extrema', 'direction_details_do_not_auto_poll',
+                                       'direction_details_manual_refresh_and_return_to_extrema'],
                             'scanner_layout': scanner_layout, 'funding_layout': funding_layout,
                             'scanner_periodic_interval_seconds': round(max(intervals), 3), 'maximum_funding_concurrency': end['maximum']}
                         (root/'docs/evidence/browser-five-second-refresh.json').write_text(json.dumps(result, indent=2)+'\n')

@@ -1,7 +1,7 @@
 # 全目录指示性机会扫描
 
 `watch_money.scanner.scan_markets(instruments, snapshots, as_of, stale_seconds, limit=100,
-sort="spread", max_candidates=10000, q="", platforms=None, market_type="all")` 读取已发现的完整市场目录与当前快照，不限定 BTC/ETH，
+sort="spread", max_candidates=10000, q="", platforms=None, market_type="all", comparison_mode="directions")` 读取已发现的完整市场目录与当前快照，不限定 BTC/ETH，
 也不依赖关注列表、手动选择两腿或已保存监控计划。`instruments` / `snapshots` 可为对象列表或以 ID 为键的字典。
 时间使用 UTC epoch 毫秒。该函数只计算并返回 JSON 对象，不修改采集器、配置、存储或输入对象。
 
@@ -10,10 +10,28 @@ sort="spread", max_candidates=10000, q="", platforms=None, market_type="all")` �
 应用只需 include_router。入口过滤停用平台和非活跃市场；关闭 computation_enabled 或开启 demo_mode 时停止扫描。
 扫描不请求新行情、不获取盘口、不下单、不发送消息；是否周期刷新由调用方决定。
 
+HTTP 接口和页面默认采用 `comparison_mode=extrema`：按身份、报价币、报价合约证据分桶，
+只使用新鲜且来源可核验的 ask/bid。每桶分别保留各平台最低 ask、最高 bid，
+再从两端各两个平台的极值中选择最佳跨平台组合，避免最低 ask 与最高 bid 来自同一平台。
+`spot_perp` 分别检查现货买/永续卖和永续买/现货卖。每桶只生成最佳路径及反向报价，
+不枚举其它方向，最优结果仍覆盖当前全部有效可比盘口。普通输入的选择成本随市场数线性增长；
+极端浮点溢出时退回轻量逐对评分以找到可表示的最佳结果，不生成全部富候选对象。
+
+`selection=global_extrema`、`best_price_complete=true` 表示完整有效盘口的价差极值；
+`scanned` 是实际生成的极值/反向对象数，`pruned_directions` 是省去的方向，
+`price_markets_checked` 是核对的市场数。`scan_complete` 仍只表示是否枚举了全部方向，
+不能用它否定极值结果的完整性。显示分页/limit 只限制输出，不限制极值覆盖的资产。
+方向预算 `max_candidates` 只对枚举模式生效；极值模式不因该预算跳过其它资产。
+
+页面“资产聚合”使用极值模式；展开列出每个报价币的极值/反向报价与各市场盘口。
+“所有方向”显式请求 `comparison_mode=directions`，仅手动刷新，返回资产聚合后恢复原刷新设置。
+资金费排序继续采用方向枚举，不能把报价极值当作最大资金费差。
+Python 函数默认保留 directions 以兼容完整方向调用者，优化调用需显式传 extrema。
+
 资产分组复用 `identity_candidates`：只有身份门槛 comparison_ready 的组参与。
 同 ticker 未核验的不同资产、不同原生链/合约地址、包装/桥接/缩放符号混用不能生成机会。
 所有被阻止的组和市场数量、各类身份阻塞原因在 stats 中计数，不将其伪装成“没有价差”。
-每个组枚举不同 venue 的全部有向组合，包括现货/现货、现货/永续、永续/现货、永续/永续；
+方向枚举模式下，每个组枚举不同 venue 的全部有向组合，包括现货/现货、现货/永续、永续/现货、永续/永续；
 pool/RFQ 作为需另外提供规模报价的现货类市场展示。相同平台的组合不在本扫描范围。
 
 每条 candidate 通过 buy_instrument_id / sell_instrument_id 表示买入/多头与卖出/空头方向：
@@ -45,7 +63,7 @@ requirements 明示缺少交易规模、费用配置、可成交深度，AMM/RFQ
 永续还需逐笔结算时间表；contract_size 用于合约数量换算，不能据此缩放挂牌价格。
 因此正的指示性价差/资金费差不等于可成交净利润，不能替代 `/api/opportunities/calculate`。
 
-枚举和返回有两个独立上限：
+方向枚举和返回有两个独立上限：
 
 - max_candidates 限制实际评估组合数，默认 10000，最大 100000。
 - limit 限制排序后返回条数，默认 100，最大 1000。

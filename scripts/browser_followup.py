@@ -300,7 +300,7 @@ def main():
                         checks.append("whole-catalog synthetic PEPE scan exposes direction/spread, blocked identity count and net=null; sorting/optional refresh controls work")
                         truncated = {**scan, "stats": {**scan["stats"], "possible_candidates": 10001,
                                                        "scanned": 10000, "truncated": True,
-                                                       "enumeration_truncated": True}}
+                                                       "enumeration_truncated": True, "comparison_mode": "directions"}}
                         page.route("**/api/scanner?**", lambda route: route.fulfill(
                             status=200, content_type="application/json", body=json.dumps(truncated)))
                         page.get_by_role("button", name="刷新扫描", exact=True).click()

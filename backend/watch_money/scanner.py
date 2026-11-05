@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterable, Mapping
+from heapq import nlargest, nsmallest
 from itertools import product
 from typing import Literal
 
@@ -16,6 +17,7 @@ from .quote_identity import quote_identity, requires_quote_identity
 router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 Sort = Literal["spread", "funding", "asset"]
 MarketType = Literal["all", "spot", "perpetual", "spot_perp"]
+ComparisonMode = Literal["extrema", "directions"]
 MAX_CANDIDATES = 100000
 
 
@@ -283,16 +285,89 @@ def _group_pairs(venues: Mapping[str, list[Instrument]], market_type: MarketType
                     yield buy, sell
 
 
+def _extrema_pairs(venues, details, as_of, stale_seconds, market_type):
+    """Find exact price winners using per-venue extrema in compatible buckets.
+
+    Two venue extrema suffice for a cross-venue winner: when the overall best
+    ask and bid share a venue, at least one leg must use another venue. Numeric
+    overflow is exceptional and uses cheap exhaustive scoring, not rich rows.
+    """
+    buckets = defaultdict(list)
+    for members in venues.values():
+        for item in members:
+            if item.execution_restrictions:
+                continue
+            if requires_quote_identity(item):
+                quote_id, issues = quote_identity(item, as_of, stale_seconds * 1000)
+                if issues:
+                    continue
+                key = (item.quote, "chain", quote_id)
+            else:
+                key = (item.quote, "cex")
+            buckets[key].append(item)
+    selected = {}
+    for members in buckets.values():
+        roles = ((False, True), (True, False)) if market_type == "spot_perp" else ((None, None),)
+        best = None
+        best_score = None
+        overflow = False
+        for buy_perp, sell_perp in roles:
+            asks, bids = {}, {}
+            for item in members:
+                detail = details[item.id]
+                if ((buy_perp is None or (item.kind == "perpetual") == buy_perp)
+                        and detail["fields"]["ask"]["rankable"]):
+                    old = asks.get(item.venue)
+                    if old is None or (detail["ask"], item.id) < (details[old.id]["ask"], old.id):
+                        asks[item.venue] = item
+                if ((sell_perp is None or (item.kind == "perpetual") == sell_perp)
+                        and detail["fields"]["bid"]["rankable"]):
+                    old = bids.get(item.venue)
+                    if old is None or (-detail["bid"], item.id) < (-details[old.id]["bid"], old.id):
+                        bids[item.venue] = item
+            low = nsmallest(2, asks.values(), key=lambda item: (details[item.id]["ask"], item.id))
+            high = nlargest(2, bids.values(), key=lambda item: (details[item.id]["bid"], item.id))
+            for buy, sell in product(low, high):
+                if buy.venue == sell.venue:
+                    continue
+                rate = (details[sell.id]["bid"] - details[buy.id]["ask"]) / details[buy.id]["ask"]
+                if not math.isfinite(rate * 100):
+                    overflow = True
+                    continue
+                score = (-rate, buy.id, sell.id)
+                if best_score is None or score < best_score:
+                    best, best_score = (buy, sell), score
+        if overflow:
+            # A lower, representable bid can beat an overflowing extreme. Keep
+            # the exact finite answer even for adversarial numeric inputs.
+            for buy, sell in product(members, repeat=2):
+                if (buy.venue == sell.venue or not details[buy.id]["fields"]["ask"]["rankable"]
+                        or not details[sell.id]["fields"]["bid"]["rankable"]
+                        or (market_type == "spot_perp" and (buy.kind == "perpetual") == (sell.kind == "perpetual"))):
+                    continue
+                rate = (details[sell.id]["bid"] - details[buy.id]["ask"]) / details[buy.id]["ask"]
+                score = (-rate, buy.id, sell.id)
+                if math.isfinite(rate * 100) and (best_score is None or score < best_score):
+                    best, best_score = (buy, sell), score
+        if best:
+            buy, sell = best
+            selected[(buy.id, sell.id)] = (buy, sell)
+            selected[(sell.id, buy.id)] = (sell, buy)
+    return selected.values()
+
+
 def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
                  snapshots: Iterable[MarketSnapshot] | Mapping[str, MarketSnapshot],
                  as_of: int, stale_seconds: float, limit: int = 100, *, sort: Sort = "spread",
                  max_candidates: int = 10000, q: str = "", platforms: Iterable[str] | None = None,
-                 market_type: MarketType = "all", group_offset: int = 0, group_limit: int | None = None) -> dict:
+                 market_type: MarketType = "all", group_offset: int = 0, group_limit: int | None = None,
+                 comparison_mode: ComparisonMode = "directions") -> dict:
     """Scan all confirmed asset groups, with explicit enumeration/output budgets.
 
     Both directions of every cross-venue spot/perpetual/pool/RFQ pair are eligible.
-    A bounded scan shares evaluations round-robin across asset groups. Missing
-    prices/rates remain None. No costs, orders, network calls or account data.
+    Extrema mode finds exact price winners without enumerating every pair;
+    directions mode shares its bounded evaluations round-robin across groups.
+    Missing prices/rates remain None. No costs, orders, network calls or account data.
     """
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise ValueError("limit must be between 1 and 1000")
@@ -307,6 +382,9 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
         raise ValueError("sort must be spread, funding or asset")
     if market_type not in {"all", "spot", "perpetual", "spot_perp"}:
         raise ValueError("market_type must be all, spot, perpetual or spot_perp")
+    if comparison_mode not in {"extrema", "directions"}:
+        raise ValueError("comparison_mode must be extrema or directions")
+    extrema = comparison_mode == "extrema" and sort != "funding"
     if not isinstance(q, str) or len(q) > 300:
         raise ValueError("q must be a string of at most 300 characters")
     if (not isinstance(as_of, int) or isinstance(as_of, bool) or as_of < 0
@@ -361,9 +439,10 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
         groups.append((row, venues))
     candidates = []
     candidates_by_group = defaultdict(list)
-    pending = deque((row, _group_pairs(venues, market_type)) for row, venues in groups
+    pending = deque((row, iter(_extrema_pairs(venues, details, as_of, stale_seconds, market_type))
+                    if extrema else _group_pairs(venues, market_type)) for row, venues in groups
                     if possible_by_group[row["id"]])
-    while pending and len(candidates) < max_candidates:
+    while pending and (extrema or len(candidates) < max_candidates):
         row, pairs = pending.popleft()
         pair = next(pairs, None)
         if pair is None:
@@ -412,6 +491,9 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
                           "best_spread_candidate": compact(best_price) if best_price else None,
                           "best_funding_candidate": compact(best_funding) if best_funding else None,
                           "best_within_scan": True, "scan_complete": len(evaluated) == total,
+                          "price_selection": "extrema" if extrema else "directions",
+                          "best_price_complete": extrema or len(evaluated) == total,
+                          "price_markets_checked": len(members) if identity["comparison_ready"] else 0,
                           "directions": [compact(row) for row in ordered[:limit]],
                           "directions_returned": min(len(ordered), limit), "directions_truncated": len(ordered) > limit,
                           "markets": members, "as_of": as_of,
@@ -444,9 +526,12 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
         "group_offset": group_offset, "group_limit": group_limit,
         "next_group_offset": group_offset + group_limit if group_offset + group_limit < len(summaries) else None,
         "group_pagination": "live_query_not_snapshot",
-        "omitted_by_limit": scanned - returned, "enumeration_truncated": possible > scanned,
-        "result_truncated": scanned > returned, "truncated": possible > returned,
-        "selection": "bounded_asset_round_robin" if possible > scanned else "global",
+        "comparison_mode": "extrema" if extrema else "directions",
+        "price_markets_checked": len(active) if extrema else None,
+        "pruned_directions": possible - scanned if extrema else 0,
+        "omitted_by_limit": scanned - returned, "enumeration_truncated": not extrema and possible > scanned,
+        "result_truncated": scanned > returned, "truncated": (scanned > returned if extrema else possible > returned),
+        "selection": "global_extrema" if extrema else "bounded_asset_round_robin" if possible > scanned else "global",
         "sort": sort, "limit": limit, "max_candidates": max_candidates, "missing_counts": dict(missing_counts)}}
 
 
@@ -455,7 +540,7 @@ async def scan_api(request: Request, limit: int = Query(100, ge=1, le=1000),
              sort: Sort = "spread", max_candidates: int = Query(10000, ge=1, le=MAX_CANDIDATES),
              q: str = Query("", max_length=300), platforms: str = Query("", max_length=2000),
              market_type: MarketType = "all", group_offset: int = Query(0, ge=0, le=100_000_000),
-             group_limit: int | None = Query(None, ge=1, le=1000)):
+             group_limit: int | None = Query(None, ge=1, le=1000), comparison_mode: ComparisonMode = "extrema"):
     def build():
         collector = request.app.state.collector
         settings = request.app.state.store.settings()
@@ -464,7 +549,8 @@ async def scan_api(request: Request, limit: int = Query(100, ge=1, le=1000),
         instruments = [item for item in catalog if item.venue in settings.enabled_venues] if enabled else []
         result = scan_markets(instruments, dict(collector.snapshots), now_ms(), settings.stale_seconds,
                               limit, sort=sort, max_candidates=max_candidates, q=q, platforms=platforms.split(","),
-                              market_type=market_type, group_offset=group_offset, group_limit=group_limit)
+                              market_type=market_type, group_offset=group_offset, group_limit=group_limit,
+                              comparison_mode=comparison_mode)
         result.update(enabled=enabled, mode="indicative_public_market_scan")
         result["stats"].update(collector_catalog_markets=len(catalog),
                                excluded_by_settings=len(catalog) - len(instruments))
