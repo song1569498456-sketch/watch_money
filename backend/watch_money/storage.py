@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 import uuid
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -59,8 +60,12 @@ class Storage:
                 _SETTINGS_STATES[key] = state
             self._settings_state = state
 
+    @contextmanager
     def connect(self):
-        return sqlite3.connect(self.db_path, timeout=10)
+        # sqlite3's transaction context commits/rolls back but does not close.
+        # Close deterministically so Windows can release/replace database files.
+        with closing(sqlite3.connect(self.db_path, timeout=10)) as db, db:
+            yield db
 
     def get(self, key: str, default=None):
         with self.connect() as db:

@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 from collections import Counter
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -69,7 +70,7 @@ def capture(source: Path, *, max_bytes=64 * 1024 * 1024, max_rows=100000):
     """Read only five public metadata tables in one consistent bounded transaction."""
     source = Path(source).resolve(strict=True)
     result, count, size = {}, 0, 0
-    with sqlite3.connect(source.as_uri() + '?mode=ro', uri=True) as db:
+    with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as db:
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
         for table, columns in TABLES.items():

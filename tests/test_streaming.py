@@ -237,7 +237,46 @@ async def test_installed_pro_clients_use_verified_tls_inherited_proxy_and_no_acc
             assert client.ssl_context.verify_mode != 0
             assert not client.apiKey and not client.secret
             assert client.has.get("watchTicker") or client.has.get("watchTickers")
+            if client_id in {"binance", "binanceusdm", "binancecoinm"}:
+                assert client.options['watchTickers']['name'] == 'ticker'
+                assert client.options['watchTicker']['name'] == 'ticker'
             await client.close()
+
+
+@pytest.mark.parametrize('multiple', [False, True])
+@pytest.mark.parametrize('kind', ['spot', 'linear', 'inverse'])
+async def test_installed_bybit_generates_valid_public_ticker_topics_without_network(monkeypatch, multiple, kind):
+    """Exercise the SDK request builder that rejected our old global override."""
+    pytest.importorskip('ccxt.pro')
+    client = _stream_client_factory('bybit')
+    inverse = kind == 'inverse'
+    symbol = 'BTC/USD:BTC' if inverse else 'BTC/USDT' + (':USDT' if kind == 'linear' else '')
+    native = 'BTCUSD' if inverse else 'BTCUSDT'
+    client.set_markets([{
+        'id': native, 'symbol': symbol, 'base': 'BTC', 'quote': 'USD' if inverse else 'USDT',
+        'baseId': 'BTC', 'quoteId': 'USD' if inverse else 'USDT',
+        'type': 'spot' if kind == 'spot' else 'swap', 'spot': kind == 'spot',
+        'swap': kind != 'spot', 'future': False, 'option': False,
+        'contract': kind != 'spot', 'linear': kind == 'linear', 'inverse': inverse,
+        'settle': None if kind == 'spot' else 'BTC' if inverse else 'USDT',
+    }])
+    calls = []
+
+    async def public_topics(url, hashes, topics, params):
+        calls.append((url, topics))
+        return {'symbol': symbol, 'bid': 100, 'ask': 101}
+
+    monkeypatch.setattr(client, 'watch_topics', public_topics)
+    try:
+        if multiple:
+            result = await client.watch_tickers([symbol])
+            assert result[symbol]['bid'] == 100
+        else:
+            assert (await client.watch_ticker(symbol))['bid'] == 100
+        assert calls == [(f'wss://stream.bybit.com/v5/public/{kind}',
+                          [f'tickers.{native}'])]
+    finally:
+        await client.close()
 
 
 @pytest.mark.parametrize('client_id', ['okx', 'bybit', 'coinbaseexchange'])

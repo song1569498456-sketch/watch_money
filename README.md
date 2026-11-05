@@ -45,6 +45,8 @@ SQLite 保存配置、身份映射、机会样本和通知状态；历史行情�
 
 ## 开发与测试
 
+Windows 可直接启动后端，无需替代 Unix `resource` 模块。可选的 `WATCH_MONEY_STALL_PROBE=1` 调度诊断在 Windows 使用 `os.times` 的累计用户/内核 CPU 时间；平台不支持的峰值 RSS 和上下文切换计数显示为 `null`，不按 0 处理。Linux 保留原有 `getrusage` 计数。
+
 ```bash
 python -m venv .venv
 # Windows: .venv\Scripts\python.exe -m pip install -e ".[dev]"
