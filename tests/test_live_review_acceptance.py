@@ -439,13 +439,14 @@ async def test_public_registry_joins_only_exact_native_currency_and_reviewed_pro
         assert len(proof) == 1 and proof[0]["instrument_id"] == "valid"
         assert proof[0]["native_currency_id"] == native_currency
         preview = service.preview(result["evidence_ids"])
-        assert preview["ready"] == 1 and preview["blocked"] == 0
-        applied = service.apply(result["evidence_ids"], preview["preview_token"])
-        assert applied["applied_markets"] == 1
-        assert {identity for identity, market in collector.instruments.items() if market.mapping_verified} == {"valid"}
+        assert preview["ready"] == 0 and preview["blocked"] == 1
+        assert "two_distinct_official_venues_required" in preview["proposals"][0]["blockers"]
+        with pytest.raises(ValueError):
+            service.apply(result["evidence_ids"], preview["preview_token"])
+        assert not any(market.mapping_verified for market in collector.instruments.values())
         coverage = next(row for row in service.status()["platform_coverage"] if row["venue"] == venue)
         assert coverage["active_markets"] == 6 and coverage["source_scope_markets"] == 2
-        assert coverage["source_covered_markets"] == coverage["traceable_verified_markets"] == 1
+        assert coverage["source_covered_markets"] == 1 and coverage["traceable_verified_markets"] == 0
 
 
 @pytest.mark.parametrize("base_id", [None, "mIxEd-Native42"])
@@ -473,7 +474,11 @@ async def test_ccxt_discovery_preserves_original_id_and_missing_id_cannot_use_ti
         service = AssetVerificationService(store, collector, client)
         imported = await service.public_refresh(["gate"])
         assert imported["imported"] == (0 if base_id is None else 1)
-        assert service.preview()["ready"] == (0 if base_id is None else 1)
+        preview = service.preview()
+        assert preview["ready"] == 0
+        assert preview["blocked"] == (0 if base_id is None else 1)
+        if base_id is not None:
+            assert "two_distinct_official_venues_required" in preview["proposals"][0]["blockers"]
         assert not any(item.mapping_verified for item in collector.instruments.values())
         if base_id is None:
             assert imported["sources"][0]["scope_reasons"] == {"original_currency_id_missing": 1}
@@ -492,9 +497,14 @@ async def test_legacy_public_proof_without_original_currency_id_is_downgraded_on
             200, json=registry_payload("kucoin", "SMALL")))) as client:
         service = AssetVerificationService(store, collector, client)
         imported = await service.public_refresh(["kucoin"])
-        preview = service.preview(imported["evidence_ids"])
-        service.apply(imported["evidence_ids"], preview["preview_token"])
-        assert collector.instruments["small"].mapping_verified
+        # Seed the historical single-source approval directly: new policy correctly
+        # refuses to create it, but restart must still downgrade legacy databases.
+        proof = service._records()[0]
+        store.map_assets(["small"], proof["canonical_asset_id"], evidence={"small": {
+            "status": "verified", "canonical_asset_id": proof["canonical_asset_id"],
+            "catalog_fingerprint": proof["catalog_fingerprint"], "evidence_ids": imported["evidence_ids"],
+            "verified_at": service.clock(), "expires_at": proof["expires_at"]}})
+        assert store.instruments()["small"].mapping_verified
         # Model an old persisted proof, not a new import with an explicit native ID.
         with store.connect() as db:
             identity, encoded = db.execute("SELECT id,record FROM asset_identity_evidence").fetchone()
