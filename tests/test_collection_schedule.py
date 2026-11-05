@@ -313,7 +313,9 @@ async def test_full_catalog_price_and_funding_sweeps_ignore_old_hundred_market_b
         status = collector.statuses["okx"]
         if status.light_last_cycle_at is not None and status.funding_last_cycle_at is not None:
             collector.stopping.set()
-        if delay >= period-.5:
+        # A completed sweep waits for its peer, regardless of how long parsing
+        # took on this runner. Inferring completion from period-.5 races CPU load.
+        if asyncio.current_task().get_name().endswith(':bulk'):
             await collector.stopping.wait()
         else:
             await asyncio.sleep(.001)
