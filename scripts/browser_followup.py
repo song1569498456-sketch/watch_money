@@ -286,8 +286,8 @@ def main():
                         with page.expect_response(lambda response: "/api/scanner?sort=funding" in response.url) as sorted_scan:
                             page.get_by_label("扫描排序").select_option("funding")
                         assert sorted_scan.value.ok
-                        page.get_by_role("checkbox", name="30 秒刷新", exact=True).check()
-                        page.get_by_role("checkbox", name="30 秒刷新", exact=True).uncheck()
+                        page.get_by_role("checkbox", name="5 秒查询最新数据", exact=True).check()
+                        page.get_by_role("checkbox", name="5 秒查询最新数据", exact=True).uncheck()
                         direction = page.locator(".scanner-directions tbody tr").filter(has_text="browser-fixture:okx:PEPE").filter(
                             has_text="browser-fixture:bybit:PEPE").filter(has_text="+9.0000%").first
                         direction.get_by_role("button", name="测算此组合", exact=True).click()

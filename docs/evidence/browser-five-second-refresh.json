@@ -1,0 +1,13 @@
+{
+  "mode": "isolated synthetic markets; real local HTTP; funding server delayed 7s",
+  "passed": 5,
+  "checks": [
+    "scanner_default_auto_query_at_5s",
+    "funding_slow_request_not_aborted_or_overlapped",
+    "funding_next_query_after_completion",
+    "inactive_scanner_does_not_poll",
+    "user_can_pause_funding_queries"
+  ],
+  "scanner_periodic_interval_seconds": 4.905,
+  "maximum_funding_concurrency": 1
+}

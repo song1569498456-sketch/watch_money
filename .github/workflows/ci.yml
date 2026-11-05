@@ -32,6 +32,7 @@ jobs:
       - run: python scripts/browser_market_view_order.py
       - run: python scripts/browser_asset_verification.py
       - run: python scripts/browser_identity_catalog.py
+      - run: python scripts/browser_five_second_refresh.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,3 +1,4 @@
+import { useMarketRefresh } from "./useMarketRefresh";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Clock, Database, Globe, Loader2, RefreshCw, Search, ShieldCheck, X } from "lucide-react";
 import { api, num, pct, time } from "./api";
@@ -53,6 +54,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [reload, setReload] = useState(0);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [view, setView] = useState("matrix");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -62,6 +64,8 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const requests = useRef(new QueryGeneration());
+  const pending = useRef(false);
+  useMarketRefresh(active, autoRefresh, pending, setReload);
   const historyRequests = useRef(new QueryGeneration());
   const activeVenues = useMemo(() => selectedVenues === null ? venues : venues.filter((venue) => selectedVenues.includes(venue)), [venues, selectedVenues]);
   const platformsKey = selectedVenues === null ? "*" : [...selectedVenues].sort().join(",");
@@ -73,7 +77,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
   }, [sort, view, basis, limit, query, rankingVenue, platformsKey]);
   const requestVersion = requests.current.update(JSON.stringify([requestQuery, search.trim(), refreshKey]), active, reload);
   const currentResults = dataVersion === requestVersion && search.trim() === query;
-  const historyVersion = historyRequests.current.update(JSON.stringify([requestVersion, selected?.row.instrument_id]), active);
+  const historyVersion = historyRequests.current.update(JSON.stringify([requestQuery, search.trim(), refreshKey, selected?.row.instrument_id]), active);
   useEffect(() => {
     if (!active) return;
     setClock(Date.now());
@@ -90,14 +94,15 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
     if (!active || search.trim() !== query) { setLoading(false); return; }
     const gate = requests.current;
     const token = gate.begin();
+    pending.current = true;
     setLoading(true); setError("");
     void api<FundingResult>(`/api/funding?${requestQuery}`, "GET", undefined, { signal: token.controller.signal }).then((result) => {
       if (!gate.accepts(token)) return;
       setData(result); setDataVersion(token.version); setClock(Date.now());
       setVenues(result.venues ?? [...new Set([...result.rows.map((row) => row.venue), ...result.groups.flatMap((group) => group.venues)])].sort());
     }).catch((caught) => { if (gate.accepts(token)) setError((caught as Error).message); })
-      .finally(() => { if (gate.accepts(token)) setLoading(false); });
-    return () => gate.cancel(token);
+      .finally(() => { if (gate.accepts(token)) { pending.current = false; setLoading(false); } });
+    return () => { pending.current = false; gate.cancel(token); };
   }, [requestVersion]);
   const groups = useMemo(() => data ? fundingGroups(data) : [], [data]);
   const marketMap = useMemo(() => new Map([...groups.flatMap((group) => group.cells), ...(data?.rows ?? [])].map((row) => [row.instrument_id, row])), [data, groups]);
@@ -166,6 +171,7 @@ export const FundingPage = memo(function FundingPage({ active = true, refreshKey
     </div>
     <section className="panel" aria-labelledby="funding-heading">
       <div className="panel-heading"><div><h2 id="funding-heading">全市场资金费率</h2><p>默认按同资产跨平台比较；8h费差仅供比较，不代表实际结算收益。</p></div>
+        <label className="inline-checks"><input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />5 秒查询最新数据</label>
         <button type="button" className="button secondary" disabled={loading} onClick={() => setReload((old) => old + 1)}>{loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}手动刷新</button></div>
       <div className="funding-toolbar">
         <div className="funding-view-tabs"><button type="button" className={`button secondary ${view === "matrix" ? "selected" : ""}`} aria-pressed={view === "matrix"}

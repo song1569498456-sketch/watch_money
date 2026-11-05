@@ -230,7 +230,7 @@ function App() {
   const marketAbort = useRef<AbortController | null>(null);
   const restartStream = useRef<(() => void) | null>(null);
   const refresh = useRef(1000);
-  refresh.current = settings?.refresh_ms ?? 1000;
+  refresh.current = settings?.refresh_ms ?? 5000;
   const error = (key: string, value: string) =>
     setErrors((old) => ({ ...old, [key]: value }));
   const applySettings = (data: Settings) => {
@@ -246,7 +246,8 @@ function App() {
     }
     return changed;
   };
-  const loadMarkets = async () => {
+  const loadMarkets = async (background = false) => {
+    if (background && marketAbort.current) return;
     marketAbort.current?.abort();
     const controller = new AbortController();
     marketAbort.current = controller;
@@ -265,6 +266,8 @@ function App() {
       if (request === marketRequest.current && current.epoch === token.epoch &&
           current.server === token.server && current.sequence === token.sequence)
         error("行情", (caught as Error).message);
+    } finally {
+      if (marketAbort.current === controller) marketAbort.current = null;
     }
   };
   const load = async (knownSettings?: Settings) => {
@@ -363,20 +366,30 @@ function App() {
         last = timestamp;
       }
     }, 500);
+    let statusPending = false;
+    let settingsPending = false;
     const poll = setInterval(() => {
       if (stopped) return;
       const generation = loadVersion.current;
       const epoch = viewGuard.current.epoch;
       const current = () => !stopped && generation === loadVersion.current && epoch === viewGuard.current.epoch;
-      void api<{ venues: VenueStatus[]; coverage: Coverage[] }>("/api/status")
-        .then((data) => { if (current()) { setStatuses(data.venues); setCoverage(data.coverage); error("状态", ""); } })
-        .catch((caught) => { if (current()) error("状态", caught.message); });
+      if (!statusPending) {
+        statusPending = true;
+        void api<{ venues: VenueStatus[]; coverage: Coverage[] }>("/api/status")
+          .then((data) => { if (current()) { setStatuses(data.venues); setCoverage(data.coverage); error("状态", ""); } })
+          .catch((caught) => { if (current()) error("状态", caught.message); })
+          .finally(() => { statusPending = false; });
+      }
       // Synchronize externally changed settings without resetting an unchanged draft.
-      void api<Settings>("/api/settings").then((config) => {
-        if (current() && contextKey(config) !== viewGuard.current.context) void load(config);
-      }).catch((caught) => { if (current()) error("配置", caught.message); });
-      if (socket?.readyState !== WebSocket.OPEN) void loadMarkets();
-    }, 15000);
+      if (!settingsPending) {
+        settingsPending = true;
+        void api<Settings>("/api/settings").then((config) => {
+          if (current() && contextKey(config) !== viewGuard.current.context) void load(config);
+        }).catch((caught) => { if (current()) error("配置", caught.message); })
+          .finally(() => { settingsPending = false; });
+      }
+      if (socket?.readyState !== WebSocket.OPEN) void loadMarkets(true);
+    }, 5000);
     return () => {
       stopped = true;
       connection++;
@@ -1631,6 +1644,7 @@ function CollectionCoverage({ status, prefix }: { status: VenueStatus; prefix: "
     <small>覆盖统计：已观测 {num(observed, 0)} / {prefix === "light" ? "新鲜双边盘口" : "有效费率与周期"} {num(fresh, 0)} · {status[`${prefix}_coverage_ratio`] == null ? "未知" : `${num(status[`${prefix}_coverage_ratio`]! * 100, 1)}%`}</small>
     <small>批量 {num(status[`${prefix}_bulk_markets`], 0)} 市场 / {num(status[`${prefix}_bulk_groups`], 0)} 组 · 单市场回退 {num(status[`${prefix}_fallback_markets`], 0)}</small>
     <small>实测整轮间隔 {cycle == null ? "尚不足两轮" : `${num(cycle, 2)} 秒`} · 估计刷新间隔 {estimate == null ? "未知" : `${num(estimate, 2)} 秒`}</small>
+    <small className="warning">{Math.max(cycle ?? 0, estimate ?? 0) > 5 ? "该来源整轮超过5秒；平台限流、逐市场回退或网络耗时限制覆盖" : "5秒是采集目标，尚不保证全市场或源端每5秒发布新数据"}</small>
     <small>最近完整轮转 {time(status[`${prefix}_last_cycle_at`])}</small>
     <small className="muted">{mode ?? "采集方式未提供"} · 统计按字段来源与既定过期阈值判断，目录数量不代表新鲜覆盖</small>
   </div>;
@@ -2029,6 +2043,8 @@ function SettingsPage({
                 placeholder="例如 PEPE, BTC, 任意已发现 ticker"
               />
             </Field>
+            <p className="muted">新配置默认以5秒为采集目标；已有保存值保持不变。实际周期受平台限流和网络影响，页面5秒查询不代表源端5秒更新。</p>
+            <button type="button" className="button secondary" onClick={() => setDraft({ ...draft, refresh_ms: 5000, poll_seconds: 5, broad_poll_seconds: 5, funding_poll_seconds: 5 })}>将四项刷新目标设为5秒（保存后生效）</button>
             <Field label="页面合并刷新 / 毫秒">
               <input
                 type="number"
@@ -2050,7 +2066,7 @@ function SettingsPage({
               />
             </Field>
             <Field label="全目录目标刷新周期 / 秒" hint="按整轮起点计时；已审查批量接口与逐市场回退独立调度，实际周期见数据源诊断">
-              <input type="number" min={10} max={3600} required value={draft.broad_poll_seconds}
+              <input type="number" min={5} max={3600} required value={draft.broad_poll_seconds}
                 onChange={(e) => update("broad_poll_seconds", Number(e.target.value))} />
             </Field>
             <Field label="其他来源每批市场数" hint="1–100；未适配批量计划的来源继续有界采集，目录规模与真实限流决定整轮耗时">
@@ -2062,7 +2078,7 @@ function SettingsPage({
                 onChange={(e) => update("broad_symbol_batch_size", Number(e.target.value))} />
             </Field>
             <Field label="资金费采集周期 / 秒" hint="资金费整轮独立刷新；未达新鲜覆盖时明确显示，不放宽过期阈值">
-              <input type="number" min={10} max={3600} required value={draft.funding_poll_seconds ?? 30}
+              <input type="number" min={5} max={3600} required value={draft.funding_poll_seconds ?? 5}
                 onChange={(e) => update("funding_poll_seconds", Number(e.target.value))} />
             </Field>
             <Field label="回退批次之间间隔 / 秒" hint="一轮内的短间隔，平台自身限流仍生效">
