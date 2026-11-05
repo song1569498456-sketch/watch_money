@@ -2200,3 +2200,5 @@ footer > span:first-child {
   .nav-item > span:not(.nav-count) { display: block; font-size: 11px; }
   main { margin-left: 110px; width: calc(100% - 110px); }
 }
+
+.identity-batch-review .scanner-pagination select, .identity-batch-review .scanner-pagination input { max-width:100%; min-width:0; }

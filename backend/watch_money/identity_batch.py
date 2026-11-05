@@ -3,17 +3,17 @@ from __future__ import annotations
 
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from .asset_verification import SOURCES, _digest, public_source_scope
-from .identity import _chain_address
+from .identity import _chain_address, identity_candidates
 
 POLICY_VERSION = "official-spot-contract-v1"
 DAY_MS = 86_400_000
 MIN_REMAINING_MS = 3_600_000
 
 
-def build_plan(service) -> dict:
+def build_plan(service, proposal_ids=None) -> dict:
     # One lock prevents local catalog/evidence mutation during the captured view.
     with service.store.lock:
         catalog, records, now = service.store.instruments(), service._records(), service.clock()
@@ -21,7 +21,25 @@ def build_plan(service) -> dict:
             sources = {venue: json.loads(record) for venue, record in
                        db.execute("SELECT venue,record FROM asset_identity_sources ORDER BY venue")}
             mappings = list(db.execute("SELECT instrument_id,asset_id,at FROM mappings ORDER BY instrument_id"))
-        return _plan(service, catalog, records, sources, now, mappings)
+        plan = _plan(service, catalog, records, sources, now, mappings)
+        if proposal_ids is None:
+            return plan
+        if not isinstance(proposal_ids, list) or not 1 <= len(proposal_ids) <= 100 or len(set(proposal_ids)) != len(proposal_ids):
+            raise ValueError("Select 1..100 distinct proposal groups")
+        selected = set(proposal_ids)
+        known = {row["id"] for key in ("eligible_groups", "blocked_groups", "already_verified_groups") for row in plan[key]}
+        if not selected <= known:
+            raise ValueError("Selected proposal changed or disappeared; review again")
+        scoped = {**plan, "selected_proposal_ids": sorted(selected)}
+        for key in ("eligible_groups", "blocked_groups", "already_verified_groups"):
+            scoped[key] = [row for row in plan[key] if row["id"] in selected]
+        scoped["eligible_evidence_ids"] = sorted({identity for row in scoped["eligible_groups"] for identity in row["evidence_ids"]})
+        if len(scoped["eligible_evidence_ids"]) > 10000:
+            raise ValueError("Selected groups exceed 10000 evidence records; select fewer groups")
+        scoped["counts"] = {key: len(scoped[key]) for key in ("eligible_groups", "blocked_groups", "already_verified_groups")}
+        scoped["counts"]["eligible_markets"] = len({identity for row in scoped["eligible_groups"] for identity in row["instrument_ids"]})
+        scoped["plan_token"] = _digest({"full_plan_token": plan["plan_token"], "selected_proposal_ids": sorted(selected)})
+        return scoped
 
 
 def _plan(service, catalog, records, sources, now, mappings):
@@ -98,8 +116,8 @@ def _plan(service, catalog, records, sources, now, mappings):
                        "blocked_groups": len(blocked), "already_verified_groups": len(approved)}}
 
 
-def apply_plan(service, plan_token: str) -> dict:
-    plan = build_plan(service)
+def apply_plan(service, plan_token: str, proposal_ids=None) -> dict:
+    plan = build_plan(service, proposal_ids)
     if plan["plan_token"] != plan_token:
         raise ValueError("Batch plan changed; review a new plan")
     if not plan["eligible_evidence_ids"]:
@@ -107,10 +125,52 @@ def apply_plan(service, plan_token: str) -> dict:
     preview = service.preview(plan["eligible_evidence_ids"])
 
     def guard():
-        current = build_plan(service)
+        current = build_plan(service, proposal_ids)
         if current["plan_token"] != plan_token or current["eligible_evidence_ids"] != plan["eligible_evidence_ids"]:
             raise ValueError("Batch policy or source state changed; no mappings changed")
-        return {"policy_version": POLICY_VERSION, "plan_token": plan_token}
+        return {"policy_version": POLICY_VERSION, "plan_token": plan_token,
+                "selected_proposal_ids": proposal_ids,
+                **({"counts": current["counts"], "skipped_groups": [
+                    {key: row[key] for key in ("id", "canonical_asset_id", "status", "blockers")}
+                    for row in current["blocked_groups"] + current["already_verified_groups"]]}
+                   if proposal_ids is not None else {})}
 
     result = service.apply(plan["eligible_evidence_ids"], preview["preview_token"], _guard=guard)
     return {**result, "policy_version": POLICY_VERSION, "plan_token": plan_token, "mappings_changed": True}
+
+
+def review_groups(service, *, offset=0, limit=25, source="", chain="", contract="", state="", blocker=""):
+    """Filter whole policy groups, never hide conflicting evidence inside them."""
+    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError("Invalid review page")
+    with service.store.lock:
+        plan = build_plan(service)
+        catalog, records = service.store.instruments(), service._records()
+        facts = {row["id"]: row for row in records}
+        rows = []
+        for key in ("eligible_groups", "blocked_groups", "already_verified_groups"):
+            for row in plan[key]:
+                canonical = _chain_address(row["canonical_asset_id"] or "")
+                evidence = [facts[identity] for identity in row["evidence_ids"] if identity in facts]
+                rows.append({**row, "chain": canonical[0] if canonical else None,
+                    "contract": canonical[1] if canonical else None,
+                    "sources": sorted({fact.get("venue", "") for fact in evidence}),
+                    "evidence": [{key: fact.get(key) for key in ("id", "instrument_id", "evidence_kind", "source_url",
+                        "source_field", "source_digest", "observed_at", "expires_at", "contracts", "status")} for fact in evidence]})
+        rows.sort(key=lambda row: (row["canonical_asset_id"] or "", row["id"]))
+        options = {"sources": sorted({value for row in rows for value in row["sources"] if value}),
+                   "chains": sorted({row["chain"] for row in rows if row["chain"]}),
+                   "blockers": dict(sorted(Counter(value for row in rows for value in row["blockers"]).items()))}
+        filtered = [row for row in rows if (not source or source in row["sources"])
+                    and (not chain or chain == row["chain"])
+                    and (not contract or contract.casefold() in (row["canonical_asset_id"] or "").casefold())
+                    and (not state or state == row["status"]) and (not blocker or blocker in row["blockers"])]
+        actual = [row for row in identity_candidates(
+            (item for item in catalog.values() if item.active), as_of=plan["as_of"])
+            if row["kind"] == "identity" and row["comparison_ready"] and len(row["venues"]) > 1]
+        return {"as_of": plan["as_of"], "policy_version": POLICY_VERSION, "read_only": True,
+                "actual_comparable_groups": len(actual), "actual_comparable_markets": len({identity for row in actual for identity in row["instrument_ids"]}),
+                "global_counts": plan["counts"], "filtered_groups": len(filtered),
+                "filtered_counts": {status: sum(row["status"] == status for row in filtered) for status in ('eligible', 'blocked', 'already_verified')},
+                "offset": offset, "limit": limit, "next_offset": offset+limit if offset+limit < len(filtered) else None,
+                "groups": filtered[offset:offset+limit], "options": options}

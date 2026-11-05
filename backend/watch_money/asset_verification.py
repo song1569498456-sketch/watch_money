@@ -667,6 +667,7 @@ def revoke_evidence(payload: RevokeSelection, request: Request):
 class BatchPlanSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     plan_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+    proposal_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
 
 
 @router.get("/batch-plan")
@@ -679,6 +680,31 @@ def batch_plan(request: Request):
 def batch_apply(payload: BatchPlanSelection, request: Request):
     from .identity_batch import apply_plan
     try:
-        return apply_plan(_service(request), payload.plan_token)
+        return apply_plan(_service(request), payload.plan_token, payload.proposal_ids)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
+
+
+class ProposalSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proposal_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+@router.post("/batch-preview")
+def scoped_batch_preview(payload: ProposalSelection, request: Request):
+    from .identity_batch import build_plan
+    try:
+        return build_plan(_service(request), payload.proposal_ids)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@router.get("/batch-review")
+def filtered_batch_review(request: Request, offset: int = Query(0, ge=0, le=100000000),
+                          limit: int = Query(25, ge=1, le=100), source: str = Query("", max_length=100),
+                          chain: str = Query("", max_length=100), contract: str = Query("", max_length=200),
+                          state: str = Query("", pattern="^(eligible|blocked|already_verified)?$"),
+                          blocker: str = Query("", max_length=200)):
+    from .identity_batch import review_groups
+    return review_groups(_service(request), offset=offset, limit=limit, source=source, chain=chain,
+                         contract=contract, state=state, blocker=blocker)

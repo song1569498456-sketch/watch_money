@@ -1,0 +1,14 @@
+{
+  "mode": "isolated_database_synthetic_official_schemas_no_exchange_requests",
+  "checks": [
+    "actual_zero_distinguished_from_candidates_and_25_group_page",
+    "pagination_is_bounded_and_clears_selection",
+    "source_chain_and_time_blocker_filters_reset_page_without_hiding_reason",
+    "preview_counts_eligible_and_skipped_groups_without_writing",
+    "explicit_scoped_apply_changes_only_46_temporary_markets",
+    "last_batch_revoke_restores_identity_coverage_and_keeps_audit",
+    "mobile_no_document_overflow_and_no_runtime_errors"
+  ],
+  "passed": 7,
+  "production_mappings_changed": false
+}

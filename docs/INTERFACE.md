@@ -28,3 +28,7 @@
 - 数据来源：复用已发现市场、已采集快照、现有身份与字段时效判定；本批没有任何交易所行情请求。UI调用本地scanner只读查询，仍不接账户、下单或重试受阻OKX连接。
 - 验证：新增10项后端回归，1005个合成小币双平台目录访问offset1000最后5组、扫描/candidate预算不变、身份/截断保护、搜索和越界参数；scanner专项64通过。隔离浏览器7项（100组首页/1000后末页/返回重验/搜索清空重置/类型空状态/390px无横向溢出/无JS错误），证据见[evidence/browser-scanner-pagination.json](evidence/browser-scanner-pagination.json)及[screenshots/scanner-pagination-synthetic.png](screenshots/scanner-pagination-synthetic.png)。1005为合成资产，不是真实新增覆盖。
 - 完整后端1398通过（66.20秒，1条上游TestClient弃用警告）、前端44项通过、TS/Vite生产构建通过、既有导航12项通过（包含组合→测算→返回及过期保护）、CI范围Ruff/diff通过。真实全币种覆盖、生产身份、持续行情和24小时验收仍开放；未扩大全历史功能。
+
+## R59 公开证据分组审核
+
+设置→身份核验现在先显示实际身份覆盖与候选数量，再按来源、链、合约、状态、阻止原因筛选分组。每页25组，一键选择本页可审核组→预览应用/跳过数量→明确确认；页面变更清空选择，应用时事务重验。成功后可填原因撤销上一批，旧证据/审计流程保留。身份通过不等于行情或资金费有效，普通现货依据不能自动证明永续底层。完整策略、API限制及隔离验收见[ASSET_VERIFICATION R59](ASSET_VERIFICATION.md#r59-安全批量身份审核与覆盖可见性2026-11-05)。

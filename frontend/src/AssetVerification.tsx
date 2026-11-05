@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw, ShieldCheck } from "lucide-react";
 import { api, num, time } from "./api";
+import { IdentityBatchReview } from "./IdentityBatchReview";
 
 type Proposal = { id: string; canonical_asset_id: string; instrument_ids: string[]; symbols: string[];
   venues: string[]; status: string; blockers: string[]; evidence_ids: string[]; source_urls: string[];
@@ -118,6 +119,7 @@ export function AssetVerification({ onChanged }: { onChanged: () => void }) {
           <td><small>范围拒绝 {num(platform.scope_rejected_markets, 0)} · 映射冲突 {num(platform.conflicting_markets, 0)}</small>
             {Object.entries({ ...platform.scope_reasons, ...platform.source_blockers }).map(([reason, count]) => <small className="warning" key={reason}>{explain(reason)}：{num(count, 0)}</small>)}</td></tr>)}</tbody>
     </table></div></details>}
+    <IdentityBatchReview refreshKey={data?.as_of ?? 0} onChanged={() => { void load(); onChanged(); }} />
     <div className="filters" style={{ flexWrap: "wrap" }}><span>已选 {selected.length} 条证据</span>
       <button className="text-button" type="button" disabled={!!busy} onClick={() => select([...new Set(data?.proposals.filter((row) => row.status === "ready").flatMap((row) => row.evidence_ids) ?? [])])}>选择当前可核验证据</button>
       <button className="text-button" type="button" disabled={!!busy} onClick={() => select([])}>清空选择</button>
