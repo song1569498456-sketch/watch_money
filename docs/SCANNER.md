@@ -53,8 +53,12 @@ requirements 明示缺少交易规模、费用配置、可成交深度，AMM/RFQ
 stats 的 possible_candidates 数学计数全部符合身份门槛的有向跨平台组合；
 scanned / returned / unscanned / omitted_by_limit 区分已评估、已返回和两类省略。
 enumeration_truncated / result_truncated / truncated 明示上限是否造成截断。
-未枚举截断时 selection=global；超过预算时 selection=bounded_prefix，排序仅覆盖按身份/平台/市场 ID
-确定顺序枚举的前缀，**不是声称找到了全市场最优机会**。
+未枚举截断时 selection=global；超过预算时 selection=bounded_asset_round_robin。
+扫描预算按身份组轮流分配，每轮每组评估一个方向，已完成的组退出，剩余预算继续分配；
+组内优先同报价币组合，再枚举异报价币组合，后者仍保留缺少 FX 的原因和完整方向计数。
+这样市场众多的 BTC 不会先耗尽全部预算；预算少于组数时仍可能有未扫描资产，
+各组 scanned_directions/scan_complete 如实显示覆盖。排序仅覆盖已评估范围，
+**不是声称找到了全市场最优机会**。身份、源时间和报价有效性检查均保持不变。
 sort 接受 spread（价差率降序）、funding（有符号八小时费差降序）、asset；null 排在有效数值之后。
 负数条目仍可返回；没有可用数值的条目保留 missing 原因，stats 单独统计不可计算条目。
 

@@ -83,7 +83,7 @@ Hyperliquid/Lighter/dYdX WS 已接 collector，包含订阅、心跳、取消、
 
 `GET /api/assets/candidates` 遍历完整目录生成身份/同 ticker 审核候选，`native_asset_id` 保留原始链地址证据；`PUT /api/assets/mappings/batch` 提供批量人工映射。人工映射不能抹掉原生链地址或单位冲突，comparison_ready 仅是身份门槛，不表示行情、深度或成本完整。全币种官方 chain/address 证据登记和包装/桥接单位模型仍未完成。
 
-`GET /api/scanner` 已接入，遍历已启用平台的活跃目录与身份合格组，枚举跨 venue 双向现货/永续组合，返回买 ask / 卖 bid 价差及原始周期/8h 归一化资金费比较，可按 spread/funding/asset 排序。默认枚举预算 10000、最大 100000，输出默认 100、最大 1000；超预算明确为 `bounded_prefix`，不是全局最佳机会。缺价格、FX、周期、身份或时效的原因保留；演示/无效/未来快照不参与，`net_profit=null`、`executable=false`，不保证成交、费用或真实结算现金流。该扫描不自动发送消息，也不取代指定规模的七类计算与保存监控。本轮离线集成及最终接续浏览器已通过，不能当作真实成交验证。
+`GET /api/scanner` 已接入，遍历已启用平台的活跃目录与身份合格组，枚举跨 venue 双向现货/永续组合，返回买 ask / 卖 bid 价差及原始周期/8h 归一化资金费比较，可按 spread/funding/asset 排序。默认枚举预算 10000、最大 100000，输出默认 100、最大 1000；超预算按资产组轮流分配，组内优先同报价币，明确为 `bounded_asset_round_robin`，不是全局最佳机会。缺价格、FX、周期、身份或时效的原因保留；演示/无效/未来快照不参与，`net_profit=null`、`executable=false`，不保证成交、费用或真实结算现金流。该扫描不自动发送消息，也不取代指定规模的七类计算与保存监控。本轮离线集成及最终接续浏览器已通过，不能当作真实成交验证。
 
 扫描器现返回资产级汇总/best，并可展开该资产的原始市场与双向组合，逐腿展示ID/报价币/source/receipt/时效；选中方向把精确两个instrument ID与策略带入calculator，不按ticker重新匹配，也不自动提交计算。best明确是否只在已扫描范围；资产/平台筛选不隐藏原生身份冲突。该闭环与费用UI整合后的最终合成浏览器复验已通过。price/funding best仅从身份/有效字段/已知来源时间满足rankable的方向选择，未知源时间仍显示原因但不进可靠排行。
 

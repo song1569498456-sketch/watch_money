@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from collections.abc import Iterable, Mapping
 from itertools import product
 from typing import Literal
@@ -265,6 +265,24 @@ def _candidate(buy: Instrument, sell: Instrument, snapshots: dict[str, MarketSna
             "status": "indicative" if spread_rate is not None or funding_rate is not None else "data_unavailable"}
 
 
+def _group_pairs(venues: Mapping[str, list[Instrument]], market_type: MarketType):
+    """Prefer directly comparable quotes without dropping unavailable directions."""
+    spot = {venue: [item for item in members if item.kind != "perpetual"]
+            for venue, members in venues.items()}
+    perpetual = {venue: [item for item in members if item.kind == "perpetual"]
+                 for venue, members in venues.items()}
+    for same_quote in (True, False):
+        for buy_venue, sell_venue in product(sorted(venues), repeat=2):
+            if buy_venue == sell_venue:
+                continue
+            pairs = (product(venues[buy_venue], venues[sell_venue]),) if market_type != "spot_perp" else (
+                product(spot[buy_venue], perpetual[sell_venue]),
+                product(perpetual[buy_venue], spot[sell_venue]))
+            for buy, sell in (pair for pair_set in pairs for pair in pair_set):
+                if (buy.quote == sell.quote) == same_quote:
+                    yield buy, sell
+
+
 def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
                  snapshots: Iterable[MarketSnapshot] | Mapping[str, MarketSnapshot],
                  as_of: int, stale_seconds: float, limit: int = 100, *, sort: Sort = "spread",
@@ -273,7 +291,7 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
     """Scan all confirmed asset groups, with explicit enumeration/output budgets.
 
     Both directions of every cross-venue spot/perpetual/pool/RFQ pair are eligible.
-    Sorting ranks the evaluated prefix only when enumeration is truncated. Missing
+    A bounded scan shares evaluations round-robin across asset groups. Missing
     prices/rates remain None. No costs, orders, network calls or account data.
     """
     if type(limit) is not int or not 1 <= limit <= 1000:
@@ -343,30 +361,19 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
         groups.append((row, venues))
     candidates = []
     candidates_by_group = defaultdict(list)
-    for row, venues in groups:
-        if len(venues) < 2:
+    pending = deque((row, _group_pairs(venues, market_type)) for row, venues in groups
+                    if possible_by_group[row["id"]])
+    while pending and len(candidates) < max_candidates:
+        row, pairs = pending.popleft()
+        pair = next(pairs, None)
+        if pair is None:
             continue
-        spot_legs = {venue: [item for item in members if item.kind != "perpetual"]
-                     for venue, members in venues.items()}
-        perpetual_legs = {venue: [item for item in members if item.kind == "perpetual"]
-                          for venue, members in venues.items()}
-        for buy_venue, sell_venue in product(sorted(venues), repeat=2):
-            if buy_venue == sell_venue:
-                continue
-            pairs = (product(venues[buy_venue], venues[sell_venue]),) if market_type != "spot_perp" else (
-                product(spot_legs[buy_venue], perpetual_legs[sell_venue]),
-                product(perpetual_legs[buy_venue], spot_legs[sell_venue]))
-            for buy, sell in (pair for pair_set in pairs for pair in pair_set):
-                candidate = _candidate(buy, sell, latest, as_of, stale_seconds, row["symbols"], details)
-                candidate["identity_group_id"] = row["id"]
-                candidates.append(candidate)
-                candidates_by_group[row["id"]].append(candidate)
-                if len(candidates) >= max_candidates:
-                    break
-            if len(candidates) >= max_candidates:
-                break
-        if len(candidates) >= max_candidates:
-            break
+        buy, sell = pair
+        candidate = _candidate(buy, sell, latest, as_of, stale_seconds, row["symbols"], details)
+        candidate["identity_group_id"] = row["id"]
+        candidates.append(candidate)
+        candidates_by_group[row["id"]].append(candidate)
+        pending.append((row, pairs))
     missing_counts = Counter(issue for candidate in candidates for issue in candidate["missing"])
     unavailable = sum(candidate["status"] == "data_unavailable" for candidate in candidates)
     if sort == "asset":
@@ -439,7 +446,7 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
         "group_pagination": "live_query_not_snapshot",
         "omitted_by_limit": scanned - returned, "enumeration_truncated": possible > scanned,
         "result_truncated": scanned > returned, "truncated": possible > returned,
-        "selection": "bounded_prefix" if possible > scanned else "global",
+        "selection": "bounded_asset_round_robin" if possible > scanned else "global",
         "sort": sort, "limit": limit, "max_candidates": max_candidates, "missing_counts": dict(missing_counts)}}
 
 
