@@ -32,7 +32,8 @@ type ScanResult = { as_of: number; stale_seconds?: number; enabled: boolean; can
     active_markets: number; excluded_by_settings: number; excluded_by_filters: number; eligible_groups: number;
     identity_groups: number; blocked_groups: number; scanned: number; possible_candidates: number; returned: number;
     reliable_price_candidates: number; truncated: boolean; enumeration_truncated: boolean;
-    groups_total: number; groups_returned: number; groups_truncated: boolean } };
+    groups_total: number; groups_returned: number; groups_truncated: boolean;
+    group_offset?: number; group_limit?: number; next_group_offset?: number | null } };
 
 const strategies: Record<string, string> = { spot_spread: "现货价差", spot_perp_basis: "现货 / 永续基差", perp_spread: "永续价差" };
 const fundingKinds: Record<string, string> = { current: "当前估算", predicted: "预测", settled: "已结算值快照" };
@@ -123,12 +124,19 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
   const [platforms, setPlatforms] = useState<string[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [reload, setReload] = useState(0);
+  const [assetPage, setAssetPage] = useState({ scope: "", offset: 0 });
+  const pageScope = JSON.stringify([sort, marketType, search.trim(), platforms]);
+  // Reset stored state as well as the effective page: returning to a previous
+  // filter must not resurrect its old offset. React retries this render before commit.
+  if (assetPage.scope !== pageScope) setAssetPage({ scope: pageScope, offset: 0 });
+  const groupOffset = assetPage.scope === pageScope ? assetPage.offset : 0;
+  const changeAssetPage = (offset: number) => setAssetPage({ scope: pageScope, offset });
   const [data, setData] = useState<ScanResult | null>(null);
   const [dataVersion, setDataVersion] = useState(-1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const requests = useRef(new QueryGeneration());
-  const requestKey = JSON.stringify([sort, marketType, query, platforms, refreshKey]);
+  const requestKey = JSON.stringify([sort, marketType, query, platforms, refreshKey, groupOffset]);
   const requestVersion = requests.current.update(JSON.stringify([requestKey, search.trim()]), active, reload);
   const currentResults = dataVersion === requestVersion && search.trim() === query;
   const expired = !!data && Math.max(clock, Date.now()) > scanDeadline(data, staleSeconds);
@@ -144,7 +152,7 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
       setLoading(true); setError("");
       try {
         const result = await api<ScanResult>("/api/scanner?sort=" + sort + "&limit=1000&max_candidates=10000&q=" +
-          encodeURIComponent(query) + "&platforms=" + encodeURIComponent(platforms.join(",")) + "&market_type=" + marketType,
+          encodeURIComponent(query) + "&platforms=" + encodeURIComponent(platforms.join(",")) + "&market_type=" + marketType + "&group_limit=100&group_offset=" + groupOffset,
           "GET", undefined, { signal: token.controller.signal });
         if (gate.accepts(token)) { setData(result); setDataVersion(token.version); }
       } catch (e) { if (gate.accepts(token)) setError((e as Error).message); }
@@ -200,12 +208,19 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
         {data ? "正在应用筛选 / 刷新，以下保留上次结果，暂不可发起组合测算。" : "正在读取市场与扫描结果。"}</div>}
       {error && <div className="notice error" role="alert">本次扫描失败：{error}{data ? "；以下仍为上次筛选结果，请刷新后再测算。" : ""}</div>}
       {data?.enabled === false && <div className="notice">扫描未启用：请核对收益计算开关和演示模式。</div>}
-      {(stats?.truncated || stats?.groups_truncated) && <div className="notice">扫描 / 返回截断：已扫描 {num(stats?.scanned, 0)}/{num(stats?.possible_candidates, 0)} 个方向，资产 {num(stats?.groups_returned, 0)}/{num(stats?.groups_total, 0)}。
+      {(stats?.truncated || stats?.groups_truncated) && <div className="notice">扫描 / 分页范围：已扫描 {num(stats?.scanned, 0)}/{num(stats?.possible_candidates, 0)} 个方向，资产 {num(stats?.groups_returned, 0)}/{num(stats?.groups_total, 0)}。
         {stats?.enumeration_truncated ? "最佳只限已扫描范围；可搜索资产或缩小平台范围。" : "展开内会说明被省略的方向。"}</div>}
       <div className="scanner-view-switch" aria-label="扫描视图">
         <button className={view === "assets" ? "selected" : ""} onClick={() => setView("assets")}>资产聚合</button>
         <button className={view === "directions" ? "selected" : ""} onClick={() => setView("directions")}>所有方向</button>
       </div>
+      {view === "assets" && data && <nav className="scanner-pagination" aria-label="资产分页">
+        <span role="status">资产 {data.groups.length ? (stats?.group_offset ?? 0) + 1 : 0}–{data.groups.length ? (stats?.group_offset ?? 0) + data.groups.length : 0} / {num(stats?.groups_total, 0)}</span>
+        <button className="button secondary" disabled={loading || !currentResults || groupOffset === 0} onClick={() => changeAssetPage(0)}>首页</button>
+        <button className="button secondary" disabled={loading || !currentResults || groupOffset === 0} onClick={() => changeAssetPage(Math.max(0, groupOffset - 100))}>上一页资产</button>
+        <button className="button secondary" disabled={loading || !currentResults || stats?.next_group_offset == null} onClick={() => stats?.next_group_offset != null && changeAssetPage(stats.next_group_offset)}>下一页资产</button>
+        <small>每页最多100个资产组。翻页会重新检查行情，实时排序可能移动或重复；分页不增加已扫描方向，不能视为同一时点的完整快照。</small>
+      </nav>}
       {view === "assets" && !!data?.groups.length && <div className="table-scroll" aria-busy={loading}>
         <table className="scanner-asset-table"><thead><tr><th>资产</th><th>类型</th><th>{sort === "funding" ? "8h 资金费差" : "盘口毛价差"}</th>
           <th>最佳已扫描路径</th><th>覆盖</th><th>更新时间</th><th>关注</th></tr></thead>
@@ -262,7 +277,7 @@ export function ScannerPage({ instruments, onSelectCandidate, favorites = [], to
         </table></div>}
       {view === "directions" && !!data?.candidates.length && <Directions expired={expired} rows={data.candidates} markets={new Map()} marketNames={marketNames}
         sort={sort} onSelectCandidate={selectCandidate} />}
-      {(!data || !data.groups.length) && <div className="empty"><Activity size={25} /><h3>{loading ? "正在按资产扫描" : "当前筛选没有市场"}</h3>
+      {(!data || !data.groups.length) && <div className="empty"><Activity size={25} /><h3>{loading ? "正在按资产扫描" : groupOffset > 0 ? "当前页没有资产，请返回首页" : "当前筛选没有市场"}</h3>
         <p>调整资产、类型或平台筛选；未核验市场不会按 ticker 自动合并。</p></div>}
       <div className="panel-foot">最多评估 10,000 个方向；来源未知或过期不进可靠排行。关注保存代表市场，展开可逐市场关注。组合测算仅传递两腿，不自动计算或下单。</div>
     </section>

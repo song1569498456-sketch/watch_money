@@ -486,3 +486,43 @@ def test_api_filters_disabled_venues_active_markets_and_honors_settings(monkeypa
 def test_explicit_resource_bounds_are_validated(values):
     with pytest.raises(ValueError):
         run([], **values)
+
+
+def test_asset_pagination_reaches_beyond_previous_thousand_group_cutoff():
+    items = [market(f'{base}:{venue}', venue, base) for base in
+             [f'SMALL{i:04}' for i in range(1005)] for venue in ['alpha', 'beta']]
+    first = run(items, sort='asset', limit=10, group_limit=100)
+    last = run(items, sort='asset', limit=10, group_limit=100, group_offset=1000)
+    assert len(first['groups']) == 100 and len(last['groups']) == 5
+    assert last['groups'][0]['asset_symbols'] == ['SMALL1000']
+    assert last['stats']['group_offset'] == 1000 and last['stats']['next_group_offset'] is None
+    assert first['stats']['next_group_offset'] == 100
+    assert first['stats']['groups_total'] == last['stats']['groups_total'] == 1005
+    assert first['stats']['scanned'] == last['stats']['scanned'] == 2010
+    assert first['candidates'] == last['candidates']  # Independent candidate/output budgets.
+
+
+def test_asset_pages_do_not_hide_enumeration_budget_or_identity_blockers():
+    items = [market(f'{base}:{venue}', venue, base) for base in ['AAA', 'BBB', 'CCC'] for venue in ['alpha', 'beta']]
+    report = run(items, sort='asset', max_candidates=1, group_limit=1, group_offset=2)
+    assert report['stats']['enumeration_truncated'] and report['stats']['scanned'] == 1
+    assert report['groups'][0]['scanned_directions'] == 0
+    assert report['stats']['group_pagination'] == 'live_query_not_snapshot'
+    unknown = [item.model_copy(update={'mapping_verified': False}) for item in items]
+    blocked = run(unknown, group_limit=1, group_offset=1)
+    assert not blocked['groups'][0]['identity_confirmed']
+
+
+def test_group_page_out_of_range_is_empty_and_search_still_scopes_catalog():
+    items = [market(f'{base}:{venue}', venue, base) for base in ['AAA', 'BBB'] for venue in ['alpha', 'beta']]
+    report = run(items, q='BBB', group_limit=1, group_offset=5)
+    assert report['groups'] == [] and report['stats']['groups_returned'] == 0
+    assert report['stats']['groups_total'] == 1 and report['stats']['next_group_offset'] is None
+    assert report['filters']['q'] == 'BBB'
+
+
+@pytest.mark.parametrize('extra', [{'group_offset': -1}, {'group_offset': True}, {'group_offset': 1.5},
+                                  {'group_offset': 100_000_001}, {'group_limit': 0}, {'group_limit': True}, {'group_limit': 1001}])
+def test_group_pagination_bounds(extra):
+    with pytest.raises(ValueError):
+        run([], **extra)

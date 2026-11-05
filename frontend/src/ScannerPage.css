@@ -62,3 +62,6 @@
   .scanner-workspace .scanner-directions table { min-width: 980px; }
   .scanner-workspace .scanner-platform-options { left: 0; right: auto; }
 }
+
+.scanner-pagination { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 0; }
+.scanner-pagination small { flex-basis:100%; color:var(--muted); line-height:1.6; }

@@ -269,7 +269,7 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
                  snapshots: Iterable[MarketSnapshot] | Mapping[str, MarketSnapshot],
                  as_of: int, stale_seconds: float, limit: int = 100, *, sort: Sort = "spread",
                  max_candidates: int = 10000, q: str = "", platforms: Iterable[str] | None = None,
-                 market_type: MarketType = "all") -> dict:
+                 market_type: MarketType = "all", group_offset: int = 0, group_limit: int | None = None) -> dict:
     """Scan all confirmed asset groups, with explicit enumeration/output budgets.
 
     Both directions of every cross-venue spot/perpetual/pool/RFQ pair are eligible.
@@ -278,6 +278,11 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
     """
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise ValueError("limit must be between 1 and 1000")
+    if type(group_offset) is not int or not 0 <= group_offset <= 100_000_000:
+        raise ValueError("group_offset must be between 0 and 100000000")
+    group_limit = limit if group_limit is None else group_limit
+    if type(group_limit) is not int or not 1 <= group_limit <= 1000:
+        raise ValueError("group_limit must be between 1 and 1000")
     if type(max_candidates) is not int or not 1 <= max_candidates <= MAX_CANDIDATES:
         raise ValueError("max_candidates must be between 1 and 100000")
     if sort not in {"spread", "funding", "asset"}:
@@ -415,7 +420,7 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
                        -(row[best_key][rate_key] if row[best_key] else 0), row["asset_id"]))
     scanned = len(candidates)
     returned = min(limit, scanned)
-    return {"as_of": as_of, "stale_seconds": stale_seconds, "candidates": candidates[:limit], "groups": summaries[:limit],
+    return {"as_of": as_of, "stale_seconds": stale_seconds, "candidates": candidates[:limit], "groups": summaries[group_offset:group_offset + group_limit],
             "available_platforms": sorted({item.venue for item in active_catalog}),
             "filters": {"q": q, "platforms": sorted(selected_platforms), "market_type": market_type}, "stats": {
         "catalog_markets": len(catalog), "active_markets": len(active),
@@ -427,8 +432,11 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
         "unavailable_candidates": unavailable, "unscanned": possible - scanned,
         "reliable_price_candidates": sum(row["price_rankable"] for row in candidates),
         "reliable_funding_candidates": sum(row["funding_rankable"] for row in candidates),
-        "groups_total": len(summaries), "groups_returned": min(len(summaries), limit),
-        "groups_truncated": len(summaries) > limit,
+        "groups_total": len(summaries), "groups_returned": len(summaries[group_offset:group_offset + group_limit]),
+        "groups_truncated": len(summaries) > group_limit,
+        "group_offset": group_offset, "group_limit": group_limit,
+        "next_group_offset": group_offset + group_limit if group_offset + group_limit < len(summaries) else None,
+        "group_pagination": "live_query_not_snapshot",
         "omitted_by_limit": scanned - returned, "enumeration_truncated": possible > scanned,
         "result_truncated": scanned > returned, "truncated": possible > returned,
         "selection": "bounded_prefix" if possible > scanned else "global",
@@ -439,7 +447,8 @@ def scan_markets(instruments: Iterable[Instrument] | Mapping[str, Instrument],
 async def scan_api(request: Request, limit: int = Query(100, ge=1, le=1000),
              sort: Sort = "spread", max_candidates: int = Query(10000, ge=1, le=MAX_CANDIDATES),
              q: str = Query("", max_length=300), platforms: str = Query("", max_length=2000),
-             market_type: MarketType = "all"):
+             market_type: MarketType = "all", group_offset: int = Query(0, ge=0, le=100_000_000),
+             group_limit: int | None = Query(None, ge=1, le=1000)):
     def build():
         collector = request.app.state.collector
         settings = request.app.state.store.settings()
@@ -448,7 +457,7 @@ async def scan_api(request: Request, limit: int = Query(100, ge=1, le=1000),
         instruments = [item for item in catalog if item.venue in settings.enabled_venues] if enabled else []
         result = scan_markets(instruments, dict(collector.snapshots), now_ms(), settings.stale_seconds,
                               limit, sort=sort, max_candidates=max_candidates, q=q, platforms=platforms.split(","),
-                              market_type=market_type)
+                              market_type=market_type, group_offset=group_offset, group_limit=group_limit)
         result.update(enabled=enabled, mode="indicative_public_market_scan")
         result["stats"].update(collector_catalog_markets=len(catalog),
                                excluded_by_settings=len(catalog) - len(instruments))

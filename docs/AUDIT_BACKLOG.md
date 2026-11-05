@@ -517,3 +517,14 @@ CEX：[Binance](COVERAGE.md#binance)、[OKX](COVERAGE.md#okx)、[Bybit](COVERAGE
 - 当前专项命令`.venv/bin/pytest -q tests/test_native_history_pages.py tests/test_funding_history.py tests/test_binance_funding_history.py tests/test_mexc_kucoin_history.py`：202 passed（12.02秒）；CI范围Ruff通过。所有HTTP由本地替身拦截，无行情请求/受阻OKX WS重试/账户设置变更。真实同页冲突、全目录实时覆盖、生产身份和24小时仍未验收。
 
 - 最终验证：1388项完整后端（64.69秒，1条上游TestClient弃用警告）、202项专项（12.02秒）、2项HTTP/重启验收通过，CI范围Ruff/diff通过。无前端变更/浏览器复验，远端CI未确认。本批代码不再调用CCXT统一fetch_funding_rate_history，历史完整性仍取决于原生分页能力和来源可用性，未宣称完整回填。
+
+### R58 全市场资产分页（2026-11-05）
+
+- 选择依据：原计划D01/U01要求全币种可观察。检查现有价差UI及scanner后确认资产组只返回前1000条，没有翻页入口；后续市场需要先知道名字才能搜索。此次补实际浏览缺口，不新增历史平台、采集来源或交易功能。
+- 后端scan_markets与GET /api/scanner新增group_offset/group_limit，默认兼容旧limit；偏移0–100000000，每页1–1000。分页只截取完整已生成/排序的资产摘要，与candidate返回limit、每资产方向limit及10000方向扫描预算分离。响应提供group_offset/group_limit/next_group_offset/groups_returned，所有目录/扫描/可靠方向统计仍表示同次查询全筛选范围。超出当前范围返回空页，不偷偷跳页或增加扫描预算。
+- UI资产聚合每页100组，显示当前范围/总数及首页/上一页/下一页。未知身份、无报价、过期和未扫描组仍按原状态展示，不为翻页升级可靠性。切换搜索/平台/市场类型/排序回首页；页码参与请求版本，旧响应不能覆盖新页。刷新和离开再返回保留当前页并沿用现有重新核验机制；不跨浏览器重载保存页码。
+- 浏览器发现“末页搜索后清空搜索会恢复旧页码”，已修复为筛选改变时同步重置存储的分页状态；不只临时计算0。目录收缩导致当前页为空时，明确显示“当前页没有资产，请返回首页”，保留返回操作。
+- 用户可见边界：每次翻页重新读取collector当前公开行情快照（字段各自来源/时间不变），页面提示实时排序可能移动或重复，不是冻结快照/稳定游标，不能保证跨页无重复/无遗漏；需要定向核验时用资产搜索。分页不增加采集覆盖、身份批准或已扫描方向；方向视图及展开方向截断限制保持。
+- 数据来源：复用已发现市场、已采集快照、现有身份与字段时效判定；本批没有任何交易所行情请求。UI调用本地scanner只读查询，仍不接账户、下单或重试受阻OKX连接。
+- 验证：新增10项后端回归，1005个合成小币双平台目录访问offset1000最后5组、扫描/candidate预算不变、身份/截断保护、搜索和越界参数；scanner专项64通过。隔离浏览器7项（100组首页/1000后末页/返回重验/搜索清空重置/类型空状态/390px无横向溢出/无JS错误），证据见[evidence/browser-scanner-pagination.json](evidence/browser-scanner-pagination.json)及[screenshots/scanner-pagination-synthetic.png](screenshots/scanner-pagination-synthetic.png)。1005为合成资产，不是真实新增覆盖。
+- 完整后端1398通过（66.20秒，1条上游TestClient弃用警告）、前端44项通过、TS/Vite生产构建通过、既有导航12项通过（包含组合→测算→返回及过期保护）、CI范围Ruff/diff通过。真实全币种覆盖、生产身份、持续行情和24小时验收仍开放；未扩大全历史功能。
