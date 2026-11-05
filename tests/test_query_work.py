@@ -151,6 +151,8 @@ async def test_http_routes_share_admission_and_diagnostics_remain_available(tmp_
 @pytest.mark.asyncio
 async def test_ws_skips_under_http_pressure_and_keeps_last_sent_baseline(tmp_path, monkeypatch):
     app = create_app(tmp_path, start_collector=False, adapters={})
+    # Exercise backpressure at a short, explicit cadence, independent of defaults.
+    app.state.store.set('settings', {'refresh_ms': 1000})
     work = app.state.query_work
     source = {'instruments': [], 'snapshots': [{'instrument_id': 'old', 'last': 1,
                'source_at': 123, 'received_at': 456}], 'mode': 'live'}
