@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+from browser_process import stop_server
 from playwright.sync_api import expect, sync_playwright
 
 from watch_money.models import Instrument, MarketSnapshot, now_ms
@@ -82,7 +83,7 @@ def main():
                     else:
                         raise RuntimeError("Temporary funding matrix server readiness timeout")
                 with sync_playwright() as playwright:
-                    browser = playwright.chromium.launch(executable_path=shutil.which("chromium"), headless=True,
+                    browser = playwright.chromium.launch(executable_path=os.getenv("WATCH_MONEY_BROWSER_EXECUTABLE") or shutil.which("chromium"), headless=True,
                                                          args=["--no-sandbox"])
                     page = browser.new_page(viewport={"width": 1500, "height": 1100})
                     errors = []
@@ -167,12 +168,7 @@ def main():
                     checks.append("390px platform picker stays within viewport and matrix scrolls inside its own container without body overflow")
                     browser.close()
             finally:
-                server.terminate()
-                try:
-                    server.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    server.kill()
-                    server.wait(timeout=5)
+                stop_server(server)
     result = {"fixture": "synthetic_funding_matrix_not_live", "count": len(checks), "checks": checks,
               "history_requests": len(history_requests), "at": now_ms()}
     (evidence / "browser_funding_matrix.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

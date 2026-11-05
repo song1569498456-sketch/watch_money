@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 from browser_followup import seed
+from browser_process import stop_server
 from playwright.sync_api import expect, sync_playwright
 from watch_money.models import Instrument, MarketSnapshot, now_ms
 from watch_money.storage import Storage
@@ -64,7 +65,7 @@ def main():
                     else:
                         raise RuntimeError("Temporary navigation server readiness timeout")
                     with sync_playwright() as playwright:
-                        browser = playwright.chromium.launch(executable_path=shutil.which("chromium"),
+                        browser = playwright.chromium.launch(executable_path=os.getenv("WATCH_MONEY_BROWSER_EXECUTABLE") or shutil.which("chromium"),
                                                              headless=True, args=["--no-sandbox"])
                         page = browser.new_page(viewport={"width": 1440, "height": 900})
                         errors, calculations, external_requests, scanner_requests = [], [], [], []
@@ -204,7 +205,7 @@ def main():
                         nav.get_by_role("button", name="市场监控", exact=True).click()
                         page.get_by_role("button", name="价差", exact=True).click()
                         page.evaluate("window.originalDateNow = Date.now; Date.now = () => window.originalDateNow() + 3601000")
-                        expect(page.get_by_text("查询结果已过期，排名与路径需重新核验；以下仅为查询时快照，请刷新扫描。", exact=True)).to_be_visible()
+                        expect(page.get_by_text("快照过期，等待更新", exact=True)).to_be_visible()
                         expect(page.get_by_text("来源与时效已核验", exact=True)).to_have_count(0)
                         expect(page.get_by_role("button", name="测算此组合", exact=True).first).to_be_disabled()
                         nav.get_by_role("button", name="我的监控", exact=True).click()
@@ -217,8 +218,7 @@ def main():
                         checks.append("390px primary destinations and funding matrix have no document overflow; no external/account/trading requests or JS errors")
                         browser.close()
             finally:
-                server.terminate()
-                server.wait(timeout=15)
+                stop_server(server)
     result = {"passed": True, "checks": checks, "at": now_ms(), "account_api_used": False,
               "data_mode": "isolated synthetic navigation fixtures, no live exchange data"}
     (output / "browser-navigation.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

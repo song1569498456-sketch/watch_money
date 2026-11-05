@@ -20,7 +20,10 @@
 }
 .scanner-workspace .scanner-summary strong { color: #cad8e5; margin-left: 5px; font-weight: 500; }
 .scanner-workspace .scanner-check-time { margin-left: auto; }
+.scanner-result-state { min-width: 9em; font-variant-numeric: tabular-nums; }
+.scanner-workspace .mono, .scanner-workspace .scanner-summary { font-variant-numeric: tabular-nums; }
 .scanner-workspace .scanner-caption { padding: 10px 20px 2px; color: #8096ab; font-size: 11px; line-height: 1.7; }
+.scanner-identity-help { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .scanner-workspace .scanner-view-switch { display: flex; gap: 16px; padding: 8px 20px 10px; }
 .scanner-workspace .scanner-view-switch button {
   background: transparent; border: 0; color: #8096ab; padding: 5px 0; font-size: 11px; cursor: pointer;

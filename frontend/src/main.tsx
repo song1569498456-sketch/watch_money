@@ -190,6 +190,7 @@ function Countdown({ at, now }: { at?: number | null; now: number }) {
 }
 function App() {
   const [page, setPage] = useState<Page>("scanner");
+  const [identityReviewOpen, setIdentityReviewOpen] = useState(false);
   const [visited, setVisited] = useState<Set<Page>>(new Set(["scanner"]));
   const positions = useRef<Partial<Record<Page, number>>>({});
   const returnPage = useRef<Page>("scanner");
@@ -203,6 +204,11 @@ function App() {
     const frame = requestAnimationFrame(() => window.scrollTo(0, positions.current[page] ?? 0));
     return () => cancelAnimationFrame(frame);
   }, [page]);
+  useEffect(() => {
+    if (page !== "settings" || !identityReviewOpen) return;
+    const frame = requestAnimationFrame(() => document.getElementById("asset-identity-management")?.scrollIntoView({ block: "start" }));
+    return () => cancelAnimationFrame(frame);
+  }, [page, identityReviewOpen]);
   const [markets, setMarkets] = useState<MarketData>({
     instruments: [],
     snapshots: [],
@@ -627,7 +633,7 @@ function App() {
               toggleFavorite={toggleFavorite}
             />
           )}
-          <div hidden={page !== "scanner"}><ScannerPage refreshKey={queryRefresh} staleSeconds={settings?.stale_seconds ?? 60} active={page === "scanner"} instruments={markets.instruments} favorites={favorites} toggleFavorite={toggleFavorite} onOpenAsset={openAsset} onSelectCandidate={selectCandidate} /></div>
+          <div hidden={page !== "scanner"}><ScannerPage refreshKey={queryRefresh} staleSeconds={settings?.stale_seconds ?? 60} active={page === "scanner"} instruments={markets.instruments} favorites={favorites} toggleFavorite={toggleFavorite} onOpenAsset={openAsset} onReviewIdentity={() => { setIdentityReviewOpen(true); navigate("settings"); }} onViewSources={() => navigate("status")} onSelectCandidate={selectCandidate} /></div>
           {visited.has("funding") && <div hidden={page !== "funding"}><FundingPage refreshKey={queryRefresh} active={page === "funding"} onSelectCandidate={selectCandidate} /></div>}
           {page === "status" && <><button className="button secondary" onClick={() => navigate("settings")}><ArrowLeft size={14} />返回设置</button><Status statuses={statuses} coverage={coverage} now={now} /></>}
           {page === "settings" && (
@@ -644,7 +650,7 @@ function App() {
                 }}
               />
               <details className="panel settings-advanced"><summary>高级诊断 · 原生池状态</summary><NativePoolPanel settings={settings} /></details>
-              <details className="panel settings-advanced"><summary>资产身份与映射管理</summary>
+              <details id="asset-identity-management" className="panel settings-advanced" open={identityReviewOpen} onToggle={event => setIdentityReviewOpen(event.currentTarget.open)}><summary>资产身份与映射管理</summary>
               <AssetVerification onChanged={() => { setQueryRefresh((value) => value + 1); void load(); setToast("身份核验状态已更新"); }} />
               <IdentityCandidates refreshKey={identityVersion} />
               <AssetMappings
