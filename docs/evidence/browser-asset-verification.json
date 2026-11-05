@@ -9,9 +9,10 @@
     "two contradictory contract claims disable UI apply; direct real local apply also rejects atomically without verified coverage",
     "KuCoin and Coinbase Exchange source controls and per-platform native-client/spot scope coverage are visible; Exchange is not silently selected for Advanced Trade",
     "browser-mocked public-refresh failure is explicit and creates no evidence or verified mappings; no external source read",
+    "complete evidence pagination reaches offset 2000 and returns home without retaining selection",
     "390px identity panel has no document overflow; no external/account/trading requests or browser JS errors"
   ],
-  "at": 1793837781186,
+  "at": 1793838503031,
   "account_api_used": false,
   "data_mode": "isolated synthetic identity evidence; actual local API mutations; public-refresh failure browser-mocked"
 }

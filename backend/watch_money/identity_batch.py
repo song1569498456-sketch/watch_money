@@ -42,7 +42,7 @@ def build_plan(service, proposal_ids=None) -> dict:
         return scoped
 
 
-def _plan(service, catalog, records, sources, now, mappings):
+def _plan(service, catalog, records, sources, now, mappings, *, manual_review=False):
     mapped_ids = {row[0] for row in mappings}
     active = [row for row in records if row["status"] == "active"]
     grouped = defaultdict(list)
@@ -57,6 +57,8 @@ def _plan(service, catalog, records, sources, now, mappings):
         issues = set(row["blockers"])
         members = [catalog.get(identity) for identity in row["instrument_ids"]]
         for fact in facts:
+            if manual_review and fact.get("evidence_kind") != "public_contract_metadata":
+                continue  # Manual/local proofs retain their own checks; public facts never bypass policy.
             instrument = catalog.get(fact["instrument_id"])
             source = SOURCES.get(fact.get("venue"))
             attempt = sources.get(fact.get("venue"), {})

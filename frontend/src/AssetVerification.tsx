@@ -1,12 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw, ShieldCheck } from "lucide-react";
 import { api, num, time } from "./api";
 import { IdentityBatchReview } from "./IdentityBatchReview";
 
-type Proposal = { id: string; canonical_asset_id: string; instrument_ids: string[]; symbols: string[];
+type Proposal = { existing_mappings?: Record<string, string>; id: string; canonical_asset_id: string; instrument_ids: string[]; symbols: string[];
   venues: string[]; status: string; blockers: string[]; evidence_ids: string[]; source_urls: string[];
   observed_at?: number; expires_at?: number };
-type Evidence = { id: string; instrument_id: string; native_asset_id: string; canonical_asset_id: string;
+type Evidence = { affected_instrument_ids?: string[]; id: string; instrument_id: string; native_asset_id: string; canonical_asset_id: string;
   evidence_kind: string; source_url: string; source_field: string; observed_at: number; expires_at: number;
   status: string; blockers: string[] };
 type Source = { venue: string; endpoint: string; docs_url: string; state: string; last_attempt_at?: number;
@@ -20,7 +20,7 @@ type PlatformCoverage = { venue: string; active_markets: number; source_supporte
   source_blockers: Record<string, number>; verified_markets: number; traceable_verified_markets: number;
   unverified_markets: number; conflicting_markets: number; scope_note?: string };
 type Review = { as_of: number; coverage: Record<string, number>; sources: Source[]; proposals: Proposal[];
-  evidence: Evidence[]; audit: { at: number; action: string; payload: unknown }[];
+  evidence_offset: number; evidence_total: number; evidence_next_offset: number | null; evidence: Evidence[]; audit: { at: number; action: string; payload: unknown }[];
   truncated: { evidence: boolean; proposals: boolean }; platform_coverage?: PlatformCoverage[] };
 type Preview = { preview_token: string; proposals: Proposal[]; ready: number; blocked: number };
 const labels: Record<string, string> = { not_requested: "尚未读取", observed: "已读取", ready: "证据可用", conflict: "证据冲突", unverified: "待核验",
@@ -58,18 +58,22 @@ export function AssetVerification({ onChanged }: { onChanged: () => void }) {
   const [input, setInput] = useState("");
   const [reason, setReason] = useState("");
   const [limit, setLimit] = useState(200);
+  const [evidenceOffset, setEvidenceOffset] = useState(0);
+  const queryKey = `${limit}:${evidenceOffset}`;
+  const currentQuery = useRef(queryKey);
+  currentQuery.current = queryKey;
   const [venues, setVenues] = useState(["gate", "bitget", "kucoin"]);
   const load = async () => {
-    const result = await api<Review>(`/api/assets/verification?limit=${limit}`);
-    setData(result);
+    const result = await api<Review>(`/api/assets/verification?limit=${limit}&evidence_offset=${evidenceOffset}`);
+    if (currentQuery.current === queryKey) setData(result);
     return result;
   };
   useEffect(() => {
     let current = true;
-    void api<Review>(`/api/assets/verification?limit=${limit}`).then((result) => { if (current) setData(result); })
+    void api<Review>(`/api/assets/verification?limit=${limit}&evidence_offset=${evidenceOffset}`).then((result) => { if (current) setData(result); })
       .catch((caught: Error) => { if (current) setError(caught.message); });
     return () => { current = false; };
-  }, [limit]);
+  }, [limit, evidenceOffset]);
   const act = async (name: string, action: () => Promise<void>) => {
     setBusy(name); setError(""); setMessage("");
     try { await action(); } catch (caught) { setError((caught as Error).message); }
@@ -123,24 +127,28 @@ export function AssetVerification({ onChanged }: { onChanged: () => void }) {
     <div className="filters" style={{ flexWrap: "wrap" }}><span>已选 {selected.length} 条证据</span>
       <button className="text-button" type="button" disabled={!!busy} onClick={() => select([...new Set(data?.proposals.filter((row) => row.status === "ready").flatMap((row) => row.evidence_ids) ?? [])])}>选择当前可核验证据</button>
       <button className="text-button" type="button" disabled={!!busy} onClick={() => select([])}>清空选择</button>
-      <select aria-label="身份核验返回条数" value={limit} disabled={!!busy} onChange={(event) => { setLimit(Number(event.target.value)); select([]); }}>
+      <select aria-label="身份核验返回条数" value={limit} disabled={!!busy} onChange={(event) => { setData(null); setLimit(Number(event.target.value)); setEvidenceOffset(0); select([]); }}>
         {[200, 500, 2000].map((value) => <option key={value} value={value}>最多 {value} 条</option>)}</select>
       <button className="button secondary" type="button" disabled={!!busy || !selected.length} onClick={() => void act("预览", async () => {
         setPreview(await api<Preview>("/api/assets/verification/preview", "POST", { evidence_ids: selected }));
       })}>预览所选映射</button></div>
-    {(data?.truncated.evidence || data?.truncated.proposals) && <div className="notice">本次证据或提案列表已截断；当前选择只覆盖已返回项目，请增大返回条数，不代表全部市场。</div>}
+    {(data?.truncated.evidence || data?.truncated.proposals) && <div className="notice">本次证据或提案列表已截断；当前选择只覆盖已返回项目，提案列表不代表全部市场；证据可在下方翻页访问完整记录。</div>}
     {!!data?.proposals.length && <div className="table-scroll"><table><thead><tr><th>资产与市场</th><th>链与合约身份</th><th>核验状态</th><th>公开依据</th></tr></thead><tbody>
       {data.proposals.map((row) => <tr key={row.id}><td><strong>{row.symbols.join(" / ")}</strong><small>{row.venues.join(" / ")} · {row.instrument_ids.length} 个市场</small></td>
         <td className="break mono">{row.canonical_asset_id}</td><td><span className={`badge ${row.status === "ready" ? "mint" : "amber"}`}>{labels[row.status] ?? row.status}</span>
           {row.blockers.map((value) => <small className="warning break" key={value}>{explain(value)}</small>)}</td>
         <td>{row.source_urls.map((url) => <small className="break" key={url}><SourceLink url={url} /></small>)}<small>观测 {time(row.observed_at)} · 到期 {time(row.expires_at)}</small></td></tr>)}</tbody></table></div>}
     {preview && <div className="form-content"><h3>所选映射预览</h3><p>可应用 {preview.ready} 项 · 阻止 {preview.blocked} 项。应用时再次校验证据、原生身份与到期时间。</p>
-      {preview.proposals.map((row) => <p className={row.status === "ready" ? "muted" : "warning"} key={row.id}>{row.symbols.join(" / ")} → {row.canonical_asset_id} · {labels[row.status] ?? row.status} {row.blockers.map(explain).join("；")}</p>)}
+      {preview.proposals.map((row) => <p className={row.status === "ready" ? "muted" : "warning"} key={row.id}>{row.symbols.join(" / ")} → {row.canonical_asset_id} · {labels[row.status] ?? row.status} {row.blockers.map(explain).join("；")} {row.existing_mappings && Object.entries(row.existing_mappings).map(([id, old]) => `${id}: 当前 ${old} → 提议 ${row.canonical_asset_id}`).join("；")}</p>)}
       <button className="button primary" type="button" disabled={!!busy || !preview.ready || preview.blocked > 0} onClick={() => void act("应用映射", async () => {
         await api("/api/assets/verification/apply", "POST", { evidence_ids: selected, preview_token: preview.preview_token });
         select([]); await load(); onChanged(); setMessage("已应用所选核验映射，审计记录已保存。");
       })}>应用已核验映射</button></div>}
     <details className="calculation-details"><summary>证据明细、修订与撤销</summary>
+      <p>完整证据共 {data?.evidence_total ?? 0} 条，当前偏移 {data?.evidence_offset ?? 0}；撤销仅针对勾选的 {selected.length} 条证据。当前依赖市场：{[...new Set(data?.evidence.filter(r => selected.includes(r.id)).flatMap(r => r.affected_instrument_ids ?? []))].join("、") || "无"}。提交时按最新依赖关系撤销；不会覆盖人工映射。翻页清空选择。</p>
+      <button disabled={!!busy || !evidenceOffset} onClick={() => { setData(null); select([]); setEvidenceOffset(0); }}>证据首页</button>
+      <button disabled={!!busy || !evidenceOffset} onClick={() => { setData(null); select([]); setEvidenceOffset(Math.max(0, evidenceOffset-limit)); }}>上一页证据</button>
+      <button disabled={!!busy || data?.evidence_next_offset == null} onClick={() => { if (data?.evidence_next_offset != null) { setEvidenceOffset(data.evidence_next_offset); setData(null); select([]); } }}>下一页证据</button>
       {!!data?.evidence.length && <div className="table-scroll"><table><thead><tr><th>选择 / 原生市场</th><th>证据身份与来源</th><th>时间与状态</th></tr></thead><tbody>
         {data.evidence.map((row) => <tr key={row.id}><td><label className="inline-checks"><input type="checkbox" aria-label={`选择身份依据 ${row.id}`} disabled={!!busy} checked={selected.includes(row.id)}
           onChange={() => select(selected.includes(row.id) ? selected.filter((id) => id !== row.id) : [...selected, row.id])} /><span className="break">{row.instrument_id}</span></label><small className="break">原生 {row.native_asset_id}</small></td>

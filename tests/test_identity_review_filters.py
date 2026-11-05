@@ -108,3 +108,63 @@ async def test_review_api_filters_preview_apply_and_bounds(ready):
         assert response.status_code == 200 and response.json()['applied_groups'] == 1
         assert client.get('/api/assets/verification/batch-review', params={'limit':101}).status_code == 422
         assert client.get('/api/assets/verification/batch-review', params={'state':'guess'}).status_code == 422
+
+async def test_legacy_and_grouped_paths_reject_failed_source_and_old_token(ready):
+    import json
+    ids = build_plan(ready.service)['eligible_evidence_ids']
+    old = ready.service.preview(ids)
+    with ready.store.connect() as db:
+        source = json.loads(db.execute("SELECT record FROM asset_identity_sources WHERE venue='gate'").fetchone()[0])
+        source['state'] = 'error'
+        db.execute("UPDATE asset_identity_sources SET record=? WHERE venue='gate'", (json.dumps(source),))
+    assert not build_plan(ready.service)['eligible_evidence_ids']
+    preview = ready.service.preview(ids)
+    assert preview['blocked'] == 1
+    assert 'latest_official_source_receipt_unavailable' in preview['proposals'][0]['blockers']
+    for token in (old['preview_token'], preview['preview_token']):
+        with pytest.raises(ValueError):
+            ready.service.apply(ids, token)
+    assert not any(i.mapping_verified for i in ready.store.instruments().values())
+    target = preview['proposals'][0]['canonical_asset_id']
+    imported = ready.service.add_evidence([manual(ready, canonical=target)])
+    manual_preview = ready.service.preview(imported['evidence_ids'])
+    assert manual_preview['blocked'] == 1
+    with pytest.raises(ValueError):
+        ready.service.apply(imported['evidence_ids'], manual_preview['preview_token'])
+
+
+async def test_both_paths_preserve_manual_mapping_and_show_old_value(ready):
+    ids = build_plan(ready.service)['eligible_evidence_ids']
+    ready.store.map_assets(['gate-spot'], 'manual:prior-choice')
+    preview = ready.service.preview(ids)
+    assert preview['proposals'][0]['existing_mappings']['gate-spot'] == 'manual:prior-choice'
+    assert preview['blocked'] == 1
+    assert not build_plan(ready.service)['eligible_evidence_ids']
+    with pytest.raises(ValueError):
+        ready.service.apply(ids, preview['preview_token'])
+    assert ready.store.instruments()['gate-spot'].asset_id == 'manual:prior-choice'
+
+
+async def test_complete_evidence_pages_allow_old_applied_revoke(ready):
+    import json
+    plan = build_plan(ready.service)
+    result = apply_plan(ready.service, plan['plan_token'])
+    ids = result['evidence_ids']
+    template = ready.service._records()[0]
+    with ready.store.connect() as db:
+        db.executemany("INSERT INTO asset_identity_evidence VALUES(?,?,'revoked')", [
+            (f'000-{n:05}', json.dumps({**template, 'id': f'000-{n:05}'})) for n in range(2100)])
+    assert not set(ids).intersection(r['id'] for r in ready.service.status(2000)['evidence'])
+    page = ready.service.status(200, 2000)
+    assert set(ids) <= {r['id'] for r in page['evidence']}
+    assert page['evidence_total'] == 2100 + len(ids) and page['evidence_next_offset'] is None
+    app = FastAPI()
+    app.state.asset_verification = ready.service
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.get('/api/assets/verification?limit=200&evidence_offset=2000')
+        assert response.status_code == 200 and response.json()['evidence_offset'] == 2000
+        assert client.get('/api/assets/verification?evidence_offset=-1').status_code == 422
+        result = client.post('/api/assets/verification/revoke', json={'evidence_ids': ids, 'reason': 'old batch from complete history'})
+        assert result.status_code == 200
+    assert not any(i.mapping_verified for i in ready.store.instruments().values())

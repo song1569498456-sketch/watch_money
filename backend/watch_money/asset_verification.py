@@ -379,9 +379,42 @@ class AssetVerificationService:
         return {**imported, "sources": attempts, "mappings_changed": False}
 
     def preview(self, evidence_ids: list[str] | None = None) -> dict:
-        catalog, now = self.store.instruments(), self.clock()
-        all_records = self._records()
-        return self._preview(catalog, all_records, now, evidence_ids)
+        with self.store.lock:
+            return self._checked_preview(self.store.instruments(), self._records(), self.clock(), evidence_ids)
+
+    def _checked_preview(self, catalog, records, now, evidence_ids=None):
+        from .identity_batch import _plan
+        result = self._preview(catalog, records, now, evidence_ids)
+        public_instruments = {r["instrument_id"] for r in records if r["evidence_kind"] == "public_contract_metadata" and r["status"] == "active"}
+        public_relevant = any(public_instruments.intersection(g["instrument_ids"]) for g in result["proposals"])
+        with self.store.connect() as db:
+            mapping_rows = list(db.execute("SELECT instrument_id,asset_id,at FROM mappings"))
+            sources = {venue: json.loads(record) for venue, record in db.execute("SELECT venue,record FROM asset_identity_sources")}
+        mappings = {row[0]: row[1] for row in mapping_rows}
+        policy = _plan(self, catalog, records, sources, now, mapping_rows, manual_review=True)
+        public_groups = policy["eligible_groups"] + policy["blocked_groups"] + policy["already_verified_groups"]
+        for group in result["proposals"]:
+            issues = set(group["blockers"])
+            if public_instruments.intersection(group["instrument_ids"]):
+                for candidate in public_groups:
+                    if set(candidate["instrument_ids"]).intersection(group["instrument_ids"]):
+                        issues.update(candidate["blockers"])
+            existing = {identity: mappings[identity] for identity in group["instrument_ids"] if identity in mappings}
+            if existing:
+                group["existing_mappings"] = existing
+            for identity, old in existing.items():
+                instrument = catalog[identity]
+                if old != group["canonical_asset_id"] or not instrument.mapping_evidence_ids:
+                    issues.add("existing_explicit_mapping_requires_manual_review")
+            group["blockers"] = sorted(issues)
+            if issues:
+                group["status"] = "conflict"
+        result["ready"] = sum(g["status"] == "ready" for g in result["proposals"])
+        result["blocked"] = len(result["proposals"]) - result["ready"]
+        if public_relevant or any(g.get("existing_mappings") for g in result["proposals"]):
+            result["preview_token"] = _digest({"preview": result["preview_token"], "proposals": result["proposals"],
+                                           "public_policy": policy["plan_token"] if public_relevant else None})
+        return result
 
     @staticmethod
     def _preview(catalog, all_records, now, evidence_ids=None) -> dict:
@@ -503,7 +536,7 @@ class AssetVerificationService:
         catalog = self.store.instruments()
         now = self.clock()
         records = self._records()
-        preview = self._preview(catalog, records, now)
+        preview = self._checked_preview(catalog, records, now)
         facts = {row["id"]: row for row in records}
         rows = preview["proposals"][offset:offset + limit]
         packets = []
@@ -519,7 +552,7 @@ class AssetVerificationService:
                     "catalog_fingerprint": catalog_fingerprint(item)} for item in members],
                 "evidence": [facts[identity] for identity in row["evidence_ids"] if identity in facts]})
         ready_ids = sorted({identity for row in rows if row["status"] == "ready" for identity in row["evidence_ids"]})
-        ready_preview = self._preview(catalog, records, now, ready_ids) if ready_ids else None
+        ready_preview = self._checked_preview(catalog, records, now, ready_ids) if ready_ids else None
         actual = [row for row in identity_candidates((item for item in catalog.values() if item.active), as_of=now)
                   if row["kind"] == "identity" and row["comparison_ready"] and len(row["venues"]) > 1]
         return {"as_of": now, "read_only": True, "coverage_scope": "active_catalog_identity_gate_only",
@@ -537,7 +570,7 @@ class AssetVerificationService:
                            "native currency/client/product, chain/address, units, source and expiry. "
                            "Prices, quote FX, depth and costs require independent checks."}
 
-    def status(self, limit=200) -> dict:
+    def status(self, limit=200, evidence_offset=0) -> dict:
         catalog = self.store.instruments()
         records = self._records()
         preview = self.preview()
@@ -605,7 +638,12 @@ class AssetVerificationService:
                                            if row["evidence_kind"] == "public_contract_metadata"}),
             "ready_proposals": preview["ready"], "conflict_proposals": preview["blocked"]},
             "sources": sources, "platform_coverage": platform_coverage,
-            "proposals": preview["proposals"][:limit], "evidence": records[:limit],
+            "proposals": preview["proposals"][:limit], "evidence": [
+                {**record, "affected_instrument_ids": sorted(item.id for item in instruments
+                    if record["id"] in item.mapping_evidence_ids)}
+                for record in records[evidence_offset:evidence_offset+limit]],
+            "evidence_offset": evidence_offset, "evidence_total": len(records),
+            "evidence_next_offset": evidence_offset+limit if evidence_offset+limit < len(records) else None,
             "audit": [row for row in self.store.audit() if row["action"].startswith("asset_")],
             "truncated": {"evidence": len(records) > limit, "proposals": len(preview["proposals"]) > limit}}
 
@@ -615,8 +653,8 @@ def _service(request):
 
 
 @router.get("")
-def verification_status(request: Request, limit: int = Query(200, ge=1, le=2000)):
-    return _service(request).status(limit)
+def verification_status(request: Request, limit: int = Query(200, ge=1, le=2000), evidence_offset: int = Query(0, ge=0, le=100000000)):
+    return _service(request).status(limit, evidence_offset)
 
 
 @router.get("/review-packet")

@@ -210,6 +210,21 @@ def main():
                         assert mocked_refresh == [{"venues": ["gate", "bitget", "kucoin"]}]
                         assert api.get("/api/assets/verification").json()["coverage"]["traceable_verified_markets"] == 0
                         checks.append("browser-mocked public-refresh failure is explicit and creates no evidence or verified mappings; no external source read")
+                        store = Storage(directory)
+                        with store.connect() as db:
+                            template = json.loads(db.execute("SELECT record FROM asset_identity_evidence LIMIT 1").fetchone()[0])
+                            db.executemany("INSERT INTO asset_identity_evidence VALUES(?,?,'revoked')", [
+                                (f"000-{n:05}", json.dumps({**template, "id": f"000-{n:05}"})) for n in range(2100)])
+                        panel.get_by_role("button", name="刷新核验状态", exact=True).click()
+                        panel.get_by_label("身份核验返回条数", exact=True).select_option("2000")
+                        expect(panel.get_by_role("button", name="下一页证据", exact=True)).to_be_enabled()
+                        panel.get_by_role("button", name="下一页证据", exact=True).click()
+                        expect(panel.get_by_text("当前偏移 2000", exact=False)).to_be_visible()
+                        assert panel.get_by_role("checkbox", name="选择身份依据 000-02099", exact=True).count() == 1
+                        expect(panel.get_by_role("button", name="下一页证据", exact=True)).to_be_disabled()
+                        panel.get_by_role("button", name="证据首页", exact=True).click()
+                        expect(panel.get_by_text("当前偏移 0", exact=False)).to_be_visible()
+                        checks.append("complete evidence pagination reaches offset 2000 and returns home without retaining selection")
                         page.set_viewport_size({"width": 390, "height": 844})
                         assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
                         panel.screenshot(path=str(screenshots / "asset-verification-mobile-synthetic.png"))
